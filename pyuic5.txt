@@ -1,0 +1,1 @@
+pyuic5 -x D:\LineScanOCT\SSOCT_HE-master\GUI.ui -o D:\LineScanOCT\SSOCT_HE-master\GUI.py
