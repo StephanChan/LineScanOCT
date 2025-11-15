@@ -1,0 +1,8 @@
+no disperison compensation found...using default
+no background found...using default
+79 data received by weaver
+0 FFT actions taken place
+
+RptBline successfully finished...
+0 Blines displayed
+

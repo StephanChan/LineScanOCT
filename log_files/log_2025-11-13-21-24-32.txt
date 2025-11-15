@@ -1,0 +1,10 @@
+Stage position updated...
+no disperison compensation found...using default
+no background found...using default
+SingleBline successfully finished...
+550 data received by weaver
+RptBline successfully finished...
+0 FFT actions taken place
+
+1 Blines displayed
+

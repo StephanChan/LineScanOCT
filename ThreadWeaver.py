@@ -1,0 +1,627 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Jan 24 11:10:17 2024
+
+@author: admin
+"""
+
+#################################################################
+from PyQt5.QtCore import  QThread
+import time
+import numpy as np
+from Generaic_functions import *
+from Actions import DnSAction, AODOAction, GPUAction, DAction
+import traceback
+import os
+import matplotlib.pyplot as plt
+from scipy.signal import hilbert
+import datetime
+
+# axial pixel size, measure with a microscope glass slide
+global ZPIXELSIZE
+ZPIXELSIZE = 4.4 # unit: um
+
+class WeaverThread(QThread):
+    def __init__(self):
+        super().__init__()
+        self.mosaic = None
+        self.exit_message = 'ACQ thread successfully exited'
+        
+    def run(self):
+        self.QueueOut()
+        
+    def QueueOut(self):
+        self.item = self.queue.get()
+        while self.item.action != 'exit':
+            # self.ui.statusbar.showMessage('King thread is doing: '+self.item.action)
+            try:
+                if self.item.action in ['RptAline','RptBline','RptCscan']:
+                    message = self.RptScan(self.item.action)
+                    self.ui.statusbar.showMessage(message)
+                    # self.ui.PrintOut.append(message)
+                    self.log.write(message)
+                    
+                elif self.item.action in ['SingleBline', 'SingleAline', 'SingleCscan']:
+                    message = self.SingleScan(self.item.action)
+                    self.ui.statusbar.showMessage(message)
+                    # self.ui.PrintOut.append(message)
+                    self.log.write(message)
+
+                elif self.item.action == 'Mosaic':
+                    # make directories
+                    if not os.path.exists(self.ui.DIR.toPlainText()+'/aip'):
+                        os.mkdir(self.ui.DIR.toPlainText()+'/aip')
+                    if not os.path.exists(self.ui.DIR.toPlainText()+'/surf'):
+                        os.mkdir(self.ui.DIR.toPlainText()+'/surf')
+                    if not os.path.exists(self.ui.DIR.toPlainText()+'/fitting'):
+                        os.mkdir(self.ui.DIR.toPlainText()+'/fitting')
+                    # do fast pre-scan to identify tissue area
+                    status= self.PreMosaic()
+                    if status != 'success' :
+                        status = "action aborted by user..."
+                    else:
+                        status = self.Mosaic()
+                    # self.ui.PrintOut.append(status)
+                    self.log.write(status)
+
+                elif self.item.action == 'ZstageRepeatibility':
+                    message = self.ZstageRepeatibility()
+                    self.ui.statusbar.showMessage(message)
+                    # self.ui.PrintOut.append(message)
+                    self.log.write(message)
+                    
+                elif self.item.action == 'get_background':
+                    message = self.get_background()
+                    self.ui.statusbar.showMessage(message)
+                    # self.ui.PrintOut.append(message)
+                    self.log.write(message)
+                    
+                elif self.item.action == 'get_surface':
+                    message = self.get_surfCurve()
+                    self.ui.statusbar.showMessage(message)
+                    # self.ui.PrintOut.append(message)
+                    self.log.write(message)
+                    
+                else:
+                    message = 'Weaver thread is doing something invalid: '+self.item.action
+                    self.ui.statusbar.showMessage(message)
+                    # self.ui.PrintOut.append(message)
+                    self.log.write(message)
+
+            except Exception as error:
+                message = "An error occurred,"+"skip the acquisition action\n"
+                self.ui.statusbar.showMessage(message)
+                # self.ui.PrintOut.append(message)
+                self.log.write(message)
+                print(traceback.format_exc())
+            # reset RUN button
+            self.ui.RunButton.setChecked(False)
+            self.ui.RunButton.setText('Go')
+            self.ui.PauseButton.setChecked(False)
+            self.ui.PauseButton.setText('Pause')
+            # wait for next command
+            self.item = self.queue.get()
+        # exit weaver thread
+        self.ui.statusbar.showMessage(self.exit_message)
+            
+    def InitMemory(self):
+        #################################################################
+        # get number samplers per Aline
+        samples = self.ui.Width.value()
+            
+        AlinesPerBline = self.ui.Height.value()
+        # print(self.ui.PixelFormat_display.text())
+        if self.ui.PixelFormat_display.text() in ['Mono8']:
+            data_type =  np.uint8
+        else:
+            data_type =  np.uint16
+            
+        for ii in range(self.memoryCount):
+             if self.ui.ACQMode.currentText() in ['RptBline', 'RptAline','SingleBline', 'SingleAline']:
+                 self.Memory[ii]=np.zeros([self.ui.BlineAVG.value(), AlinesPerBline, samples], dtype = data_type)
+             elif self.ui.ACQMode.currentText() in ['SingleCscan','Mosaic']:
+                 self.Memory[ii]=np.zeros([self.ui.BlineAVG.value()*self.ui.Height.value(), AlinesPerBline, samples], dtype = data_type)
+        ###########################################################################################
+        
+    def SingleScan(self, mode):
+        self.InitMemory()
+        an_action = DAction('ConfigureBoard')
+        self.DQueue.put(an_action)
+        ###########################################################################################
+        # start AODO 
+        an_action = AODOAction('ConfigTask')
+        self.AODOQueue.put(an_action)
+        # start camera
+        an_action = DAction('StartAcquire')
+        self.DQueue.put(an_action)
+
+        an_action = AODOAction('StartTask')
+        self.AODOQueue.put(an_action)
+        self.StagebackQueue.get()
+        start = time.time()
+
+        ######################################### collect data
+        # collect data from digitizer, data format: [Y pixels, Xpixels, Z pixels]
+        an_action = self.DbackQueue.get() # never time out
+        print('time to fetch data: '+str(round(time.time()-start,3)))
+        memoryLoc = an_action.action
+        # print(memoryLoc)
+        
+        an_action = AODOAction('StopTask')
+        self.AODOQueue.put(an_action)
+        
+        ############################################### display and save data
+        if self.ui.FFTDevice.currentText() in ['None']:
+            # put raw spectrum data into memory for dipersion compensation and background subtraction usage
+            self.data = self.Memory[memoryLoc].copy()
+            # In None mode, directly do display and save
+            if np.sum(self.data)<10:
+                print('spectral data all zeros!')
+                # self.ui.PrintOut.append('spectral data all zeros!')
+                self.log.write('spectral data all zeros!')
+                return mode + " got all zeros..."
+            an_action = DnSAction(mode, self.data, raw=True) # data in Memory[memoryLoc]
+            self.DnSQueue.put(an_action)
+        else:
+            # In other modes, do FFT first
+            an_action = GPUAction(self.ui.FFTDevice.currentText(), mode, memoryLoc)
+            self.GPUQueue.put(an_action)
+            
+        an_action = AODOAction('CloseTask')
+        self.AODOQueue.put(an_action)
+        self.StagebackQueue.get() # wait for AODO CloseTask
+        return mode + " successfully finished..."
+    
+            
+    def RptScan(self, mode):
+        self.InitMemory()
+        an_action = DAction('ConfigureBoard')
+        self.DQueue.put(an_action)
+        
+        # an_action = DnSAction('Clear')
+        # self.DnSQueue.put(an_action)
+        # config AODO
+        an_action = AODOAction('ConfigTask')
+        self.AODOQueue.put(an_action)
+        
+        data_backs = 0 # count number of data backs
+        
+        # start digitizer for one acuquqisition
+        an_action = DAction('StartAcquire')
+        self.DQueue.put(an_action)
+        # start AODO 
+        an_action = AODOAction('StartTask')
+        self.AODOQueue.put(an_action)
+        self.StagebackQueue.get()
+        
+        ######################################################### repeat acquisition until Stop button is clicked
+        while self.ui.RunButton.isChecked():
+            ######################################### collect data
+            # print('waiting...')
+            an_action = self.DbackQueue.get() # never time out
+            memoryLoc = an_action.action
+            # print(memoryLoc)
+            data_backs += 1
+            if memoryLoc < self.ui.DisplayRatio.value():
+                ######################################### display data
+                if self.ui.FFTDevice.currentText() in ['None']:
+                    # In None mode, directly do display and save
+                    data = self.Memory[memoryLoc].copy()
+                    an_action = DnSAction(mode, data, raw=True) # data in Memory[memoryLoc]
+                    self.DnSQueue.put(an_action)
+                else:
+                    # In other modes, do FFT first
+                    an_action = GPUAction(self.ui.FFTDevice.currentText(), mode, memoryLoc)
+                    self.GPUQueue.put(an_action)
+                ######################################## check if Pause or Stop button is clicked
+            # handle pause action
+            if self.ui.PauseButton.isChecked():
+                an_action = AODOAction('StopTask')
+                self.AODOQueue.put(an_action)
+                while self.ui.PauseButton.isChecked() and self.ui.RunButton.isChecked():
+                    time.sleep(0.5)
+                if not self.ui.PauseButton.isChecked():
+                    # start AODO 
+                    an_action = AODOAction('StartTask')
+                    self.AODOQueue.put(an_action)
+                    self.StagebackQueue.get()
+                    
+        an_action = AODOAction('tryStopTask')
+        self.AODOQueue.put(an_action)
+        # close AODO
+        an_action = AODOAction('CloseTask')
+        self.AODOQueue.put(an_action)
+        self.StagebackQueue.get() # wait for AODO CloseTask
+        # digitizer will close automatically
+        message = str(data_backs)+ ' data received by weaver'
+        self.log.write(message)
+        an_action = GPUAction('display_FFT_actions')
+        self.GPUQueue.put(an_action)
+        an_action = DnSAction('display_counts')
+        self.DnSQueue.put(an_action)
+        return mode + ' successfully finished...'
+  
+
+    
+        
+   
+    
+    def identify_agar(self, cscan, stripes, cscans):
+        value = np.mean(cscan,1)
+        # reshape into Ypixels x Xpixels matrix
+        value = value.reshape([self.ui.Height.value()*self.ui.BlineAVG.value(),\
+                               self.ui.Width.value()*self.ui.AlineAVG.value()+ \
+                               self.ui.PreClock.value()*2 + self.ui.PostClock.value()])
+        # trim galvo fly-back data
+        value = value[:,self.ui.PreClock.value():self.ui.PreClock.value()+\
+                      self.ui.Width.value()*self.ui.AlineAVG.value()]
+        # # downsample X dimension
+        # value = value.reshape([self.ui.Height.value()*self.ui.BlineAVG.value(),\
+        #                        self.ui.Width.value()*self.ui.AlineAVG.value()//self.Yds,self.Yds]).mean(-1)
+        self.ui.tileMean.setValue(np.mean(value))
+        if np.sum(value > self.ui.AgarValue.value())>value.shape[1]*value.shape[0]*0.05: 
+            self.tile_flag[stripes - 1][cscans] = 1
+            self.ui.TissueRadio.setChecked(True)
+            self.tmp_cscan = self.tmp_cscan + cscan/100.0
+        else:
+            self.ui.TissueRadio.setChecked(False)
+            
+    def Focusing(self, cscan):
+        ######################################################### find average slice surface
+        cscan = cscan.reshape([self.ui.Height.value()*self.ui.BlineAVG.value(),\
+                               self.ui.Width.value()*self.ui.AlineAVG.value()+ self.ui.PreClock.value()*2 + self.ui.PostClock.value(),\
+                               self.ui.DepthRange.value()])
+        bscan = cscan.mean(0)
+        # remove galvo flayback data
+        bscan = bscan[self.ui.PreClock.value():self.ui.PreClock.value()+self.ui.Width.value()*self.ui.AlineAVG.value(),:]
+        # flatten surface
+        if np.any(self.surfCurve):
+            bscan_flatten = np.zeros(bscan.shape, dtype = np.float32)
+            for xx in range(bscan_flatten.shape[0]):
+                bscan_flatten[xx,0:bscan.shape[1]-self.surfCurve[xx]] = bscan[xx,self.surfCurve[xx]:]
+            plt.figure()
+            plt.imshow(bscan_flatten)
+            plt.savefig('slice'+str(self.ui.CuSlice.value())+'surface.jpg')
+            plt.close()
+        else:
+            bscan_flatten = bscan
+        # find tile surface
+        ascan = bscan_flatten.mean(0)
+        
+        surfHeight = findchangept(ascan,1)
+
+        ##########################################################
+        self.ui.SurfHeight.setValue(surfHeight)
+        message = 'tile surf is:'+str(surfHeight)
+        print(message)
+        self.log.write(message)
+        delta_z = (self.ui.SurfHeight.value()-self.ui.SurfSet.value())*ZPIXELSIZE/1000.0
+        self.ui.ZIncrease.setValue(delta_z)
+        
+    def ZstageRepeatibility(self):
+        mode = self.ui.ACQMode.currentText()
+        device = self.ui.FFTDevice.currentText()
+        self.ui.ACQMode.setCurrentText('SingleAline')
+        self.ui.FFTDevice.setCurrentText('GPU')
+        current_Xposition = self.ui.XPosition.value()
+        current_Yposition = self.ui.YPosition.value()
+        current_Zposition = self.ui.ZPosition.value()
+        iteration = 50
+        for i in range(iteration):
+            if not self.ui.ZstageTest.isChecked():
+                message = 'Stage test stopped by user...'
+                break
+            # measure ALine
+            message = self.SingleScan(self.ui.ACQMode.currentText())
+            self.log.write(message)
+            # self.ui.PrintOut.append(message)
+            failed_times = 0
+            while message != self.ui.ACQMode.currentText()+" successfully finished...":
+                failed_times+=1
+                if failed_times > 10:
+                    self.ui.ACQMode.setCurrentText(mode)
+                    self.ui.FFTDevice.setCurrentText(device)
+                    self.ui.Gotozero.setChecked(False)
+                    return message
+                message = self.SingleScan(self.ui.ACQMode.currentText())
+                self.log.write(message)
+                # self.ui.PrintOut.append(message)
+                time.sleep(1)
+            time.sleep(0.1)
+            
+            if not self.ui.ZstageTest.isChecked():
+                message = 'Stage test stopped by user...'
+                break
+            self.ui.ZPosition.setValue(5)
+            an_action = AODOAction('Zmove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            if not self.ui.ZstageTest.isChecked():
+                message = 'Stage test stopped by user...'
+                break
+            # move to clear XY position
+            self.ui.XPosition.setValue(45)
+            an_action = AODOAction('Xmove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            if not self.ui.ZstageTest.isChecked():
+                message = 'Stage test stopped by user...'
+                break
+            self.ui.YPosition.setValue(20)
+            an_action = AODOAction('Ymove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            if not self.ui.ZstageTest.isChecked():
+                message = 'Stage test stopped by user...'
+                break
+            # move Z stage 
+            self.ui.ZPosition.setValue(40)
+            an_action = AODOAction('Zmove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            
+            self.ui.ZPosition.setValue(40.1)
+            an_action = AODOAction('Zmove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            
+            self.ui.ZPosition.setValue(40.15)
+            an_action = AODOAction('Zmove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            if not self.ui.ZstageTest.isChecked():
+                message = 'Stage test stopped by user...'
+                break
+            self.ui.ZPosition.setValue(5)
+            an_action = AODOAction('Zmove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            if not self.ui.ZstageTest.isChecked():
+                message = 'Stage test stopped by user...'
+                break
+            # move to original XY position
+            self.ui.XPosition.setValue(current_Xposition)
+            an_action = AODOAction('Xmove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            if not self.ui.ZstageTest.isChecked():
+                message = 'Stage test stopped by user...'
+                break
+            self.ui.YPosition.setValue(current_Yposition)
+            an_action = AODOAction('Ymove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            if not self.ui.ZstageTest.isChecked():
+                message = 'Stage test stopped by user...'
+                break
+            # move Z stage up
+            self.ui.ZPosition.setValue(current_Zposition)
+            an_action = AODOAction('Zmove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            
+        self.ui.ZstageTest.setChecked(False)
+        # self.weaverBackQueue.put(0)
+        self.ui.ACQMode.setCurrentText(mode)
+        self.ui.FFTDevice.setCurrentText(device)
+        return 'Stage test successfully finished...'
+        
+    def ZstageRepeatibility2(self):
+        mode = self.ui.ACQMode.currentText()
+        device = self.ui.FFTDevice.currentText()
+        self.ui.FFTDevice.setCurrentText('GPU')
+        self.ui.ACQMode.setCurrentText('SingleAline')
+        current_position = self.ui.ZPosition.value() # this is the target Z pos in this test
+        iteration = 100
+        for i in range(iteration):
+            if not self.ui.ZstageTest2.isChecked():
+                break
+            # measure ALine
+            message = self.SingleScan(self.ui.ACQMode.currentText())
+            self.log.write(message)
+            while message != self.ui.ACQMode.currentText()+" successfully finished...":
+                message = self.SingleScan(self.ui.ACQMode.currentText())
+                self.log.write(message)
+                # self.ui.PrintOut.append(message)
+                time.sleep(1)
+            time.sleep(0.1) # let GUI update Aline 
+            # move Z stage down
+            
+            self.ui.ZPosition.setValue(3)
+            an_action = AODOAction('Zmove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            
+            self.ui.XPosition.setValue(70)
+            an_action = AODOAction('Xmove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            self.ui.YPosition.setValue(20)
+            an_action = AODOAction('Ymove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            # remeasure background
+            self.get_background()
+            
+            self.ui.ZPosition.setValue(7)
+            an_action = AODOAction('Zmove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            
+            # go to defined zero
+            self.ui.Gotozero.setChecked(True)
+            message = self.Gotozero()
+            self.ui.statusbar.showMessage(message)
+            if message != 'gotozero success...':
+                message = 'go to zero failed, abort test...'
+                print(message)
+                # self.ui.PrintOut.append(message)
+                self.log.write(message)
+                break
+            else:
+                # move to target height
+                self.ui.ZPosition.setValue(current_position)
+                an_action = AODOAction('Zmove2')
+                self.AODOQueue.put(an_action)
+                self.StagebackQueue.get()
+            self.ui.ACQMode.setCurrentText('SingleAline')
+            self.ui.FFTDevice.setCurrentText('GPU')
+            
+            
+        self.ui.ZstageTest2.setChecked(False)
+        # self.weaverBackQueue.put(0)
+        self.ui.ACQMode.setCurrentText(mode)
+        self.ui.FFTDevice.setCurrentText(device)
+
+    def read_background(self):
+        if self.Digitizer == 'Alazar':
+            samples = self.ui.PreSamples.value()+self.ui.PostSamples.value()
+        elif self.Digitizer == 'ART':
+            samples = self.ui.PostSamples_2.value() - self.ui.DelaySamples.value()-self.ui.TrimSamples.value()
+        background_path = self.ui.BG_DIR.text()
+
+        if os.path.isfile(background_path):
+            self.background = np.fromfile(background_path, dtype=np.float32)
+        else:
+            self.background = np.float32(np.ones(samples)*2048)
+            
+        if not len(self.background) == samples:
+            self.background = np.float32(np.ones(samples)*2048)
+            
+        
+    def get_background(self):
+        print('start getting background...')
+        mode = self.ui.ACQMode.currentText()
+        device = self.ui.FFTDevice.currentText()
+        BAvg = self.ui.BlineAVG.value()
+        self.ui.ACQMode.setCurrentText('SingleBline')
+        self.ui.FFTDevice.setCurrentText('None')
+        self.ui.BlineAVG.setValue(50)
+        ############################# measure an Aline
+        print('acquiring Bline')
+        self.BackgroundScan('SingleBline')
+        time.sleep(2)
+        print('got Bline')
+        #######################################################################
+        Xpixels = self.ui.Width.value()
+        Yrpt = self.ui.BlineAVG.value()
+        BLINE = self.data.reshape([Yrpt, Xpixels, self.ui.Height.value()])
+        
+        background = np.transpose(np.float32(np.mean(BLINE,0)))
+        # print(background.shape)
+        filePath = self.ui.DIR.toPlainText()
+        current_time = datetime.datetime.now()
+        filePath = filePath + "/" + 'background_'+\
+            str(current_time.year)+'-'+\
+            str(current_time.month)+'-'+\
+            str(current_time.day)+'-'+\
+            str(current_time.hour)+'-'+\
+            str(current_time.minute)+'-'+\
+            str(current_time.second)+\
+            '.bin'
+        fp = open(filePath, 'wb')
+        background.tofile(fp)
+        fp.close()
+        
+        self.ui.BG_DIR.setText(filePath)
+        self.ui.ACQMode.setCurrentText(mode)
+        self.ui.FFTDevice.setCurrentText(device)
+        self.ui.BlineAVG.setValue(BAvg)
+        return 'background measruement success...'
+    
+    def BackgroundScan(self, mode):
+        self.InitMemory()
+        an_action = DAction('ConfigureBoard')
+        self.DQueue.put(an_action)
+
+        # start digitizer, it will stop automatically when all Blines are acquired
+        an_action = DAction('AcquireOnce')
+        self.DQueue.put(an_action)
+        start = time.time()
+        ######################################### collect data
+        # collect data from digitizer, data format: [Y pixels, X*Z pixels]
+        an_action = self.DbackQueue.get() # never time out
+        print('time to fetch data: '+str(round(time.time()-start,3)))
+        # self.StagebackQueue.get() # wait for AODO CloseTask
+        memoryLoc = an_action.action
+        ############################################### display and save data
+        if self.ui.FFTDevice.currentText() in ['None']:
+            # put raw spectrum data into memory for dipersion compensation and background subtraction usage
+            self.data = self.Memory[memoryLoc].copy()
+            # In None mode, directly do display and save
+            if np.sum(self.data)<10:
+                print('spectral data all zeros!')
+                # self.ui.PrintOut.append('spectral data all zeros!')
+                self.log.write('spectral data all zeros!')
+                return mode + " got all zeros..."
+            an_action = DnSAction(mode, self.data, raw=True) # data in Memory[memoryLoc]
+            self.DnSQueue.put(an_action)
+        return mode + " successfully finished..."
+    
+    
+    def get_surfCurve(self):
+        
+        mode = self.ui.ACQMode.currentText()
+        device = self.ui.FFTDevice.currentText()
+        self.ui.ACQMode.setCurrentText('SingleCscan')
+        self.ui.FFTDevice.setCurrentText('GPU')
+        self.ui.DSing.setChecked(True)
+        ############################# measure an Cscan
+        self.SingleScan('SingleCscan')
+        while self.GPU2weaverQueue.qsize()<1:
+            time.sleep(1)
+        cscan =self.GPU2weaverQueue.get()
+  
+        Zpixels = self.ui.DepthRange.value()
+        # get number of X pixels
+        Xpixels = self.ui.Width.value()*self.ui.AlineAVG.value()
+        if self.Digitizer == 'ART':
+            Xpixels = Xpixels + self.ui.PreClock.value()*2 + self.ui.PostClock.value()
+        # get number of Y pixels
+        Ypixels = self.ui.Height.value()*self.ui.BlineAVG.value()
+        # reshape into Ypixels x Xpixels x Zpixels
+        cscan = cscan.reshape([Ypixels,Xpixels,Zpixels])
+        # trim fly-back pixels
+        if self.Digitizer == 'ART':    
+            cscan = cscan[:,self.ui.PreClock.value():self.ui.Width.value()*self.ui.AlineAVG.value()+self.ui.PreClock.value()]
+            Xpixels = self.ui.Width.value()*self.ui.AlineAVG.value()
+        
+        Bline = np.float32(np.mean(cscan,0))
+        surfCurve = np.zeros([Xpixels])
+        import matplotlib.pyplot as plt
+        plt.figure()
+        plt.imshow(Bline)
+        plt.title('Bline for finding surface')
+        for xx in range(Xpixels):
+            surfCurve[xx] = findchangept(Bline[xx,:],1)
+        
+        surfCurve = surfCurve - min(surfCurve)
+        import matplotlib.pyplot as plt
+        plt.figure()
+        plt.plot(surfCurve)
+        plt.title('surface')
+        plt.figure()
+
+        filePath = self.ui.DIR.toPlainText()
+        filePath = filePath + "/" + 'surfCurve.bin'
+        fp = open(filePath, 'wb')
+        np.uint16(surfCurve).tofile(fp)
+        fp.close()
+        
+        self.ui.Surf_DIR.setText(filePath)
+        self.ui.ACQMode.setCurrentText(mode)
+        self.ui.FFTDevice.setCurrentText(device)
+        self.ui.DSing.setChecked(False)
+        
+        # load surface profile for high res imaging
+        if os.path.isfile(self.ui.Surf_DIR.text()):
+            self.surfCurve = np.uint16(np.fromfile(self.ui.Surf_DIR.text(), dtype=np.uint16))
+            if self.surfCurve.shape[0] != Xpixels:
+                self.surfCurve = np.zeros([Xpixels],dtype = np.uint16)
+                print('surface data not match FOV setting, using all zeros')
+                self.surfCurve = np.zeros([Xpixels],dtype = np.uint16)
+        else:
+            print('surface data not found, using all zeros')
+            self.surfCurve = np.zeros([Xpixels],dtype = np.uint16)
+        return 'surface measruement success...'
+    

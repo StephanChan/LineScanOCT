@@ -1,0 +1,23 @@
+Stage position updated...
+no disperison compensation found...using default
+no background found...using default
+SingleBline successfully finished...
+639 data received by weaver
+RptBline successfully finished...
+64 FFT actions taken place
+
+64 Blines displayed
+
+1025 data received by weaver
+RptAline successfully finished...
+103 FFT actions taken place
+
+0 Blines displayed
+
+SingleCscan successfully finished...
+
+ an FFT action took 8.059 s
+
+
+An error occurred: skip the display and save action
+

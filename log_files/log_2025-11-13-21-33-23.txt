@@ -1,0 +1,27 @@
+Stage position updated...
+no disperison compensation found...using default
+no background found...using default
+133 data received by weaver
+RptBline successfully finished...
+0 FFT actions taken place
+
+42 Blines displayed
+
+96 data received by weaver
+RptBline successfully finished...
+0 FFT actions taken place
+
+27 Blines displayed
+
+66 data received by weaver
+0 FFT actions taken place
+
+RptBline successfully finished...
+21 Blines displayed
+
+73 data received by weaver
+0 FFT actions taken place
+
+RptBline successfully finished...
+21 Blines displayed
+
