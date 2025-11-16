@@ -472,6 +472,9 @@
                <property name="maximum">
                 <number>100</number>
                </property>
+               <property name="value">
+                <number>10</number>
+               </property>
                <property name="orientation">
                 <enum>Qt::Horizontal</enum>
                </property>
@@ -481,6 +484,9 @@
               <widget class="QScrollBar" name="Dynmin">
                <property name="minimum">
                 <number>1</number>
+               </property>
+               <property name="maximum">
+                <number>100</number>
                </property>
                <property name="value">
                 <number>1</number>
@@ -578,6 +584,32 @@
           <string>FOV</string>
          </attribute>
          <layout class="QGridLayout" name="gridLayout_15">
+          <item row="0" column="3">
+           <spacer name="horizontalSpacer_6">
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item row="0" column="0">
+           <widget class="QLabel" name="label_59">
+            <property name="maximumSize">
+             <size>
+              <width>200</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="text">
+             <string>拍摄模式：</string>
+            </property>
+           </widget>
+          </item>
           <item row="2" column="1">
            <widget class="QComboBox" name="Objective">
             <item>
@@ -602,26 +634,6 @@
             </item>
            </widget>
           </item>
-          <item row="2" column="0">
-           <widget class="QLabel" name="ObjectiveLabel">
-            <property name="text">
-             <string>物镜选择：</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="3">
-           <spacer name="horizontalSpacer_6">
-            <property name="orientation">
-             <enum>Qt::Horizontal</enum>
-            </property>
-            <property name="sizeHint" stdset="0">
-             <size>
-              <width>40</width>
-              <height>20</height>
-             </size>
-            </property>
-           </spacer>
-          </item>
           <item row="0" column="1">
            <widget class="QComboBox" name="ACQMode">
             <property name="minimumSize">
@@ -638,47 +650,34 @@
             </property>
             <item>
              <property name="text">
-              <string>SingleBline</string>
+              <string>FiniteBline</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>RptBline</string>
+              <string>ContinuousBline</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>SingleAline</string>
+              <string>FiniteAline</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>RptAline</string>
+              <string>ContinuousAline</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>SingleCscan</string>
+              <string>FiniteCscan</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>Mosaic</string>
+              <string>ContinuousCscan</string>
              </property>
             </item>
-           </widget>
-          </item>
-          <item row="0" column="0">
-           <widget class="QLabel" name="label_59">
-            <property name="maximumSize">
-             <size>
-              <width>200</width>
-              <height>16777215</height>
-             </size>
-            </property>
-            <property name="text">
-             <string>拍摄模式：</string>
-            </property>
            </widget>
           </item>
           <item row="0" column="2" rowspan="3">
@@ -831,10 +830,17 @@
             </layout>
            </widget>
           </item>
-          <item row="1" column="1">
-           <widget class="QCheckBox" name="DyncheckBox">
+          <item row="2" column="0">
+           <widget class="QLabel" name="ObjectiveLabel">
             <property name="text">
-             <string>计算活性？</string>
+             <string>物镜选择：</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QCheckBox" name="DynCheckBox">
+            <property name="text">
+             <string>Calculate Dynamic?</string>
             </property>
            </widget>
           </item>
@@ -1880,7 +1886,7 @@
            </widget>
           </item>
           <item row="0" column="1">
-           <widget class="QSpinBox" name="Height">
+           <widget class="QSpinBox" name="AlinesPerBline">
             <property name="enabled">
              <bool>false</bool>
             </property>
@@ -2163,7 +2169,7 @@
                   </widget>
                  </item>
                  <item row="3" column="4">
-                  <widget class="QSpinBox" name="Width">
+                  <widget class="QSpinBox" name="NSamples">
                    <property name="wrapping">
                     <bool>false</bool>
                    </property>

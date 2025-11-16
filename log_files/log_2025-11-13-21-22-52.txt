@@ -1,9 +1,0 @@
-Stage position updated...
-no disperison compensation found...using default
-no background found...using default
-325 data received by weaver
-RptBline successfully finished...
-0 Blines displayed
-
-0 FFT actions taken place
-

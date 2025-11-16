@@ -12,8 +12,7 @@ Created on Mon Dec 11 19:41:46 2023
 
 import numpy as np
 import os
-from PyQt5.QtGui import QPixmap
-import qimage2ndarray as qpy
+from PyQt5.QtGui import QPixmap, QImage
 from matplotlib import pyplot as plt
 
 class LOG():
@@ -52,7 +51,7 @@ def GenGalvoWave(StepSize = 1, Steps = 1000, AVG = 1, obj = '5X', postclocks = 5
         status = 'objective not calibrated, abort generating Galvo waveform'
         return None, status
     # X range is product of steps and step size
-    Xrange = StepSize*Steps/AVG/1000
+    Xrange = StepSize*Steps/1000
     # max voltage is converted from half of max X range plus bias divided by angle2mm ratio
     # extra division by 2 is because galvo angle change is only half of beam deviation angle
     Vmax = (Xrange/2)/angle2mmratio/2+Galvo_bias
@@ -61,6 +60,9 @@ def GenGalvoWave(StepSize = 1, Steps = 1000, AVG = 1, obj = '5X', postclocks = 5
     steps2=postclocks
     # linear waveform
     waveform=np.linspace(Vmin, Vmax, Steps)
+    # Bline average
+    waveform = np.tile(waveform,(AVG,1)).transpose().flatten()
+    
     # print(len(waveform))
     # fly-back waveform
     Postwave = (Vmax-Vmin)/2*np.cos(np.arange(0,np.pi,np.pi/steps2))+(Vmax+Vmin)/2
@@ -71,14 +73,14 @@ def GenGalvoWave(StepSize = 1, Steps = 1000, AVG = 1, obj = '5X', postclocks = 5
     return waveform, status
 
 
-def GenAODO(mode='RptBline',obj = '5X',postclocks = 50, YStepSize = 1, YSteps = 200, BVG = 1, Galvo_bias = 0):
+def GenAODO(mode='ContinuousBline',obj = '5X',postclocks = 50, YStepSize = 1, YSteps = 200, BVG = 1, Galvo_bias = 0):
     # BVG: Bline average
     # bias: Galvo bias voltage
     # postclocks: #Aline triggers for Galvo fly-back
     
     # DO clock is synchronuous with Galvo waveform
     # DO configure: port0 line 0 
-    if mode in ['RptAline', 'SingleAline', 'RptBline', 'SingleBline']:
+    if mode in ['ContinuousAline', 'FiniteAline', 'ContinuousBline', 'FiniteBline']:
         
         AOwaveform = np.ones(BVG*2) * Galvo_bias
         DOwaveform = np.ones([BVG, 2],dtype = np.uint32)
@@ -87,10 +89,10 @@ def GenAODO(mode='RptBline',obj = '5X',postclocks = 50, YStepSize = 1, YSteps = 
         status = 'waveform updated'
         return np.uint32(DOwaveform), AOwaveform, status
     
-    elif mode in ['SingleCscan','Mosaic']:
+    elif mode in ['FiniteCscan','ContinuousCscan', 'Mosaic']:
         # generate AO waveform for Galvo control for one Bline
-        AOwaveform, status = GenGalvoWave(YStepSize, YSteps*2, BVG*2, obj, postclocks, Galvo_bias)
-        DOwaveform = np.ones([YSteps, 2],dtype = np.uint32)
+        AOwaveform, status = GenGalvoWave(YStepSize, YSteps, BVG*2, obj, postclocks, Galvo_bias)
+        DOwaveform = np.ones([AOwaveform.shape[0]//2, 2],dtype = np.uint32)
         DOwaveform[:,1] = 0
         DOwaveform=DOwaveform.flatten()
         status = 'waveform updated'
@@ -180,20 +182,45 @@ def ScatterPlot(mosaic):
     return pixmap
 
 
-def ImagePlot(matrix, m=0, M=1):
-    matrix = np.array(matrix)
-    matrix[matrix<m] = m
-    matrix[matrix>M] = M
-    # adjust image brightness
-    data = np.uint8((matrix-m)/np.abs(M-m+0.00001)*255.0)
-    try:
-        im = qpy.gray2qimage(data)
-        pixmap = QPixmap(im)
-    except:
-        # print(data.shape)
-        pixmap = QPixmap(qpy.gray2qimage(np.zeros(1000,1000)))
-    return pixmap
     
+def RGBImagePlot(matrix1 = [], matrix2 = [], m=0, M=1):
+    if len(matrix1)>0:
+        matrix1 = np.array(matrix1)
+        matrix1[matrix1<m] = m
+        matrix1[matrix1>M] = M
+        matrix1 = np.uint8((matrix1-m)/np.abs(M-m+0.00001)*127)
+        height, width = matrix1.shape
+    if len(matrix2)>0:
+        matrix2 = np.array(matrix2)
+        matrix2[matrix2<m] = m
+        matrix2[matrix2>M] = M
+        # adjust image brightness
+        
+        matrix2 = np.uint8((matrix2-m)/np.abs(M-m+0.00001)*127)
+   
+        height, width = matrix2.shape
+    
+    if len(matrix1)==0:
+        matrix1 = np.zeros(matrix2.shape)
+    if len(matrix2)==0:
+        matrix2 = np.zeros(matrix1.shape)
+    # Create an empty RGB array
+    rgb_array = np.zeros((height, width, 3), dtype=np.uint8)
+    
+    
+    # Assign each channel
+    rgb_array[..., 0] = matrix1 + matrix2   # Red channel
+    rgb_array[..., 1] = matrix1 # Green channel
+    rgb_array[..., 2] = matrix1  # Blue channel
+    
+    # Convert to QImage
+    bytes_per_line = 3 * width
+    qimage = QImage(rgb_array.data, width, height, bytes_per_line, QImage.Format_RGB888)
+    
+    # Convert to QPixmap and display
+    pixmap = QPixmap.fromImage(qimage)
+    return pixmap
+
 def findchangept(signal, step):
     # python implementation of matlab function findchangepts
     L = len(signal)

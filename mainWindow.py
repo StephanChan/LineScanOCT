@@ -70,7 +70,7 @@ Magnification10X = 6.8
 
 #         # the layout of the dialog screated
 #         view = View(Item('scene', editor=SceneEditor(scene_class=MayaviScene),
-#                           height=250, width=300, show_label=False),
+#                           AlinesPerBline=250, width=300, show_label=False),
 #                     resizable=True # We need this to resize with the parent widget
 #                     )
         
@@ -176,10 +176,10 @@ class MainWindow(QMainWindow):
         # select camera brand
         if self.ui.Camera.currentText() == 'PhotonFocus':
             CameraPixelSize = 9 # um
-            MaxWidth = 1100
+            MaxHeight = 1100
         elif self.ui.Camera.currentText() == 'XingTu':
             CameraPixelSize = 6.5 # um
-            MaxWidth = 1024
+            MaxHeight = 1024
         else:
             status = 'camera not calibrated, abort FOV calculation'
             self.ui.statusbar.showMessage(status)
@@ -187,13 +187,13 @@ class MainWindow(QMainWindow):
         # select objective magnification
         if self.ui.Objective.currentText() == '5X':
             cameraStepSize =  CameraPixelSize/Magnification10X*2 # um
-            MaxXLength = cameraStepSize/1000.0*MaxWidth
+            MaxXLength = cameraStepSize/1000.0*MaxHeight
         elif self.ui.Objective.currentText() == '10X':
             cameraStepSize = CameraPixelSize/Magnification10X # um
-            MaxXLength = cameraStepSize/1000.0*MaxWidth
+            MaxXLength = cameraStepSize/1000.0*MaxHeight
         elif self.ui.Objective.currentText() == '20X':
             cameraStepSize =  CameraPixelSize/Magnification10X/2 # um
-            MaxXLength = cameraStepSize/1000.0*MaxWidth
+            MaxXLength = cameraStepSize/1000.0*MaxHeight
         else:
             status = 'objective not calibrated, abort generating Galvo waveform'
             self.ui.statusbar.showMessage(status)
@@ -203,15 +203,15 @@ class MainWindow(QMainWindow):
         # set XLength limit
         self.ui.XLength.setMaximum(MaxXLength)
         
-        # Calculate Height pixel numbers based on user set FOV size
-        Width = np.uint16(np.round(self.ui.XLength.value()*1000/cameraStepSize))
-        self.ui.Height.setValue(Width)
+        # Calculate AlinesPerBline pixel numbers based on user set FOV size
+        AlinesPerBline = np.uint16(np.round(self.ui.XLength.value()*1000/cameraStepSize))
+        self.ui.AlinesPerBline.setValue(AlinesPerBline)
         # set offsetH limit
-        # self.ui.offsetH.setMaximum((MaxWidth - Width)//2)
-        self.ui.Xoffsetlength.setMaximum((MaxWidth - Width)//2*cameraStepSize/1000)
-        self.ui.Xoffsetlength.setMinimum(-(MaxWidth - Width)//2*cameraStepSize/1000)
+        # self.ui.offsetH.setMaximum((MaxHeight - Height)//2)
+        self.ui.Xoffsetlength.setMaximum((MaxHeight - AlinesPerBline)//2*cameraStepSize/1000)
+        self.ui.Xoffsetlength.setMinimum(-(MaxHeight - AlinesPerBline)//2*cameraStepSize/1000)
         # Calculate offsetH pixel numbers based on corrected user set offsetLength
-        offsetH = (MaxWidth - Width)//2 + np.int16(np.round(self.ui.Xoffsetlength.value()*1000/cameraStepSize))
+        offsetH = (MaxHeight - AlinesPerBline)//2 + np.int16(np.round(self.ui.Xoffsetlength.value()*1000/cameraStepSize))
         # print(offsetH)
         self.ui.offsetH.setValue(offsetH)
         
@@ -228,15 +228,15 @@ class MainWindow(QMainWindow):
             self.ui.statusbar.showMessage(status)
             return None, status
         
-        # Calculate Height pixel numbers based on user set FOV size
-        Ypixels = np.uint16(np.round(self.ui.YLength.value()*1000/self.ui.YStepSize.value()*self.ui.BlineAVG.value()))
+        # Calculate AlinesPerBline pixel numbers based on user set FOV size
+        Ypixels = np.uint16(np.round(self.ui.YLength.value()*1000/self.ui.YStepSize.value()))
         self.ui.Ypixels.setValue(Ypixels)
         # Calculate offsetH pixel numbers based on corrected user set offsetLength
         self.ui.GalvoBias.setValue(self.ui.Yoffsetlength.value()/angle2mmratio)
         
-    def Adjust_Bline_height(self):
+    def Adjust_Bline_Height(self):
         self.ui.DepthStart.setValue(1024 - self.ui.DepthStartBar.value())
-        self.ui.DepthRange.setValue(self.ui.DepthStartBar.value() - self.ui.DepthEndBar.value())
+        self.ui.DepthRange.setValue(np.max([self.ui.DepthStartBar.value() - self.ui.DepthEndBar.value(),1]))
         
     def SaveSettings(self):
         settings = qc.QSettings("config.ini", qc.QSettings.IniFormat)
@@ -265,8 +265,8 @@ class MainWindow(QMainWindow):
         self.ui.Yoffsetlength.valueChanged.connect(self.Calculate_Galvo_settings)
         self.ui.YStepSize.valueChanged.connect(self.Calculate_Galvo_settings)
         self.ui.BlineAVG.valueChanged.connect(self.Calculate_Galvo_settings)
-        self.ui.DepthStartBar.valueChanged.connect(self.Adjust_Bline_height)
-        self.ui.DepthEndBar.valueChanged.connect(self.Adjust_Bline_height)
+        self.ui.DepthStartBar.valueChanged.connect(self.Adjust_Bline_Height)
+        self.ui.DepthEndBar.valueChanged.connect(self.Adjust_Bline_Height)
         
         # self.ui.Objective.currentTextChanged.connect(self.update_galvoXwaveform)
         # self.ui.PreClock.valueChanged.connect(self.update_galvoXwaveform)
@@ -475,14 +475,14 @@ class MainWindow(QMainWindow):
             self.ui.MosaicLabel.setPixmap(pixmap)
         
     def Calculate_ImageDepth(self):
-        self.image_depths = GenHeights(self.ui.ImageZStart.value(),\
+        self.image_depths = GenAlinesPerBlines(self.ui.ImageZStart.value(),\
                                        self.ui.ImageZDepth.value(),\
                                        self.ui.ImageZnumber.value())
         #print(self.image_depths)
         #self.ui.statusbar.showMessage(self.image_depths)
             
     def Calculate_SliceDepth(self):
-        self.slice_depths = GenHeights(self.ui.SliceZStart.value(),\
+        self.slice_depths = GenAlinesPerBlines(self.ui.SliceZStart.value(),\
                                        self.ui.SliceZDepth.value(),\
                                        self.ui.SliceZnumber.value())
         #print(self.slice_depths)
