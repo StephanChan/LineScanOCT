@@ -7,11 +7,11 @@ Created on Tue Dec 12 18:26:44 2023
 """
 
 from PyQt5.QtCore import  QThread
-from Generaic_functions import LinePlot, ImagePlot, findchangept
+from Generaic_functions import LinePlot, findchangept, RGBImagePlot
 import numpy as np
 import traceback
 global SCALE
-SCALE =10000
+SCALE =1000
 import matplotlib.pyplot as plt
 import datetime
 import os
@@ -22,12 +22,16 @@ import time
 class DnSThread(QThread):
     def __init__(self):
         super().__init__()
-        self.surf = []
+        self.SampleDynamic= []
+        self.SampleMosaic= []
         self.sliceNum = 0
         self.tileNum = 1
         self.AlineNum = 1
         self.BlineNum = 1
+        self.BlineDynNum = 1
+        self.DynamicBlineIdx = 0
         self.CscanNum = 1
+        self.CscanDynNum = 1
         self.totalTiles = 0
         self.display_actions = 0
         
@@ -37,37 +41,45 @@ class DnSThread(QThread):
         self.XZmin = self.ui.XZmin.value()
         self.Intmax = self.ui.Intmax.value()
         self.Intmin = self.ui.Intmin.value()
+        self.Dynmax = self.ui.Dynmax.value()
+        self.Dynmin = self.ui.Dynmin.value()
         
         self.QueueOut()
         
     def QueueOut(self):
-        num = 0
         self.item = self.queue.get()
         self.DnSflag = 'busy'
         while self.item.action != 'exit':
             start=time.time()
             #self.ui.statusbar.showMessage('Display thread is doing ' + self.item.action)
             try:
-                if self.item.action in ['SingleAline','RptAline']:
-                    
-                    self.Display_aline(self.item.data, self.item.raw)
-                
-                elif self.item.action in ['SingleBline','RptBline']:
-                    self.Display_bline(self.item.data, self.item.raw)
+                if self.item.action in ['FiniteAline','ContinuousAline']:
                     self.display_actions += 1
+                    self.Display_aline(self.item.data, self.item.raw)
+                elif self.item.action in ['FiniteBline','ContinuousBline']:
+                    self.Display_bline(self.item.data, self.item.raw, self.item.dynamic)
+                    self.display_actions += 1
+                elif self.item.action in ['FiniteCscan','ContinuousCscan']:
+                    self.display_actions += 1
+                    if len(self.item.dynamic)>0:
+                        self.display_Cscan_Dynamic(self.item.data, self.item.dynamic)
+                    else:
+                        self.Display_Cscan(self.item.data, self.item.raw)
                     
-                elif self.item.action in ['SingleCscan','RptCscan']:
-                    self.Display_Cscan(self.item.data, self.item.raw)
                 elif self.item.action == 'Mosaic':
                     self.Process_Mosaic(self.item.data, self.item.raw, self.item.args)
                 elif self.item.action == 'display_mosaic':
                     self.Display_mosaic()
                 elif self.item.action == 'Clear':
-                    self.surf = []
-                elif self.item.action == 'UpdateContrastXY':
-                    self.Update_contrast_XY()
-                elif self.item.action == 'UpdateContrastSurf':
-                    self.Update_contrast_Surf()
+                    self.SampleDynamic= []
+                    self.SampleMosaic= []
+                    self.DynamicBlineIdx = 0
+                elif self.item.action == 'UpdateContrastBline':
+                    self.Update_contrast_Bline()
+                elif self.item.action == 'UpdateContrastMosaic':
+                    self.Update_contrast_Mosaic()
+                elif self.item.action == 'UpdateContrastDyn':
+                    self.Update_contrast_Dyn()
                 elif self.item.action == 'display_counts':
                     self.print_display_counts()
                 elif self.item.action == 'restart_tilenum':
@@ -89,7 +101,7 @@ class DnSThread(QThread):
                     self.ui.statusbar.showMessage(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
-                if time.time()-start>4:
+                if time.time()-start>0.1:
                     print('time for DnS:',round(time.time()-start,3))
             except Exception as error:
                 message = "\nAn error occurred:"+" skip the display and save action\n"
@@ -111,14 +123,14 @@ class DnSThread(QThread):
         self.log.write(message)
         self.display_actions = 0
         
-    def get_FOV_size(self, raw):
+    def get_FOV_size(self, raw=False):
         # get number of Z pixels
         if not raw:
             Zpixels = self.ui.DepthRange.value()
         else:
-            Zpixels = self.ui.Width.value()#-self.ui.DelaySamples.value()-self.ui.TrimSamples.value()
+            Zpixels = self.ui.NSamples.value()#-self.ui.DelaySamples.value()-self.ui.TrimSamples.value()
         # get number of X pixels
-        Xpixels = self.ui.Height.value()
+        Xpixels = self.ui.AlinesPerBline.value()
             
         Yrpt = self.ui.BlineAVG.value()
         
@@ -127,12 +139,12 @@ class DnSThread(QThread):
             
     def Display_aline(self, data, raw = False):
         Zpixels, Xpixels, Yrpt = self.get_FOV_size(raw)
-        # reshape data to [Ypixels,Xpixels, Zpixels]
-        data = data.reshape([Yrpt, Xpixels, Zpixels])
+        if Zpixels != data.shape[2]:
+            Zpixels = data.shape[2]
         Ascan = np.float32(np.mean(data,0))
         Ascan = Ascan[Xpixels//2]
         # print(Ascan)
-        self.Aline = data
+        self.Aline = Ascan
         # float32 data type
         if self.ui.FFTDevice.currentText() in ['None']:
             m=self.ui.XZmin.value()
@@ -140,14 +152,15 @@ class DnSThread(QThread):
         else:
             m=self.ui.XZmin.value()
             M=self.ui.XZmax.value()
+        t0=time.time()
         pixmap = LinePlot(Ascan, [], m, M)
+        print('time for line plot took ',round(time.time()-t0,3))
         # clear content on the waveformLabel
         self.ui.XZplane.clear()
         # update iamge on the waveformLabel
         self.ui.XZplane.setPixmap(pixmap)
         
         if self.ui.Save.isChecked():
-            data = data.reshape([Yrpt, Xpixels, Zpixels])
             tif = TIFF.open(self.ui.DIR.toPlainText()+'/'+self.AlineFilename([Yrpt,Xpixels,Zpixels]), mode='w')
             for ii in range(Yrpt):
                 # self.WriteData(data, self.AlineFilename([Yrpt,Xpixels,Zpixels]))
@@ -155,315 +168,179 @@ class DnSThread(QThread):
             tif.close()
             
     
-    def Display_bline(self, data, raw = False):
+    def Display_bline(self, data, raw = False, dynamic = []):
+        # print(data.shape)
         Zpixels, Xpixels, Yrpt = self.get_FOV_size(raw)
-        # reshape data
-        data = data.reshape([Yrpt,Xpixels,Zpixels])
+        if Zpixels != data.shape[2]:
+            Zpixels = data.shape[2]
         # print(data.shape)
         # print(data[0,0,0:5])
         # Bline averaging
-        if self.ui.BlineAVG.value() > 1:
-            # reshape into Ypixels x Xpixels x Zpixels
-            data1=np.mean(data,0)
-            Ypixels = self.ui.Height.value()
+        if data.shape[0] > 1:
+            Bline=np.mean(data,0)
         else:
-            data1 = data[0]
+            Bline = data[0]
         # Aline averaging if needed
         if self.ui.AlineAVG.value() > 1:
-            data1 = data1.reshape([self.ui.Width.value()//self.ui.AlineAVG.value(), self.ui.AlineAVG.value(), Zpixels])
-            data1 = np.mean(data1,1)
-            Xpixels = self.ui.Width.value()//self.ui.AlineAVG.value()
-            
-        self.Bline = data1
-        Bscan = data1
-        Bscan = np.transpose(Bscan).copy()
+            Bline = Bline.reshape([self.ui.NSamples.value()//self.ui.AlineAVG.value(), self.ui.AlineAVG.value(), Zpixels])
+            Bline = np.mean(Bline,1)
+            Xpixels = self.ui.NSamples.value()//self.ui.AlineAVG.value()
 
-        pixmap = ImagePlot(np.float32(Bscan), self.ui.XZmin.value(), self.ui.XZmax.value())
+        self.Bline = np.transpose(Bline)
+
+        if self.ui.DynCheckBox.isChecked():
+            self.DynBline = np.transpose(dynamic)
+            pixmap = RGBImagePlot(matrix1 = np.float32(self.Bline), matrix2 = np.float32(self.DynBline*1), m=self.ui.XZmin.value(), M=self.ui.XZmax.value())
+        else:
+            self.DynBline = []
+            pixmap = RGBImagePlot(matrix1 = np.float32(self.Bline), m=self.ui.XZmin.value(), M=self.ui.XZmax.value())
         # clear content on the waveformLabel
         self.ui.XZplane.clear()
         # update iamge on the waveformLabel
         self.ui.XZplane.setPixmap(pixmap)
         
         if self.ui.Save.isChecked():
-            # data = data.reshape([Yrpt, Xpixels, Zpixels])
             tif = TIFF.open(self.ui.DIR.toPlainText()+'/'+self.BlineFilename([Yrpt,Xpixels,Zpixels]), mode='w')
             for ii in range(Yrpt):
                 # self.WriteData(data, self.AlineFilename([Yrpt,Xpixels,Zpixels]))
                 tif.write_image(data[ii])
             tif.close()
-        
-        
-    def Display_Cscan(self, data, raw = False):
-        Zpixels, Xpixels, Yrpt = self.get_FOV_size(raw)
+            if self.ui.DynCheckBox.isChecked():
+                tif = TIFF.open(self.ui.DIR.toPlainText()+'/'+self.BlineDynFilename([Yrpt,Xpixels,Zpixels]), mode='w')
+                # self.WriteData(data, self.AlineFilename([Yrpt,Xpixels,Zpixels]))
+                tif.write_image(dynamic)
+                tif.close()
+            
+    def display_Cscan_Dynamic(self, data, dynamic):
+        # print(data.shape)
+        Zpixels, Xpixels, Yrpt = self.get_FOV_size()
+        if Zpixels != data.shape[2]:
+            Zpixels = data.shape[2]
         Ypixels = self.ui.Ypixels.value()
-        # reshape data
-        data = data.reshape([Ypixels, Xpixels, Zpixels])
-
+        # print(data.shape)
+        # print(data[0,0,0:5])
         # Bline averaging
-        if self.ui.BlineAVG.value() > 1:
-            # reshape into Ypixels x Xpixels x Zpixels
-            data = data.reshape([self.ui.Height.value(),self.ui.BlineAVG.value(), Xpixels,Zpixels])
-            data=np.mean(data,1)
-            Ypixels = self.ui.Height.value()
+        if data.shape[0] > 1:
+            Bline=np.mean(data,0)
+        else:
+            Bline = data[0]
         # Aline averaging if needed
         if self.ui.AlineAVG.value() > 1:
-            data = data.reshape([Ypixels,self.ui.Width.value(), self.ui.AlineAVG.value(), Zpixels])
-            data = np.mean(data,2)
-            Xpixels = self.ui.Width.value()
-            
-        self.Cscan = data
-        plane = np.transpose(data[0,:,:]).copy()# has to be first index, otherwise the memory space is not continuous
-        # print(plane.shape)
-        pixmap = ImagePlot(plane, self.ui.XZmin.value(), self.ui.XZmax.value())
+            Bline = Bline.reshape([self.ui.NSamples.value()//self.ui.AlineAVG.value(), self.ui.AlineAVG.value(), Zpixels])
+            Bline = np.mean(Bline,1)
+            Xpixels = self.ui.NSamples.value()//self.ui.AlineAVG.value()
+
+        self.Bline = np.transpose(Bline)
+
+        self.DynBline = np.transpose(dynamic)
+        pixmap = RGBImagePlot(matrix1 = np.float32(self.Bline), matrix2 = np.float32(self.DynBline*1), m=self.ui.XZmin.value(), M=self.ui.XZmax.value())
         # clear content on the waveformLabel
         self.ui.XZplane.clear()
-        # update image on the waveformLabel
+        # update iamge on the waveformLabel
         self.ui.XZplane.setPixmap(pixmap)
         
-        plane = np.mean(data,2)# has to be first index, otherwise the memory space is not continuous
-        pixmap = ImagePlot(plane, self.ui.XZmin.value(), self.ui.XZmax.value())
-        # clear content on the waveformLabel
-        self.ui.XYplane.clear()
-        # update image on the waveformLabel
-        self.ui.XYplane.setPixmap(pixmap)
-        ###################### plot 3D visulaization
-        if self.use_maya:
-            self.ui.mayavi_widget.visualization.update_data(self.Cscan/500)
-        if self.ui.Save.isChecked():
-            if raw:
-                data = np.uint16(self.Cscan)
-            else:
-                data = np.uint16(self.Cscan/SCALE*65535)
-            self.WriteData(data, self.CscanFilename([Ypixels,Xpixels,Zpixels]))
+        if len(self.SampleMosaic)==0:
+            self.SampleMosaic = np.zeros([Xpixels, Ypixels])
+            self.SampleDynamic = np.zeros([Xpixels, Ypixels])
+        # print(Bline.shape, self.SampleMosaic.shape)
+        self.SampleMosaic[:,self.DynamicBlineIdx] = np.mean(Bline,1)
+        self.SampleDynamic[:,self.DynamicBlineIdx] = np.mean(dynamic,1)
+        self.DynamicBlineIdx = self.DynamicBlineIdx + 1
         
-    def Init_Mosaic(self, raw = False, args = []):
-        Xpixels = self.ui.Width.value()#*self.ui.AlineAVG.value()
-        Ypixels = self.ui.Height.value()#*self.ui.BlineAVG.value()
-        
-        surfX = args[1][0]
-        surfY = np.int32(args[1][1]/args[1][0])
-        # adjust scale ###################
-        scale = self.ui.scale.value()
-
-        ###############
-        self.surf = np.zeros([ surfX*(Ypixels//scale),surfY*(Xpixels//scale)],dtype = np.float32)
-
-        pixmap = ImagePlot(self.surf, self.ui.Intmin.value(), self.ui.Intmax.value())
+        pixmap = RGBImagePlot(matrix1 = np.float32(self.SampleMosaic), m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
         # clear content on the waveformLabel
         self.ui.SampleMosaic.clear()
         # update iamge on the waveformLabel
         self.ui.SampleMosaic.setPixmap(pixmap)
         
-        # load surface profile for high res imaging
-        if os.path.isfile(self.ui.Surf_DIR.text()):
-            self.surfCurve = np.uint16(np.fromfile(self.ui.Surf_DIR.text(), dtype=np.uint16))
-            if self.surfCurve.shape[0] != Xpixels:
-                self.surfCurve = None
-                print('surface data not match FOV setting, using all zeros')
-        else:
-            print('surface data not found, using all zeros')
-            self.surfCurve = None
-        # plt.figure()
-        # plt.plot(self.surfCurve)
-        # plt.figure()
+        pixmap = RGBImagePlot(matrix2 = np.float32(self.SampleDynamic), m=self.ui.Dynmin.value(), M=self.ui.Dynmax.value())
+        # clear content on the waveformLabel
+        self.ui.SampleDynamic.clear()
+        # update iamge on the waveformLabel
+        self.ui.SampleDynamic.setPixmap(pixmap)
         
-        # load darf field for shading correction
-        if not self.ui.DSing.isChecked():
-            # if os.path.isfile(self.ui.DarkField_DIR.text()):
-            #     self.darkField = np.float32(np.fromfile(self.ui.DarkField_DIR.text(), dtype=np.float32))
-            #     self.darkField = self.darkField.reshape([Xpixels, Ypixels])
-            #     self.darkField = self.darkField.transpose()
-            # else:
-            #     print('dark field data not found, using all zeros')
-            #     self.darkField = None
-            # # load flat field for shading correction
-            # if os.path.isfile(self.ui.FlatField_DIR.text()):
-            #     self.flatField = np.float32(np.fromfile(self.ui.FlatField_DIR.text(), dtype=np.float32))
-            #     self.flatField = self.flatField.reshape([Xpixels, Ypixels])
-            #     self.flatField = self.flatField.transpose()
-            # else:
-            #     print('flat data not found, using all ones')
-            #     self.flatField = None
+        if self.ui.Save.isChecked():
+            CscanBlineFileName, CscanDynBlineFileName = self.CscanDynFilename([Yrpt,Xpixels,Zpixels])
+            tif = TIFF.open(self.ui.DIR.toPlainText()+'/'+CscanBlineFileName, mode='w')
+            for ii in range(Yrpt):
+                # self.WriteData(data, self.AlineFilename([Yrpt,Xpixels,Zpixels]))
+                tif.write_image(data[ii])
+            tif.close()
             
-            self.first_tile = True
-            #######################################
-            self.zmax_scale = self.ui.scale.value()
-            # ############## adjust scale
-            while Xpixels%self.zmax_scale or Ypixels%self.zmax_scale:
-                self.zmax_scale -= 1
-            message = '\nslice '+str(self.sliceNum)+' zmax scale is '+str(self.zmax_scale)+'\n'
-            print(message)
-            self.log.write(message)
+            tif = TIFF.open(self.ui.DIR.toPlainText()+'/'+CscanDynBlineFileName, mode='a')
+            # self.WriteData(data, self.AlineFilename([Yrpt,Xpixels,Zpixels]))
+            tif.write_image(dynamic)
+            tif.close()
+        
+        
+    def Display_Cscan(self, data, raw = False):
+        Zpixels, Xpixels, Yrpt = self.get_FOV_size(raw)
+        if Zpixels != data.shape[2]:
+            Zpixels = data.shape[2]
+        Ypixels = self.ui.Ypixels.value() * self.ui.BlineAVG.value()
 
-            
-    def Process_Mosaic(self, data, raw = False, args = []):
-        Zpixels, Xpixels, Ypixels = self.get_FOV_size(raw)
-        # reshape data
-        data = data.reshape([Ypixels, Xpixels, Zpixels])
-        # trim fly-back pixels
-        if self.Digitizer == 'ART':    
-            data = data[:,self.ui.PreClock.value():self.ui.Width.value()*self.ui.AlineAVG.value()+self.ui.PreClock.value(),:]
-            Xpixels = self.ui.Width.value()*self.ui.AlineAVG.value()
         # Bline averaging
         if self.ui.BlineAVG.value() > 1:
             # reshape into Ypixels x Xpixels x Zpixels
-            data = data.reshape([self.ui.Height.value(),self.ui.BlineAVG.value(), Xpixels,Zpixels])
-            data=np.mean(data,1)
-            Ypixels = self.ui.Height.value()
+            Cscan = data.reshape([self.ui.Ypixels.value(), self.ui.BlineAVG.value(), Xpixels,Zpixels])
+            Cscan=np.mean(Cscan,1)
+            Ypixels = self.ui.Ypixels.value()
+        else:
+            Cscan = data.copy()
         # Aline averaging if needed
         if self.ui.AlineAVG.value() > 1:
-            data = data.reshape([Ypixels,self.ui.Width.value(), self.ui.AlineAVG.value(), Zpixels])
-            data = np.mean(data,2)
-            Xpixels = self.ui.Width.value()
-        ########################################
-        # for odd strips, need to flip data in Y dimension and also the sequence
-        surfX = args[1][0]
-        surfY = np.int32(args[1][1]/args[1][0])
-        fileY = args[0][1]-1
-        if np.mod(fileY,2) == 0:
-            fileX = args[0][0]
-        else:
-            fileX = surfX - args[0][0]-1
+            Cscan = Cscan.reshape([Ypixels,self.ui.NSamples.value(), self.ui.AlineAVG.value(), Zpixels])
+            Cscan = np.mean(Cscan,2)
+            Xpixels = self.ui.NSamples.value()
             
-        ########################################################
-        if not raw:
-            start0=time.time()
-            #######################################
-            if np.any(self.surfCurve):
-                # CPU do surface flatterning, this takes about 1 sec
-                data_flatten = np.zeros(data.shape, dtype = np.float32)
-                for xx in range(Xpixels):
-                        data_flatten[:,xx,0:data.shape[2]-self.surfCurve[xx]] = data[:,xx,self.surfCurve[xx]:]
-            else:
-                data_flatten = data
-            if time.time()-start0 > 2:
-                print('flatten surface take', round(time.time()-start0,3))
-            
-            tmp = self.ui.SaveZstart.value()
-            start_pixel =  np.uint16(tmp if tmp>-0.5 else self.ui.SurfHeight.value()+4) ################# focus set to start from 4 pixels below surface
-            thickness = self.ui.SaveZrange.value()
-            # print(start_pixel, thickness)
-            if not self.ui.DSing.isChecked():
-                # calculate data_focus and data_ds
-                # print(data_flatten.shape)
-                data_focus = data_flatten[:,:,start_pixel:start_pixel + thickness]
-                # data_ds = data_flatten.reshape([Ypixels//self.zmax_scale, self.zmax_scale, Xpixels//self.zmax_scale, self.zmax_scale, Zpixels]).mean(-2).mean(1) #################### zmax set to use 3x3 downsampling
-                data_ds2 = data_flatten.reshape([Ypixels//20, 20, Xpixels//20, 20, Zpixels]).mean(-2).mean(1) #################### surfProfile set to use 10x10 downsampling
-                ###############################################################
-                # for odd strips, need to flip data in Y dimension and also the sequence
-                start0 = time.time()
-                if np.mod(fileY,2)==1:
-                    # data_ds = np.flip(data_ds,0)
-                    data_focus = np.flip(data_focus,0)
-                    data_ds2 = np.flip(data_ds2,0)
-                self.Cscan = data_focus
-                if time.time()-start0 > 2:
-                    print('time to flip data: ', round(time.time()-start0,3))
-                ########################################
-                # calculate AIP
-                AIP = np.mean(data_focus,2)
-                # shading correction
-                # if np.any(self.darkField) and np.any(self.flatField):
-                #     AIP = (AIP-self.darkField)/self.flatField
-                # calculate surface
-                start0 = time.time()
-                surfProfile = np.zeros([data_ds2.shape[0], data_ds2.shape[1]])
-                for yy in range(data_ds2.shape[0]):
-                    for xx in range(data_ds2.shape[1]):
-                        surfProfile[yy,xx] = findchangept(data_ds2[yy,xx,:],2)
-                if time.time()-start0 > 2:
-                    print('calculate surface', round(time.time()-start0,3))
-                
-
-                ######################################### save processed result
-                # check if this is the first tile
-                if self.first_tile:
-                    mode = 'w'
-                    self.first_tile = False
-                else:
-                    mode = 'a'
-                    
-                if self.ui.Save.isChecked():
-                    self.writeTiff(self.ui.DIR.toPlainText()+'/aip/vol'+str(self.sliceNum)+'/AIP.tif', AIP, mode)
-                    self.writeTiff(self.ui.DIR.toPlainText()+'/surf/vol'+str(self.sliceNum)+'/SURF.tif', surfProfile, mode)
-
-            ##########################################################################
-            else:
-                # for fast pre-scan imaging
-                data_focus = data_flatten
-                if np.mod(fileY,2)==1:
-                    data_focus = np.flip(data_focus,0)
-                self.Cscan = data_focus
-                AIP = np.mean(data_focus[:,:,start_pixel:start_pixel + thickness],2)
-                
-                
-            ############################### ###############
-            # display Bline
-            plane = np.transpose(data_focus[0,:,:]).copy()
-            pixmap = ImagePlot(plane, self.ui.XZmin.value(), self.ui.XZmax.value())
-            # clear content on the waveformLabel
-            self.ui.XZplane.clear()
-            # update image on the waveformLabel
-            self.ui.XZplane.setPixmap(pixmap)
-            ############################## #######
-            # display AIP
-            scale = self.ui.scale.value()
-            pixmap = ImagePlot(AIP, self.ui.XZmin.value(), self.ui.XZmax.value())
-            # clear content on the waveformLabel
-            self.ui.XYplane.clear()
-            # update iamge on the waveformLabel
-            self.ui.XYplane.setPixmap(pixmap)
-            ###################### ############
-            # # plot 3D visulaization
-            if self.use_maya:
-                self.ui.mayavi_widget.visualization.update_data(data_focus/500)
-            ###########################################
-            # squeeze AIP into surface image
-            scale = self.ui.scale.value()
-            self.surf[Ypixels//scale*fileX:Ypixels//scale*(fileX+1),\
-                      Xpixels//scale*(fileY):Xpixels//scale*(fileY+1)] = AIP[::scale,::scale]
-        else:
-            #######################################
-            # for raw data, no display is available
-            thickness = Zpixels
-            self.Cscan = data
-            if np.mod(fileY,2)==1:
-                self.Cscan = np.flip(self.Cscan,0)
-            
-        ##########################################
-        # save data to disk
+        self.Cscan = Cscan
+        self.Bline = np.transpose(Cscan[0,:,:]).copy()# has to be first index, otherwise the memory space is not continuous
+        # print(plane.shape)
+        pixmap = RGBImagePlot(matrix1 = self.Bline, m=self.ui.XZmin.value(), M=self.ui.XZmax.value())
+        # clear content on the waveformLabel
+        self.ui.XZplane.clear()
+        # update image on the waveformLabel
+        self.ui.XZplane.setPixmap(pixmap)
+        
+        self.SampleMosaic = np.mean(Cscan,2)# has to be first index, otherwise the memory space is not continuous
+        pixmap = RGBImagePlot(matrix1 = self.SampleMosaic, m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
+        # clear content on the waveformLabel
+        self.ui.SampleMosaic.clear()
+        # update image on the waveformLabel
+        self.ui.SampleMosaic.setPixmap(pixmap)
+        ###################### plot 3D visulaization
+        if self.use_maya:
+            self.ui.mayavi_widget.visualization.update_data(self.Cscan/500)
         if self.ui.Save.isChecked():
             if raw:
                 data = np.uint16(data)
             else:
-                data = np.uint16(data_focus/SCALE*65535)
-            self.WriteData(data, self.SurfFilename([Ypixels,Xpixels,thickness]))
+                data = np.uint16(data/SCALE*65535)
+            self.WriteData(data, self.CscanFilename([Ypixels,Xpixels,Zpixels]))
+        
+   
 
     # def writeTiff(self,filename, image, overlap):
     #     tif = TIFF.open(filename, mode=overlap)
     #     tif.write_image(image)
     #     tif.close()
         
-    def Display_mosaic(self):
-        pixmap = ImagePlot(self.surf, self.ui.Intmin.value(), self.ui.Intmax.value())
-        self.ui.SampleMosaic.clear()
-        self.ui.SampleMosaic.setPixmap(pixmap)
-        
-
+    # def Display_mosaic(self):
+    #     pixmap = RGBImagePlot(self.SampleMosaic, self.ui.Intmin.value(), self.ui.Intmax.value())
+    #     self.ui.SampleMosaic.clear()
+    #     self.ui.SampleMosaic.setPixmap(pixmap)
         
     # def Save_mosaic(self):
     #     if self.ui.Save.isChecked():
     #         tif = TIFF.open(self.ui.DIR.toPlainText()+'/aip/slice'+str(self.sliceNum)+'coase.tif', mode='w')
-    #         tif.write_image(self.surf)
+    #         tif.write_image(self.SampleMosaic)
     #         tif.close()
             
         
-    def Update_contrast_XY(self):
+    def Update_contrast_Bline(self):
         if self.ui.XZmin.value() != self.XZmin or self.ui.XZmax.value() != self.XZmax:
-            if self.ui.ACQMode.currentText() in ['SingleAline', 'RptAline']:
+            if self.ui.ACQMode.currentText() in ['FiniteAline', 'ContinuousAline']:
                 try:
-                    Ascan = np.float32(np.mean(self.Aline,0))
-                    Ascan = Ascan[self.ui.Width.value()//2]
                     # if self.ui.LOG.currentText() == '10log10':
                     #     data=10*np.log10(data+0.000001)
                     if self.ui.FFTDevice.currentText() in ['None']:
@@ -472,57 +349,38 @@ class DnSThread(QThread):
                     else:
                         m=self.ui.XZmin.value()
                         M=self.ui.XZmax.value()
-                    pixmap = LinePlot(Ascan, [], m, M)
+                    pixmap = LinePlot(self.Aline, [], m, M)
                     # clear content on the waveformLabel
                     self.ui.XZplane.clear()
                     # update iamge on the waveformLabel
                     self.ui.XZplane.setPixmap(pixmap)
-                except:
-                    pass
-            elif self.ui.ACQMode.currentText() in ['SingleBline', 'RptBline']:
+                except Exception as error:
+                    print(error)
+                    
+            elif self.ui.ACQMode.currentText() in ['FiniteBline', 'ContinuousBline','Mosaic','ContinuousCscan', 'FiniteCscan']:
                 try:
-                    data = self.Bline
-                    data = np.transpose(data).copy()
                     # data = np.flip(data, 1).copy()
                     # if self.ui.LOG.currentText() == '10log10':
                     #     data=np.float32(10*np.log10(data+0.000001))
-                    pixmap = ImagePlot(np.float32(data), self.ui.XZmin.value(), self.ui.XZmax.value())
+                    
+                    if len(self.DynBline)>0:
+                        pixmap = RGBImagePlot(np.float32(self.Bline), np.float32(self.DynBline*1), self.ui.XZmin.value(), self.ui.XZmax.value())
+                    else:
+                        pixmap = RGBImagePlot(matrix1=np.float32(self.Bline), m=self.ui.XZmin.value(), M=self.ui.XZmax.value())
                     # clear content on the waveformLabel
+                    # print(self.Bline[0,0:5])
                     self.ui.XZplane.clear()
                     # update iamge on the waveformLabel
                     self.ui.XZplane.setPixmap(pixmap)
-                except:
-                    pass
-            elif self.ui.ACQMode.currentText() in ['Mosaic','Mosaic+Cut', 'SingleCscan']:
-                try:
-                    data = self.Cscan
-                    
-                    plane = np.transpose(data[0,:,:]).copy()# has to be first index, otherwise the memory space is not continuous
-                    pixmap = ImagePlot(plane, self.ui.XZmin.value(), self.ui.XZmax.value())
-                    # clear content on the waveformLabel
-                    self.ui.XZplane.clear()
-                    # update image on the waveformLabel
-                    self.ui.XZplane.setPixmap(pixmap)
-                    
-                    tmp = self.ui.SaveZstart.value()
-                    start_pixel =  np.uint16(tmp if tmp>-0.5 else self.ui.SurfHeight.value()+4)
-                    thickness = self.ui.SaveZrange.value()
-                    plane = np.mean(data[:,:,start_pixel:start_pixel + thickness],2)# has to be first index, otherwise the memory space is not continuous
-                    pixmap = ImagePlot(plane, self.ui.XZmin.value(), self.ui.XZmax.value())
-                    # clear content on the waveformLabel
-                    self.ui.XYplane.clear()
-                    # update image on the waveformLabel
-                    self.ui.XYplane.setPixmap(pixmap)
                 except:
                     pass
             self.XZmax = self.ui.XZmax.value()
             self.XZmin = self.ui.XZmin.value()
 
-    def Update_contrast_Surf(self):
+    def Update_contrast_Mosaic(self):
         if self.ui.Intmin.value() != self.Intmin or self.ui.Intmax.value() != self.Intmax:
             try:
-                # print(self.surf.shape)
-                pixmap = ImagePlot(self.surf, self.ui.Intmin.value(), self.ui.Intmax.value())
+                pixmap = RGBImagePlot(matrix1=self.SampleMosaic, m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
                 # clear content on the waveformLabel
                 self.ui.SampleMosaic.clear()
                 # update iamge on the waveformLabel
@@ -531,6 +389,19 @@ class DnSThread(QThread):
                 pass
             self.Intmax = self.ui.Intmax.value()
             self.Intmin = self.ui.Intmin.value()
+            
+    def Update_contrast_Dyn(self):
+        if self.ui.Dynmin.value() != self.Dynmin or self.ui.Dynmax.value() != self.Dynmax:
+            try:
+                pixmap = RGBImagePlot(matrix2=self.SampleDynamic, m=self.ui.Dynmin.value(), M=self.ui.Dynmax.value())
+                # clear content on the waveformLabel
+                self.ui.SampleDynamic.clear()
+                # update iamge on the waveformLabel
+                self.ui.SampleDynamic.setPixmap(pixmap)
+            except:
+                pass
+            self.Dynmax = self.ui.Dynmax.value()
+            self.Dynmin = self.ui.Dynmin.value()
     
     def restart_tilenum(self):
         self.tileNum = 1
@@ -557,9 +428,23 @@ class DnSThread(QThread):
         self.CscanNum = self.CscanNum + 1
         return filename
     
+    def CscanDynFilename(self, shape):
+        DynBlinefilename = 'CscanDynBline-'+str(self.CscanDynNum)+'-Y'+str(self.ui.Ypixels.value())+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
+        BlineFilename = 'CscanBline-'+str(self.CscanDynNum)+str(self.DynamicBlineIdx)+'-Yrpt'+str(shape[0])+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
+        # self.DynamicBlineIdx = self.DynamicBlineIdx + 1
+        if self.DynamicBlineIdx == self.ui.Ypixels.value():
+            self.CscanDynNum = self.CscanDynNum + 1
+            # self.DynamicBlineIdx = 0
+        return BlineFilename, DynBlinefilename
+    
     def BlineFilename(self, shape):
         filename = 'Bline-'+str(self.BlineNum)+'-Yrpt'+str(shape[0])+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
         self.BlineNum = self.BlineNum + 1
+        return filename
+    
+    def BlineDynFilename(self, shape):
+        filename = 'BlineDyn-'+str(self.BlineNum)+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
+        self.BlineDynNum = self.BlineDynNum + 1
         return filename
     
     def AlineFilename(self, shape):

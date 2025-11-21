@@ -41,13 +41,13 @@ class AODO(object):
     def config(self):
         self.AOtask = ni.Task('AO task') 
         self.DOtask = ni.Task('DO task')
-        AOwaveform1 = np.arange(0,0.2,0.000001)
-        AOwaveform2 = np.arange(0.2,0,0.000001)
+        AOwaveform1 = np.arange(0,0.2,0.0001)
+        AOwaveform2 = np.arange(0.2,0,0.0001)
         AOwaveform = np.append(AOwaveform1,AOwaveform2)
-        self.AOtask.ao_channels.add_ao_voltage_chan(physical_channel='AODO/ao1', \
+        self.AOtask.ao_channels.add_ao_voltage_chan(physical_channel='Galvo/ao0', \
                                               min_val=- 10.0, max_val=10.0, \
                                               units=ni.constants.VoltageUnits.VOLTS)
-        self.AOtask.timing.cfg_samp_clk_timing(rate=100000, \
+        self.AOtask.timing.cfg_samp_clk_timing(rate=1000, \
                                         # source='/AODO/PFI0', \
                                             # active_edge= Edge.FALLING,\
                                           sample_mode=Atype.FINITE,samps_per_chan=len(AOwaveform))
@@ -56,8 +56,8 @@ class AODO(object):
         terminal_name = get_terminal_name_with_dev_prefix(self.AOtask, "ao/StartTrigger")
 
     
-        self.DOtask.do_channels.add_do_chan(lines='AODO/port0/line0:7')
-        self.DOtask.timing.cfg_samp_clk_timing(rate=100000, \
+        self.DOtask.do_channels.add_do_chan(lines='Galvo/port0/line0:7')
+        self.DOtask.timing.cfg_samp_clk_timing(rate=1000, \
                                         # source='/AODO/PFI0', \
                                             # active_edge= Edge.FALLING,\
                                           sample_mode=Atype.FINITE,samps_per_chan=len(AOwaveform))

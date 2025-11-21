@@ -151,13 +151,6 @@ def ConfigureCamera(pfCam, pfCameraInfo):
     pfResult = pfCam.SetFeatureInt("AcquisitionFrameCount", 10)
     if pfResult != pf.Error.NONE:
         ExitWithErrorPrompt("Could not set acquisitionMode", pfResult)
-    
-    # set exposuretime
-    pfResult, pfFeatureParam = pfCam.GetFeatureFloat("AcquisitionFrameRate")
-    print('frame rate is: ', pfFeatureParam)
-    pfResult = pfCam.SetFeatureFloat("AcquisitionFrameRate", 20)
-    if pfResult != pf.Error.NONE:
-        ExitWithErrorPrompt("Could not set frame rate", pfResult)
         
     # set exposuretime
     pfResult, pfFeatureParam = pfCam.GetFeatureFloat("ExposureTime")
@@ -231,6 +224,8 @@ def ConfigureCamera(pfCam, pfCameraInfo):
     if pfResult != pf.Error.NONE:
         ExitWithErrorPrompt("Error setting Height", pfResult)
 
+    pfResult, pfFeatureParam = pfCam.GetFeatureFloat("AcquisitionFrameRate")
+    print('frame rate is: ', pfFeatureParam)
     #Set Height to maximum
     # pfResult, pfFeatureParam = pfCam.GetFeatureParams("PowerDown")
     # if pfResult != pf.Error.NONE:

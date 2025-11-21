@@ -7,7 +7,7 @@ Created on Mon Apr 22 13:28:52 2024
 import sys
 
 from PyQt5.QtWidgets import QApplication, QDialog
-from Generaic_functions import ImagePlot
+from Generaic_functions import RGBImagePlot
 import numpy as np
 # from BlineDialogUI import Ui_Dialog as BlineDialogUI
 from StageDialogUI import Ui_Dialog as StageDialogUI

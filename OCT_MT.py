@@ -25,6 +25,15 @@ Created on Sun Dec 10 20:14:40 2023
 # put_nowait(item) – Put an item into the queue without blocking. If no free slot is immediately available, raise QueueFull.
 # qsize() – Return the number of items in the queue.
 
+# TODO: 0.不再采用interrupt来暂停
+# TODO: 1.SingleBline 活性计算 
+# TODO: 2.SingleCscan 活性采集、存储、活性计算 计算活性的时候，由于数据量太大，Cscan的每一个Y像素的都要从相机返回数据，由GPU做FFT，然后由DnS存储每一个BlineAVG。
+# 拍完后统一进行活性计算。同一个Cscan的数据存储在一个文件夹中，如果需要多个Cscan，则需要多个文件夹
+# TODO: 3.针对类器官，每个孔定义一定范围进行扫描，活性计算 
+# TODO: 4.针对切片，每个孔得到切片中心，自动寻找范围，扫描、活性计算
+# TODO: 5.单纯针对某一范围的mosaic，活性计算
+# TODO: 6.每隔几小时的活性扫描
+
 import sys
 import numpy as np
 from queue import Queue
@@ -123,7 +132,7 @@ class GPUThread_2(GPUThread):
             self.GPU2weaverQueue = GPU2weaverQueue
             self.log = log
             self.SIM = SIM
-            self.AMPLIFICATION = 200#AMPLIFICATION
+            self.AMPLIFICATION = 10#AMPLIFICATION
             
 # wrap Galvo&Stage control thread with queues
 from ThreadAODO import AODOThread
@@ -153,8 +162,8 @@ class DnSThread_2(DnSThread):
 class GUI(MainWindow):
     def __init__(self):
         super().__init__()
-        if use_maya:
-            self.addMaya()
+        # if use_maya:
+        #     self.addMaya()
         self.log = LOG(self.ui)
         self.ui.RunButton.clicked.connect(self.run_task)
         self.ui.PauseButton.clicked.connect(self.Pause_task)
@@ -168,18 +177,18 @@ class GUI(MainWindow):
         # self.ui.DelaySamples.valueChanged.connect(self.update_Dispersion)
         # self.ui.TrimSamples.valueChanged.connect(self.update_Dispersion)
         # set stage boundary
-        self.ui.XZmax.valueChanged.connect(self.Update_contrast_XY)
-        self.ui.XZmin.valueChanged.connect(self.Update_contrast_XY)
-        # self.ui.XYZmax.valueChanged.connect(self.Update_contrast_XYZ)
-        # self.ui.XYZmin.valueChanged.connect(self.Update_contrast_XYZ)
-        self.ui.Intmax.valueChanged.connect(self.Update_contrast_Surf)
-        self.ui.Intmin.valueChanged.connect(self.Update_contrast_Surf)
+        self.ui.XZmax.valueChanged.connect(self.Update_contrast_Bline)
+        self.ui.XZmin.valueChanged.connect(self.Update_contrast_Bline)
+        self.ui.Intmax.valueChanged.connect(self.Update_contrast_Mosaic)
+        self.ui.Intmin.valueChanged.connect(self.Update_contrast_Mosaic)
+        self.ui.Dynmax.valueChanged.connect(self.Update_contrast_Dyn)
+        self.ui.Dynmin.valueChanged.connect(self.Update_contrast_Dyn)
         # connect buttons to functionalities
         # self.ui.RedoDC.clicked.connect(self.redo_dispersion_compensation)
         self.ui.redoBG.clicked.connect(self.redo_background)
         self.ui.redoSurf.clicked.connect(self.redo_surface)
         self.ui.BG_DIR.textChanged.connect(self.update_background)
-        self.ui.Height.valueChanged.connect(self.update_background)
+        self.ui.AlinesPerBline.valueChanged.connect(self.update_background)
         self.ui.offsetH.valueChanged.connect(self.update_background)
         self.ui.InD_DIR.textChanged.connect(self.update_Dispersion)
         self.ui.Xmove2.clicked.connect(self.Xmove2)
@@ -193,8 +202,8 @@ class GUI(MainWindow):
         self.ui.ZDOWN.clicked.connect(self.ZDOWN)
         self.ui.InitStageButton.clicked.connect(self.InitStages)
         self.ui.StageUninit.clicked.connect(self.Uninit)
-        self.ui.SliceDir.clicked.connect(self.SliceDirection)
-        self.ui.VibEnabled.clicked.connect(self.Vibratome)
+        # self.ui.SliceDir.clicked.connect(self.SliceDirection)
+        # self.ui.VibEnabled.clicked.connect(self.Vibratome)
         self.ui.SliceN.valueChanged.connect(self.change_slice_number)
         # Init all threads
         self.Init_allThreads()
@@ -241,32 +250,18 @@ class GUI(MainWindow):
         
         # RptCut is for cutting several slices as per defined in Vibratome panel
         
-        if self.ui.ACQMode.currentText() in ['RptAline','RptBline','RptCscan','Mosaic','Mosaic+Cut','RptCut']:
+        if self.ui.ACQMode.currentText() in ['ContinuousAline', 'ContinuousBline', 'ContinuousCscan', 'Mosaic']:
             if self.ui.RunButton.isChecked():
                 self.ui.RunButton.setText('Stop')
-                # for surfScan and SurfSlice, popup a dialog to double check stage position
-                if self.ui.ACQMode.currentText() in ['Mosaic','Mosaic+Cut','RptCut']:
-                    dlg = StageDialog( self.ui.XPosition.value(), self.ui.YPosition.value(), self.ui.ZPosition.value())
-                    dlg.setWindowTitle("double-check stage position")
-                    if dlg.exec():
-                        an_action = WeaverAction(self.ui.ACQMode.currentText())
-                        WeaverQueue.put(an_action)
-                    else:
-                        # reset RUN button
-                        self.ui.RunButton.setChecked(False)
-                        self.ui.RunButton.setText('Go')
-                        self.ui.PauseButton.setChecked(False)
-                        self.ui.PauseButton.setText('Pause')
-                        print('user aborted due to stage position incorrect...')
-                else:
-                    # for other actions, directly do the task
-                    an_action = WeaverAction(self.ui.ACQMode.currentText())
-                    WeaverQueue.put(an_action)
+                an_action = WeaverAction(self.ui.ACQMode.currentText())
+                WeaverQueue.put(an_action)
             else:
                 self.Stop_task()
-        elif self.ui.ACQMode.currentText() in ['SingleAline','SingleBline','SingleCscan','SingleCut']:
+        elif self.ui.ACQMode.currentText() in ['FiniteAline','FiniteBline','FiniteCscan']:
             if self.ui.RunButton.isChecked():
                 self.ui.RunButton.setText('Stop')
+                self.ui.RunButton.setEnabled(False)
+                self.ui.PauseButton.setEnabled(False)
                 an_action = WeaverAction(self.ui.ACQMode.currentText())
                 WeaverQueue.put(an_action)
         
@@ -369,15 +364,15 @@ class GUI(MainWindow):
     def Pause_task(self):
         if self.ui.PauseButton.isChecked():
             # PauseQueue.put('Pause')
-            self.ui.PauseButton.setText('Resume')
+            # self.ui.PauseButton.setText('Resume')
             self.ui.statusbar.showMessage('acquisition paused...')
         else:
             # PauseQueue.put('Resume')
-            self.ui.PauseButton.setText('Pause')
+            # self.ui.PauseButton.setText('Pause')
             self.ui.statusbar.showMessage('acquisition resumed...')
       
     def Stop_task(self):
-        PauseQueue.put('Stop')
+        # PauseQueue.put('Stop')
         self.ui.statusbar.showMessage('acquisition stopped...')
         
     def update_Dispersion(self):
@@ -389,23 +384,23 @@ class GUI(MainWindow):
         an_action = GPUAction('update_background')
         GPUQueue.put(an_action)
         
-    def Update_contrast_XY(self):
+    def Update_contrast_Bline(self):
         # if not self.ui.RunButton.isChecked():
-        an_action = DnSAction('UpdateContrastXY')
+        an_action = DnSAction('UpdateContrastBline')
         DnSQueue.put(an_action)
 
-    def Update_contrast_XYZ(self):
+    def Update_contrast_Mosaic(self):
         # if not self.ui.RunButton.isChecked():
-        an_action = DnSAction('UpdateContrastXYZ')
+        an_action = DnSAction('UpdateContrastMosaic')
         DnSQueue.put(an_action)
             
-    def Update_contrast_Surf(self):
-        an_action = DnSAction('UpdateContrastSurf')
+    def Update_contrast_Dyn(self):
+        an_action = DnSAction('UpdateContrastDyn')
         DnSQueue.put(an_action)
         
-    def redo_dispersion_compensation(self):
-        an_action = WeaverAction('dispersion_compensation')
-        WeaverQueue.put(an_action)
+    # def redo_dispersion_compensation(self):
+    #     an_action = WeaverAction('dispersion_compensation')
+    #     WeaverQueue.put(an_action)
         
     def redo_background(self):
         an_action = WeaverAction('get_background')
@@ -415,14 +410,14 @@ class GUI(MainWindow):
         an_action = WeaverAction('get_surface')
         WeaverQueue.put(an_action)
         
-    def update_intDk(self):
-        self.ui.intDk.setValue(self.ui.intDkSlider.value()/100)
-        an_action = GPUAction('update_intDk')
-        GPUQueue.put(an_action)
+    # def update_intDk(self):
+    #     self.ui.intDk.setValue(self.ui.intDkSlider.value()/100)
+    #     an_action = GPUAction('update_intDk')
+    #     GPUQueue.put(an_action)
         
-    def UninitBoard(self):
-        an_action = DAction('UninitBoard')
-        DQueue.put(an_action)
+    # def UninitBoard(self):
+    #     an_action = DAction('UninitBoard')
+    #     DQueue.put(an_action)
     
     def TestButton1Func(self):
         args = [[0, 0], [10, 100]]

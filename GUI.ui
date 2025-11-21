@@ -167,6 +167,12 @@
            <layout class="QHBoxLayout" name="horizontalLayout_8">
             <item>
              <widget class="QSlider" name="DepthStartBar">
+              <property name="maximumSize">
+               <size>
+                <width>16777215</width>
+                <height>500</height>
+               </size>
+              </property>
               <property name="maximum">
                <number>1024</number>
               </property>
@@ -213,6 +219,12 @@
             </item>
             <item>
              <widget class="QSlider" name="DepthEndBar">
+              <property name="maximumSize">
+               <size>
+                <width>16777215</width>
+                <height>500</height>
+               </size>
+              </property>
               <property name="maximum">
                <number>1024</number>
               </property>
@@ -267,7 +279,7 @@
                 <number>5</number>
                </property>
                <property name="value">
-                <number>10000</number>
+                <number>1000</number>
                </property>
                <property name="orientation">
                 <enum>Qt::Horizontal</enum>
@@ -377,7 +389,7 @@
                 <number>5</number>
                </property>
                <property name="value">
-                <number>10000</number>
+                <number>1000</number>
                </property>
                <property name="orientation">
                 <enum>Qt::Horizontal</enum>
@@ -460,6 +472,9 @@
                <property name="maximum">
                 <number>100</number>
                </property>
+               <property name="value">
+                <number>10</number>
+               </property>
                <property name="orientation">
                 <enum>Qt::Horizontal</enum>
                </property>
@@ -469,6 +484,9 @@
               <widget class="QScrollBar" name="Dynmin">
                <property name="minimum">
                 <number>1</number>
+               </property>
+               <property name="maximum">
+                <number>100</number>
                </property>
                <property name="value">
                 <number>1</number>
@@ -505,7 +523,7 @@
          </font>
         </property>
         <property name="text">
-         <string>导入设定</string>
+         <string>导入预设参数</string>
         </property>
        </widget>
       </item>
@@ -566,6 +584,32 @@
           <string>FOV</string>
          </attribute>
          <layout class="QGridLayout" name="gridLayout_15">
+          <item row="0" column="3">
+           <spacer name="horizontalSpacer_6">
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item row="0" column="0">
+           <widget class="QLabel" name="label_59">
+            <property name="maximumSize">
+             <size>
+              <width>200</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="text">
+             <string>拍摄模式：</string>
+            </property>
+           </widget>
+          </item>
           <item row="2" column="1">
            <widget class="QComboBox" name="Objective">
             <item>
@@ -590,26 +634,6 @@
             </item>
            </widget>
           </item>
-          <item row="2" column="0">
-           <widget class="QLabel" name="ObjectiveLabel">
-            <property name="text">
-             <string>物镜选择：</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="3">
-           <spacer name="horizontalSpacer_6">
-            <property name="orientation">
-             <enum>Qt::Horizontal</enum>
-            </property>
-            <property name="sizeHint" stdset="0">
-             <size>
-              <width>40</width>
-              <height>20</height>
-             </size>
-            </property>
-           </spacer>
-          </item>
           <item row="0" column="1">
            <widget class="QComboBox" name="ACQMode">
             <property name="minimumSize">
@@ -626,47 +650,34 @@
             </property>
             <item>
              <property name="text">
-              <string>SingleBline</string>
+              <string>FiniteBline</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>RptBline</string>
+              <string>ContinuousBline</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>SingleAline</string>
+              <string>FiniteAline</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>RptAline</string>
+              <string>ContinuousAline</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>SingleCscan</string>
+              <string>FiniteCscan</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>Mosaic</string>
+              <string>ContinuousCscan</string>
              </property>
             </item>
-           </widget>
-          </item>
-          <item row="0" column="0">
-           <widget class="QLabel" name="label_59">
-            <property name="maximumSize">
-             <size>
-              <width>200</width>
-              <height>16777215</height>
-             </size>
-            </property>
-            <property name="text">
-             <string>拍摄模式：</string>
-            </property>
            </widget>
           </item>
           <item row="0" column="2" rowspan="3">
@@ -805,24 +816,31 @@
                 </size>
                </property>
                <property name="text">
-                <string>X轴扫描线长(mm)：</string>
+                <string>X轴扫描长度(mm)：</string>
                </property>
               </widget>
              </item>
              <item row="0" column="4">
               <widget class="QLabel" name="YrangeLabel">
                <property name="text">
-                <string>Y轴扫描距离(mm):</string>
+                <string>Y轴扫描长度(mm):</string>
                </property>
               </widget>
              </item>
             </layout>
            </widget>
           </item>
-          <item row="1" column="1">
-           <widget class="QCheckBox" name="DyncheckBox">
+          <item row="2" column="0">
+           <widget class="QLabel" name="ObjectiveLabel">
             <property name="text">
-             <string>计算活性？</string>
+             <string>物镜选择：</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QCheckBox" name="DynCheckBox">
+            <property name="text">
+             <string>Calculate Dynamic?</string>
             </property>
            </widget>
           </item>
@@ -1416,7 +1434,7 @@
           <item>
            <widget class="QGroupBox" name="groupBox_10">
             <property name="title">
-             <string>GroupBox</string>
+             <string/>
             </property>
             <layout class="QGridLayout" name="gridLayout_10">
              <item row="0" column="0">
@@ -1584,28 +1602,6 @@
             </property>
             <property name="value">
              <double>0.000000000000000</double>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="2">
-           <widget class="QPushButton" name="CenterGalvo">
-            <property name="enabled">
-             <bool>true</bool>
-            </property>
-            <property name="minimumSize">
-             <size>
-              <width>0</width>
-              <height>30</height>
-             </size>
-            </property>
-            <property name="autoFillBackground">
-             <bool>false</bool>
-            </property>
-            <property name="text">
-             <string>偏置归零</string>
-            </property>
-            <property name="checkable">
-             <bool>false</bool>
             </property>
            </widget>
           </item>
@@ -1890,7 +1886,7 @@
            </widget>
           </item>
           <item row="0" column="1">
-           <widget class="QSpinBox" name="Height">
+           <widget class="QSpinBox" name="AlinesPerBline">
             <property name="enabled">
              <bool>false</bool>
             </property>
@@ -1929,6 +1925,45 @@
             </property>
             <property name="value">
              <number>5</number>
+            </property>
+           </widget>
+          </item>
+          <item row="5" column="2">
+           <widget class="QPushButton" name="CenterGalvo">
+            <property name="enabled">
+             <bool>true</bool>
+            </property>
+            <property name="minimumSize">
+             <size>
+              <width>0</width>
+              <height>30</height>
+             </size>
+            </property>
+            <property name="autoFillBackground">
+             <bool>false</bool>
+            </property>
+            <property name="text">
+             <string>偏置归零</string>
+            </property>
+            <property name="checkable">
+             <bool>false</bool>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="2">
+           <widget class="QLabel" name="label_12">
+            <property name="text">
+             <string>振镜返回步数</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="3">
+           <widget class="QSpinBox" name="FlyBack">
+            <property name="maximum">
+             <number>1000</number>
+            </property>
+            <property name="value">
+             <number>50</number>
             </property>
            </widget>
           </item>
@@ -1991,7 +2026,7 @@
                  <item row="2" column="3">
                   <widget class="QLabel" name="label_8">
                    <property name="text">
-                    <string>PixelFormat:</string>
+                    <string>像素位深：</string>
                    </property>
                   </widget>
                  </item>
@@ -2028,7 +2063,7 @@
                  <item row="2" column="0">
                   <widget class="QLabel" name="label_11">
                    <property name="text">
-                    <string>Current Pixel Format:</string>
+                    <string>当前像素位深：</string>
                    </property>
                   </widget>
                  </item>
@@ -2122,7 +2157,7 @@
                  <item row="3" column="0">
                   <widget class="QLabel" name="label_5">
                    <property name="text">
-                    <string>Current Temporature:</string>
+                    <string>相机温度：</string>
                    </property>
                   </widget>
                  </item>
@@ -2134,7 +2169,7 @@
                   </widget>
                  </item>
                  <item row="3" column="4">
-                  <widget class="QSpinBox" name="Width">
+                  <widget class="QSpinBox" name="NSamples">
                    <property name="wrapping">
                     <bool>false</bool>
                    </property>
@@ -2166,6 +2201,26 @@
                   <widget class="QSpinBox" name="offsetW">
                    <property name="maximum">
                     <number>1600</number>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="4" column="0">
+                  <widget class="QLabel" name="label_3">
+                   <property name="enabled">
+                    <bool>false</bool>
+                   </property>
+                   <property name="text">
+                    <string>帧率：</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="4" column="1">
+                  <widget class="QDoubleSpinBox" name="FrameRate">
+                   <property name="enabled">
+                    <bool>false</bool>
+                   </property>
+                   <property name="maximum">
+                    <double>10000.000000000000000</double>
                    </property>
                   </widget>
                  </item>
@@ -2566,243 +2621,6 @@
           </item>
          </layout>
         </widget>
-        <widget class="QWidget" name="Vibratometab">
-         <attribute name="title">
-          <string>切片机</string>
-         </attribute>
-         <layout class="QHBoxLayout" name="horizontalLayout_10">
-          <item>
-           <widget class="QPushButton" name="VibEnabled">
-            <property name="maximumSize">
-             <size>
-              <width>300</width>
-              <height>16777215</height>
-             </size>
-            </property>
-            <property name="text">
-             <string>Start Vibratome</string>
-            </property>
-            <property name="checkable">
-             <bool>true</bool>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QGroupBox" name="groupBox_3">
-            <property name="maximumSize">
-             <size>
-              <width>500</width>
-              <height>16777215</height>
-             </size>
-            </property>
-            <property name="title">
-             <string>SliceSettings</string>
-            </property>
-            <layout class="QGridLayout" name="gridLayout_16">
-             <item row="4" column="1">
-              <widget class="QLabel" name="label_22">
-               <property name="text">
-                <string>Speed(mm/s)</string>
-               </property>
-              </widget>
-             </item>
-             <item row="1" column="3">
-              <widget class="QDoubleSpinBox" name="SliceX">
-               <property name="maximum">
-                <double>300.000000000000000</double>
-               </property>
-               <property name="value">
-                <double>120.000000000000000</double>
-               </property>
-              </widget>
-             </item>
-             <item row="3" column="3">
-              <widget class="QDoubleSpinBox" name="SliceLength">
-               <property name="maximum">
-                <double>50.000000000000000</double>
-               </property>
-               <property name="value">
-                <double>20.000000000000000</double>
-               </property>
-              </widget>
-             </item>
-             <item row="3" column="1">
-              <widget class="QLabel" name="label_20">
-               <property name="text">
-                <string>SliceLength(mm)</string>
-               </property>
-              </widget>
-             </item>
-             <item row="2" column="3">
-              <widget class="QDoubleSpinBox" name="SliceY">
-               <property name="maximum">
-                <double>50.000000000000000</double>
-               </property>
-               <property name="value">
-                <double>10.000000000000000</double>
-               </property>
-              </widget>
-             </item>
-             <item row="2" column="1">
-              <widget class="QLabel" name="label_19">
-               <property name="text">
-                <string>StartY(mm)</string>
-               </property>
-              </widget>
-             </item>
-             <item row="1" column="1">
-              <widget class="QLabel" name="label_18">
-               <property name="text">
-                <string>StartX(mm)</string>
-               </property>
-              </widget>
-             </item>
-             <item row="4" column="3">
-              <widget class="QDoubleSpinBox" name="SliceSpeed">
-               <property name="value">
-                <double>0.300000000000000</double>
-               </property>
-              </widget>
-             </item>
-             <item row="0" column="1">
-              <widget class="QPushButton" name="SliceDir">
-               <property name="text">
-                <string>Backward</string>
-               </property>
-               <property name="checkable">
-                <bool>true</bool>
-               </property>
-               <property name="checked">
-                <bool>false</bool>
-               </property>
-              </widget>
-             </item>
-            </layout>
-           </widget>
-          </item>
-          <item>
-           <widget class="QGroupBox" name="groupBox_8">
-            <property name="title">
-             <string>Cut and Image sequence</string>
-            </property>
-            <layout class="QGridLayout" name="gridLayout_18">
-             <item row="1" column="0">
-              <widget class="QLabel" name="SliceZstartLabel_3">
-               <property name="text">
-                <string>Cut Start Height(mm)</string>
-               </property>
-              </widget>
-             </item>
-             <item row="4" column="0">
-              <widget class="QLabel" name="SliceDepthLabel_3">
-               <property name="maximumSize">
-                <size>
-                 <width>16777215</width>
-                 <height>16777206</height>
-                </size>
-               </property>
-               <property name="text">
-                <string>Each Cut thickness(um)</string>
-               </property>
-              </widget>
-             </item>
-             <item row="6" column="0">
-              <widget class="QLabel" name="label_3">
-               <property name="enabled">
-                <bool>false</bool>
-               </property>
-               <property name="text">
-                <string>Redo fastScan every # mosaic</string>
-               </property>
-              </widget>
-             </item>
-             <item row="1" column="1">
-              <widget class="QDoubleSpinBox" name="SliceZStart">
-               <property name="decimals">
-                <number>2</number>
-               </property>
-               <property name="maximum">
-                <double>50.000000000000000</double>
-               </property>
-               <property name="value">
-                <double>10.000000000000000</double>
-               </property>
-              </widget>
-             </item>
-             <item row="3" column="0">
-              <widget class="QLabel" name="SliceZnumberLabel_3">
-               <property name="maximumSize">
-                <size>
-                 <width>16777215</width>
-                 <height>16777206</height>
-                </size>
-               </property>
-               <property name="text">
-                <string>Sample total thickness(mm)</string>
-               </property>
-              </widget>
-             </item>
-             <item row="3" column="1">
-              <widget class="QDoubleSpinBox" name="SMPthickness">
-               <property name="value">
-                <double>1.000000000000000</double>
-               </property>
-              </widget>
-             </item>
-             <item row="4" column="1">
-              <widget class="QSpinBox" name="SliceZDepth">
-               <property name="maximum">
-                <number>1000</number>
-               </property>
-               <property name="value">
-                <number>100</number>
-               </property>
-              </widget>
-             </item>
-             <item row="5" column="0">
-              <widget class="QLabel" name="ImageDepthLabel_3">
-               <property name="enabled">
-                <bool>false</bool>
-               </property>
-               <property name="maximumSize">
-                <size>
-                 <width>16777215</width>
-                 <height>16777206</height>
-                </size>
-               </property>
-               <property name="text">
-                <string>Image thickness(um)</string>
-               </property>
-              </widget>
-             </item>
-             <item row="5" column="1">
-              <widget class="QSpinBox" name="ImageZDepth">
-               <property name="enabled">
-                <bool>false</bool>
-               </property>
-               <property name="maximum">
-                <number>1000</number>
-               </property>
-               <property name="value">
-                <number>100</number>
-               </property>
-              </widget>
-             </item>
-             <item row="6" column="1">
-              <widget class="QSpinBox" name="backReget">
-               <property name="enabled">
-                <bool>false</bool>
-               </property>
-               <property name="value">
-                <number>1</number>
-               </property>
-              </widget>
-             </item>
-            </layout>
-           </widget>
-          </item>
-         </layout>
-        </widget>
         <widget class="QWidget" name="Lasertab">
          <attribute name="title">
           <string>I/O</string>
@@ -2817,104 +2635,9 @@
              </size>
             </property>
             <property name="title">
-             <string>GroupBox</string>
+             <string/>
             </property>
             <layout class="QGridLayout" name="gridLayout_19">
-             <item row="7" column="1">
-              <widget class="QComboBox" name="VibEnable">
-               <item>
-                <property name="text">
-                 <string>PFI2</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI0</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI1</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI3</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI4</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI5</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI6</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI7</string>
-                </property>
-               </item>
-              </widget>
-             </item>
-             <item row="3" column="0">
-              <widget class="QLabel" name="label_38">
-               <property name="text">
-                <string>Galvo Terminal</string>
-               </property>
-              </widget>
-             </item>
-             <item row="5" column="1">
-              <widget class="QComboBox" name="AODOTrig">
-               <item>
-                <property name="text">
-                 <string>PFI1</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI0</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI2</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI3</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI4</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI5</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI6</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI7</string>
-                </property>
-               </item>
-              </widget>
-             </item>
              <item row="0" column="0">
               <widget class="QLabel" name="label_44">
                <property name="maximumSize">
@@ -2924,11 +2647,11 @@
                 </size>
                </property>
                <property name="text">
-                <string>Galvo/Stage board name</string>
+                <string>控制卡名称</string>
                </property>
               </widget>
              </item>
-             <item row="1" column="2">
+             <item row="3" column="2">
               <spacer name="horizontalSpacer_9">
                <property name="orientation">
                 <enum>Qt::Horizontal</enum>
@@ -2940,6 +2663,72 @@
                 </size>
                </property>
               </spacer>
+             </item>
+             <item row="6" column="1">
+              <widget class="QComboBox" name="SyncDO">
+               <item>
+                <property name="text">
+                 <string>port0/line0:7</string>
+                </property>
+               </item>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QTextEdit" name="AODOboard">
+               <property name="maximumSize">
+                <size>
+                 <width>16777215</width>
+                 <height>50</height>
+                </size>
+               </property>
+               <property name="html">
+                <string>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
+&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
+p, li { white-space: pre-wrap; }
+&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'SimSun'; font-size:15pt; font-weight:400; font-style:normal;&quot;&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;AODO&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+               </property>
+              </widget>
+             </item>
+             <item row="6" column="0">
+              <widget class="QLabel" name="label_13">
+               <property name="text">
+                <string>同步数字信号通道</string>
+               </property>
+              </widget>
+             </item>
+             <item row="3" column="3">
+              <spacer name="horizontalSpacer_5">
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>40</width>
+                 <height>20</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+             <item row="3" column="4">
+              <spacer name="horizontalSpacer_4">
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>40</width>
+                 <height>20</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+             <item row="3" column="0">
+              <widget class="QLabel" name="label_38">
+               <property name="text">
+                <string>振镜模拟信号通道</string>
+               </property>
+              </widget>
              </item>
              <item row="3" column="1">
               <widget class="QComboBox" name="GalvoAO">
@@ -2965,108 +2754,6 @@
                </item>
               </widget>
              </item>
-             <item row="0" column="1">
-              <widget class="QTextEdit" name="AODOboard">
-               <property name="html">
-                <string>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'SimSun'; font-size:15pt; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;AODO&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
-               </property>
-              </widget>
-             </item>
-             <item row="1" column="1">
-              <widget class="QComboBox" name="ClockTerm">
-               <item>
-                <property name="text">
-                 <string>PFI0</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI1</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI2</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI3</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI4</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI5</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI6</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>PFI7</string>
-                </property>
-               </item>
-              </widget>
-             </item>
-             <item row="7" column="0">
-              <widget class="QLabel" name="label_39">
-               <property name="text">
-                <string>Vibratome Terminal</string>
-               </property>
-              </widget>
-             </item>
-             <item row="1" column="4">
-              <spacer name="horizontalSpacer_4">
-               <property name="orientation">
-                <enum>Qt::Horizontal</enum>
-               </property>
-               <property name="sizeHint" stdset="0">
-                <size>
-                 <width>40</width>
-                 <height>20</height>
-                </size>
-               </property>
-              </spacer>
-             </item>
-             <item row="1" column="3">
-              <spacer name="horizontalSpacer_5">
-               <property name="orientation">
-                <enum>Qt::Horizontal</enum>
-               </property>
-               <property name="sizeHint" stdset="0">
-                <size>
-                 <width>40</width>
-                 <height>20</height>
-                </size>
-               </property>
-              </spacer>
-             </item>
-             <item row="5" column="0">
-              <widget class="QLabel" name="label_13">
-               <property name="text">
-                <string>AODO Trig Terminal</string>
-               </property>
-              </widget>
-             </item>
-             <item row="1" column="0">
-              <widget class="QLabel" name="ClockTermLabel">
-               <property name="text">
-                <string>Aline Trig Terminal</string>
-               </property>
-              </widget>
-             </item>
              <item row="8" column="1">
               <spacer name="verticalSpacer">
                <property name="orientation">
@@ -3090,13 +2777,6 @@ p, li { white-space: pre-wrap; }
           <string>Testing</string>
          </attribute>
          <layout class="QGridLayout" name="gridLayout_17">
-          <item row="1" column="0">
-           <widget class="QPushButton" name="TestButten2">
-            <property name="text">
-             <string>DnS Process SurfScan</string>
-            </property>
-           </widget>
-          </item>
           <item row="0" column="0">
            <widget class="QPushButton" name="TestButten1">
             <property name="text">
@@ -3104,31 +2784,17 @@ p, li { white-space: pre-wrap; }
             </property>
            </widget>
           </item>
-          <item row="1" column="2">
-           <widget class="QPushButton" name="pushButton">
-            <property name="text">
-             <string>PushButton</string>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="1">
-           <widget class="QPushButton" name="pushButton_2">
-            <property name="text">
-             <string>PushButton</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="2">
-           <widget class="QPushButton" name="pushButton_4">
-            <property name="text">
-             <string>PushButton</string>
-            </property>
-           </widget>
-          </item>
           <item row="2" column="0">
            <widget class="QPushButton" name="TestButten3">
             <property name="text">
              <string>DnS Display Surface</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QPushButton" name="TestButten2">
+            <property name="text">
+             <string>DnS Process SurfScan</string>
             </property>
            </widget>
           </item>

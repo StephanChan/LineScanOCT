@@ -12,6 +12,8 @@ Created on Mon Dec 11 19:41:46 2023
 
 import numpy as np
 import os
+from PyQt5.QtGui import QPixmap, QImage
+from matplotlib import pyplot as plt
 
 class LOG():
     def __init__(self, ui):
@@ -35,8 +37,7 @@ class LOG():
         # return 0
 
 
-def GenGalvoWave(StepSize = 1, Steps = 1000, AVG = 1, obj = 'OptoSigma5X', preclocks = 50, postclocks = 200, Galvo_bias = 3):
-    
+def GenGalvoWave(StepSize = 1, Steps = 1000, AVG = 1, obj = '5X', postclocks = 50, Galvo_bias = 0):
     # total number of steps is the product of steps and aline average number
     # use different angle to mm ratio for different objective
     if obj == '5X':
@@ -55,133 +56,47 @@ def GenGalvoWave(StepSize = 1, Steps = 1000, AVG = 1, obj = 'OptoSigma5X', precl
     # extra division by 2 is because galvo angle change is only half of beam deviation angle
     Vmax = (Xrange/2)/angle2mmratio/2+Galvo_bias
     Vmin = (-Xrange/2)/angle2mmratio/2+Galvo_bias
-    # step size of voltage
-    stepsize = (Vmax-Vmin)/Steps/AVG
-    # ramping up and down time in unit of clocks, i.e., A-lines
-    steps1=preclocks
     # fly-back time in unit of clocks
     steps2=postclocks
     # linear waveform
-    waveform=np.linspace(Vmin, Vmax, Steps*AVG)
+    waveform=np.linspace(Vmin, Vmax, Steps)
+    # Bline average
+    waveform = np.tile(waveform,(AVG,1)).transpose().flatten()
+    
     # print(len(waveform))
-    # ramping up  waveform, change amplitude to match the slop with linear waveform
-    Prewave = stepsize*steps1/np.pi*np.cos(np.arange(np.pi,3*np.pi/2,np.pi/2/steps1))+Vmin
-    # ramping down wavefor, change amplitude to match the slop with linear waveform
-    Postwave1 = stepsize*steps1/np.pi*np.sin(np.arange(0,np.pi/2,np.pi/2/steps1))+Vmax
     # fly-back waveform
-    Postwave2 = (Vmax-Vmin+stepsize*steps1*2/np.pi)/2*np.cos(np.arange(0,np.pi,np.pi/steps2))+(Vmax+Vmin)/2
+    Postwave = (Vmax-Vmin)/2*np.cos(np.arange(0,np.pi,np.pi/steps2))+(Vmax+Vmin)/2
     # append all waveforms together
-    waveform = np.append(Prewave, waveform)
-    waveform = np.append(waveform, Postwave1)
-    waveform = np.append(waveform, Postwave2)
+    waveform = np.append(waveform, Postwave)
     
     status = 'waveform updated'
     return waveform, status
 
-def GenStageWave_ramp(distance, AlineTriggers, DISTANCE, STEPS):
-    # distance: stage movement per Cscan , mm/s
-    # edges: Aline triggers
-    # how many motor steps to reach that distance
-    steps = (distance/DISTANCE*STEPS)
-    # how many Aline triggers per motor step
-    clocks_per_motor_step = np.int16(AlineTriggers/steps)
-    if clocks_per_motor_step < 2:
-        clocks_per_motor_step = 2
-    # print('clocks per motor step: ',clocks_per_motor_step)
-    # generate stage movement that ramps up and down speed so that motor won't miss signal at beginning and end
-    # ramping up: the interval between two steps should be 100 clocks at the beginning, then gradually decrease.vice versa for ramping down
-    if np.abs(distance) > 0.01:
-        max_interval = 80
-    else:
-        max_interval = 40
-    # the interval for ramping up and down
-    ramp_up_interval = np.arange(max_interval,clocks_per_motor_step,-2)
-    ramp_down_interval = np.arange(clocks_per_motor_step,max_interval+1,2)
-    ramping_steps = np.sum(len(ramp_down_interval)+len(ramp_up_interval)) # number steps used in ramping up and down process
-    
-    # ramping up waveform generation
-    ramp_up_waveform = np.zeros(np.sum(ramp_up_interval))
-    if any(ramp_up_waveform):
-        ramp_up_waveform[0] = 1
-    time_lapse = -1
-    for interval in ramp_up_interval:
-        time_lapse = time_lapse + interval
-        ramp_up_waveform[time_lapse] = 1
 
-    # ramping down waveform generation
-    ramp_down_waveform = np.zeros(np.sum(ramp_down_interval))
-    time_lapse = -1
-    for interval in ramp_down_interval:
-        time_lapse = time_lapse + interval
-        ramp_down_waveform[time_lapse] = 1
-    if any(ramp_down_waveform):
-        ramp_down_waveform[0] = 1
-        
-    # normal speed waveform
-    steps_left = steps - ramping_steps
-    clocks_left = np.int32(AlineTriggers-len(ramp_down_waveform)-len(ramp_up_waveform))
-    stride = round(clocks_left/steps_left)
-    if stride < 2:
-        stride = 2
-    clocks_left = np.int32(steps_left * stride)
-    stagewaveform = np.zeros(clocks_left)
-    for ii in range(0,clocks_left,stride):
-        stagewaveform[ii] = 1
-    
-    # append all arrays
-    DOwaveform = np.append(ramp_up_waveform,stagewaveform)
-    DOwaveform = np.append(DOwaveform,ramp_down_waveform)
-    if len(DOwaveform) < AlineTriggers:
-        DOwaveform = np.append(DOwaveform,np.zeros(AlineTriggers-len(DOwaveform),dtype = np.uint16))
-    elif len(DOwaveform) > AlineTriggers:
-        DOwaveform = DOwaveform[0:AlineTriggers]
-    return DOwaveform
-
-def GenAODO(mode='RptBline', XStepSize = 1, XSteps = 1000, AVG = 1, obj = 'OptoSigma5X',\
-            preclocks = 50, postclocks = 200, YStepSize = 1, YSteps = 200, BVG = 1, CSCAN_AXIS = pow(2, 1), Galvo_bias = 3, DISTANCE = 2, STEPS = 25000):
-    # AVG: Aline average
+def GenAODO(mode='ContinuousBline',obj = '5X',postclocks = 50, YStepSize = 1, YSteps = 200, BVG = 1, Galvo_bias = 0):
     # BVG: Bline average
     # bias: Galvo bias voltage
-    # preclocks: #Aline triggers for Galvo ramping up
     # postclocks: #Aline triggers for Galvo fly-back
     
-    # DO clock is swept source A-line trigger at 100kHz
-    # DO configure: port0 line 0 for X stage, port0 line 1 for Y stage, port 0 line 2 for Z stage, port 0 line 3 for Digitizer enable
-    if mode == 'RptAline' or mode == 'SingleAline':
-        # RptAline is for checking Aline profile, we don't need to capture each Aline, only display 30 Alines per second\
-        # if one wants to capture each Aline, they can set X and Y step size to be 0 and capture Cscan instead
-        # 33 frames per second, how many samples for each frame
-        # trigger enbale waveform generation
-        CscanAO = np.ones(BVG*(XSteps * AVG)) * Galvo_bias
-        status = 'waveform updated'
-        return None, CscanAO, status
-    
-    elif mode == 'RptBline' or mode == 'SingleBline':
-        # RptBline is for checking Bline profile, only display 30 Blines per second
-        # if one wants to capture each Bline, they can set Y stepsize to be 0 and capture Cscan instead
-        # generate AO waveform for Galvo control
-        AOwaveform, status = GenGalvoWave(XStepSize, XSteps, AVG, obj, preclocks, postclocks, Galvo_bias)
-        CscanAO = np.tile(AOwaveform, BVG)
-        status = 'waveform updated'
-        return None, CscanAO, status
-    
-    
-    elif mode in ['SingleCscan','Mosaic','Mosaic+Cut']:
-        # RptCscan is for acquiring Cscan at the same location repeatitively
-        # generate AO waveform for Galvo control for one Bline
-        AOwaveform, status = GenGalvoWave(XStepSize, XSteps, AVG, obj, preclocks, postclocks, Galvo_bias)
-        CscanAO = np.tile(AOwaveform, YSteps*BVG)
-            
-        if YStepSize == 0:
-            stagewave = np.zeros(len(AOwaveform))
-        else:
-            stagewave = GenStageWave_ramp(YSteps * YStepSize/1000, (XSteps*AVG + 2 * preclocks + postclocks)* YSteps * BVG, DISTANCE, STEPS)
-        # append preclocks and postclocks
-        stagewave = CSCAN_AXIS*stagewave
-        # print('distance per Cscan: ',np.sum(stagewaveform)/STEPS*DISTANCE*1000/pow(2,CSCAN_AXIS),'um')
+    # DO clock is synchronuous with Galvo waveform
+    # DO configure: port0 line 0 
+    if mode in ['ContinuousAline', 'FiniteAline', 'ContinuousBline', 'FiniteBline']:
         
+        AOwaveform = np.ones(BVG*2) * Galvo_bias
+        DOwaveform = np.ones([BVG, 2],dtype = np.uint32)
+        DOwaveform[:,1] = 0
+        DOwaveform=DOwaveform.flatten()
         status = 'waveform updated'
-        return np.uint32(stagewave), CscanAO, status
+        return np.uint32(DOwaveform), AOwaveform, status
+    
+    elif mode in ['FiniteCscan','ContinuousCscan', 'Mosaic']:
+        # generate AO waveform for Galvo control for one Bline
+        AOwaveform, status = GenGalvoWave(YStepSize, YSteps, BVG*2, obj, postclocks, Galvo_bias)
+        DOwaveform = np.ones([AOwaveform.shape[0]//2, 2],dtype = np.uint32)
+        DOwaveform[:,1] = 0
+        DOwaveform=DOwaveform.flatten()
+        status = 'waveform updated'
+        return np.uint32(DOwaveform), AOwaveform, status
     
     else:
         status = 'invalid task type! Abort action'
@@ -222,61 +137,21 @@ def GenMosaic_XYGalvo(Xmin, Xmax, Ymin, Ymax, FOV, overlap=10):
     Positions = np.meshgrid(Xpositions, Ypositions)
     status = 'Mosaic Generation success'
     return Positions, status
-
-class MOSAIC():
-    # assume scanning direction is Y axis
-    def __init__(self, x, ystart, ystop):
-        super().__init__()
-        self.x = x
-        self.ystart = ystart
-        self.ystop = ystop
-        
-def GenMosaic_XGalvo(Xmin, Xmax, Ymin, Ymax, FOV, overlap=10):
-    # all arguments are with units mm
-    # overlap is with unit %
-    if Xmin > Xmax:
-        status = 'Xmin is larger than Xmax, Mosaic generation failed'
-        return None, status
-    if Ymin > Ymax:
-        status = 'Y min is larger than Ymax, Mosaic generation failed'
-        return None, status
-    if FOV < 0.001:
-        return None, ''
-    # get FOV step size
-    stepsize = FOV*(1-overlap/100)
-    # get how many FOVs in X direction
-    Xsteps = np.ceil((Xmax-Xmin)/stepsize)
-    # get actual X range
-    actualX=Xsteps*stepsize
-    # generate start and stop position in X direction
-    # add or subtract a small number to avoid precision-induced error
-    startX=Xmin-(actualX-(Xmax-Xmin))/2
-    stopX = Xmax+(actualX-(Xmax-Xmin))/2+0.01
-    # generate X positions
-    pos = np.arange(startX, stopX, stepsize)
-    #print(Xpositions)
-    mosaic = []
-    for ii, xpos in enumerate(pos):
-        mosaic = np.append(mosaic, MOSAIC(xpos, Ymin, Ymax))
-
-    status = "Mosaic Generation success..."
-    return mosaic, status
     
     
 def GenHeights(start, depth, Nplanes):
     return np.arange(start, start+Nplanes*depth/1000+0.01, depth/1000)
 
-from PyQt5.QtGui import QPixmap
 
-from matplotlib import pyplot as plt
 
 def LinePlot(AOwaveform, DOwaveform = None, m=2, M=4):
     # clear content on plot
     plt.cla()
-    # plot the new waveform
-    plt.plot(range(len(AOwaveform)),AOwaveform,linewidth=2)
+
     if np.any(DOwaveform):
         plt.plot(range(len(DOwaveform)),DOwaveform,linewidth=2)
+    # plot the new waveform
+    plt.plot(range(len(AOwaveform)),AOwaveform,linewidth=2)
     # plt.ylim(np.min(AOwaveform)-0.2,np.max(AOwaveform)+0.2)
     plt.ylim([m,M])
     plt.xticks(fontsize=15)
@@ -306,21 +181,46 @@ def ScatterPlot(mosaic):
     pixmap = QPixmap('scatter.jpg')
     return pixmap
 
-import qimage2ndarray as qpy
-def ImagePlot(matrix, m=0, M=1):
-    matrix = np.array(matrix)
-    matrix[matrix<m] = m
-    matrix[matrix>M] = M
-    # adjust image brightness
-    data = np.uint8((matrix-m)/np.abs(M-m+0.00001)*255.0)
-    try:
-        im = qpy.gray2qimage(data)
-        pixmap = QPixmap(im)
-    except:
-        # print(data.shape)
-        pixmap = QPixmap(qpy.gray2qimage(np.zeros(1000,1000)))
-    return pixmap
+
     
+def RGBImagePlot(matrix1 = [], matrix2 = [], m=0, M=1):
+    if len(matrix1)>0:
+        matrix1 = np.array(matrix1)
+        matrix1[matrix1<m] = m
+        matrix1[matrix1>M] = M
+        matrix1 = np.uint8((matrix1-m)/np.abs(M-m+0.00001)*127)
+        height, width = matrix1.shape
+    if len(matrix2)>0:
+        matrix2 = np.array(matrix2)
+        matrix2[matrix2<m] = m
+        matrix2[matrix2>M] = M
+        # adjust image brightness
+        
+        matrix2 = np.uint8((matrix2-m)/np.abs(M-m+0.00001)*127)
+   
+        height, width = matrix2.shape
+    
+    if len(matrix1)==0:
+        matrix1 = np.zeros(matrix2.shape)
+    if len(matrix2)==0:
+        matrix2 = np.zeros(matrix1.shape)
+    # Create an empty RGB array
+    rgb_array = np.zeros((height, width, 3), dtype=np.uint8)
+    
+    
+    # Assign each channel
+    rgb_array[..., 0] = matrix1 + matrix2   # Red channel
+    rgb_array[..., 1] = matrix1 # Green channel
+    rgb_array[..., 2] = matrix1  # Blue channel
+    
+    # Convert to QImage
+    bytes_per_line = 3 * width
+    qimage = QImage(rgb_array.data, width, height, bytes_per_line, QImage.Format_RGB888)
+    
+    # Convert to QPixmap and display
+    pixmap = QPixmap.fromImage(qimage)
+    return pixmap
+
 def findchangept(signal, step):
     # python implementation of matlab function findchangepts
     L = len(signal)
