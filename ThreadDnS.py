@@ -101,7 +101,7 @@ class DnSThread(QThread):
                     self.ui.statusbar.showMessage(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
-                if time.time()-start>4:
+                if time.time()-start>0.1:
                     print('time for DnS:',round(time.time()-start,3))
             except Exception as error:
                 message = "\nAn error occurred:"+" skip the display and save action\n"
@@ -152,7 +152,9 @@ class DnSThread(QThread):
         else:
             m=self.ui.XZmin.value()
             M=self.ui.XZmax.value()
+        t0=time.time()
         pixmap = LinePlot(Ascan, [], m, M)
+        print('time for line plot took ',round(time.time()-t0,3))
         # clear content on the waveformLabel
         self.ui.XZplane.clear()
         # update iamge on the waveformLabel
@@ -355,30 +357,20 @@ class DnSThread(QThread):
                 except Exception as error:
                     print(error)
                     
-            elif self.ui.ACQMode.currentText() in ['FiniteBline', 'ContinuousBline']:
+            elif self.ui.ACQMode.currentText() in ['FiniteBline', 'ContinuousBline','Mosaic','ContinuousCscan', 'FiniteCscan']:
                 try:
                     # data = np.flip(data, 1).copy()
                     # if self.ui.LOG.currentText() == '10log10':
                     #     data=np.float32(10*np.log10(data+0.000001))
+                    
                     if len(self.DynBline)>0:
                         pixmap = RGBImagePlot(np.float32(self.Bline), np.float32(self.DynBline*1), self.ui.XZmin.value(), self.ui.XZmax.value())
                     else:
                         pixmap = RGBImagePlot(matrix1=np.float32(self.Bline), m=self.ui.XZmin.value(), M=self.ui.XZmax.value())
                     # clear content on the waveformLabel
+                    # print(self.Bline[0,0:5])
                     self.ui.XZplane.clear()
                     # update iamge on the waveformLabel
-                    self.ui.XZplane.setPixmap(pixmap)
-                except:
-                    pass
-            elif self.ui.ACQMode.currentText() in ['Mosaic','ContinuousCscan', 'FiniteCscan']:
-                try:
-                    if len(self.DynBline)>0:
-                        pixmap = RGBImagePlot(np.float32(self.Bline), np.float32(self.DynBline*1), self.ui.XZmin.value(), self.ui.XZmax.value())
-                    else:
-                        pixmap = RGBImagePlot(matrix1=np.float32(self.Bline), m=self.ui.XZmin.value(), M=self.ui.XZmax.value())
-                    # clear content on the waveformLabel
-                    self.ui.XZplane.clear()
-                    # update image on the waveformLabel
                     self.ui.XZplane.setPixmap(pixmap)
                 except:
                     pass

@@ -118,8 +118,8 @@ class AODOThread(QThread):
         self.GalvoAO = self.ui.AODOboard.toPlainText()+'/'+self.ui.GalvoAO.currentText()
         
         # synchronized DO terminal
-        self.SyncDO = '/'+self.ui.AODOboard.toPlainText()+'/'+self.ui.SyncDO.currentText()
-
+        self.SyncDO = self.ui.AODOboard.toPlainText()+'/'+self.ui.SyncDO.currentText()
+        # print(self.GalvoAO, self.SyncDO)
         self.ui.Xcurrent.setValue(self.ui.XPosition.value())
         self.ui.Ycurrent.setValue(self.ui.YPosition.value())
         self.ui.Zcurrent.setValue(self.ui.ZPosition.value())
@@ -160,7 +160,7 @@ class AODOThread(QThread):
                                                   min_val=- 10.0, max_val=10.0, \
                                                   units=ni.constants.VoltageUnits.VOLTS)
             # depending on whether continuous or finite, config clock and mode
-            if self.mode in ['RptAline', 'RptBline']:
+            if self.ui.ACQMode.currentText() in ['ContinuousAline', 'ContinuousBline','ContinuousCscan']:
                 mode =  Atype.CONTINUOUS
             else:
                 mode =  Atype.FINITE

@@ -18,7 +18,7 @@ import traceback
 # system magnification with 10X objective
 
 global Magnification10X
-Magnification10X = 6.8
+Magnification10X = 6.7
 # try:
 #     from traits.api import HasTraits, Instance, on_trait_change
 #     from traitsui.api import View, Item
@@ -208,10 +208,10 @@ class MainWindow(QMainWindow):
         self.ui.AlinesPerBline.setValue(AlinesPerBline)
         # set offsetH limit
         # self.ui.offsetH.setMaximum((MaxHeight - Height)//2)
-        self.ui.Xoffsetlength.setMaximum((MaxHeight - AlinesPerBline)//2*cameraStepSize/1000)
-        self.ui.Xoffsetlength.setMinimum(-(MaxHeight - AlinesPerBline)//2*cameraStepSize/1000)
+        self.ui.Xoffsetlength.setMaximum((MaxHeight - AlinesPerBline)*cameraStepSize/1000)
+        self.ui.Xoffsetlength.setMinimum(0)#-(MaxHeight - AlinesPerBline)//2*cameraStepSize/1000)
         # Calculate offsetH pixel numbers based on corrected user set offsetLength
-        offsetH = (MaxHeight - AlinesPerBline)//2 + np.int16(np.round(self.ui.Xoffsetlength.value()*1000/cameraStepSize))
+        offsetH = np.uint16(np.round(self.ui.Xoffsetlength.value()*1000/cameraStepSize))
         # print(offsetH)
         self.ui.offsetH.setValue(offsetH)
         

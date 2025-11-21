@@ -141,7 +141,8 @@ class WeaverThread(QThread):
         self.DnSQueue.put(an_action)
         an_action = DAction('ConfigureBoard')
         self.DQueue.put(an_action)
-        self.DbackQueue.get()
+        # self.DbackQueue.get()
+        time.sleep(0.5)
         # print('here1')
         ###########################################################################################
         # start AODO 
@@ -183,7 +184,7 @@ class WeaverThread(QThread):
                 self.GPUQueue.put(an_action)
                     
                 
-        an_action = AODOAction('StopTask')
+        an_action = AODOAction('tryStopTask')
         self.AODOQueue.put(an_action)
         an_action = AODOAction('CloseTask')
         self.AODOQueue.put(an_action)
@@ -197,7 +198,8 @@ class WeaverThread(QThread):
         self.DnSQueue.put(an_action)
         an_action = DAction('ConfigureBoard')
         self.DQueue.put(an_action)
-        self.DbackQueue.get()
+        # self.DbackQueue.get()
+        time.sleep(0.5)
         # an_action = DnSAction('Clear')
         # self.DnSQueue.put(an_action)
         # config AODO
@@ -219,7 +221,7 @@ class WeaverThread(QThread):
             ######################################### collect data
             # print('waiting...')
             try:
-                an_action = self.DbackQueue.get(timeout=5) # never time out
+                an_action = self.DbackQueue.get(timeout=1) # never time out
                 memoryLoc = an_action.action
                 # print(memoryLoc)
                 data_backs += 1
@@ -505,20 +507,23 @@ class WeaverThread(QThread):
         mode = self.ui.ACQMode.currentText()
         device = self.ui.FFTDevice.currentText()
         BAvg = self.ui.BlineAVG.value()
-        self.ui.ACQMode.setCurrentText('FinitBline')
+        self.ui.ACQMode.setCurrentText('FiniteBline')
         self.ui.FFTDevice.setCurrentText('None')
         self.ui.BlineAVG.setValue(50)
         ############################# measure an Aline
         print('acquiring Bline')
-        self.BackgroundScan('FinitBline')
+        self.ui.RunButton.setChecked(True)
+        self.SingleScan(self.ui.ACQMode.currentText())
+
         time.sleep(2)
         print('got Bline')
         #######################################################################
-        Xpixels = self.ui.NSamples.value()
+        Xpixels = self.ui.AlinesPerBline.value()
         Yrpt = self.ui.BlineAVG.value()
-        BLINE = self.data.reshape([Yrpt, Xpixels, self.ui.AlinesPerBline.value()])
+        BLINE = self.data.reshape([Yrpt, Xpixels, self.ui.NSamples.value()])
         
         background = np.transpose(np.float32(np.mean(BLINE,0)))
+        background = np.smooth()
         # print(background.shape)
         filePath = self.ui.DIR.toPlainText()
         current_time = datetime.datetime.now()
@@ -540,34 +545,7 @@ class WeaverThread(QThread):
         self.ui.BlineAVG.setValue(BAvg)
         return 'background measruement success...'
     
-    def BackgroundScan(self, mode):
-        self.InitMemory()
-        an_action = DAction('ConfigureBoard')
-        self.DQueue.put(an_action)
-        self.DbackQueue.get()
-        # start digitizer, it will stop automatically when all Blines are acquired
-        an_action = DAction('AcquireOnce')
-        self.DQueue.put(an_action)
-        start = time.time()
-        ######################################### collect data
-        # collect data from digitizer, data format: [Y pixels, X*Z pixels]
-        an_action = self.DbackQueue.get() # never time out
-        print('time to fetch data: '+str(round(time.time()-start,3)))
-        # self.StagebackQueue.get() # wait for AODO CloseTask
-        memoryLoc = an_action.action
-        ############################################### display and save data
-        if self.ui.FFTDevice.currentText() in ['None']:
-            # put raw spectrum data into memory for dipersion compensation and background subtraction usage
-            self.data = self.Memory[memoryLoc].copy()
-            # In None mode, directly do display and save
-            if np.sum(self.data)<10:
-                print('spectral data all zeros!')
-                # self.ui.PrintOut.append('spectral data all zeros!')
-                self.log.write('spectral data all zeros!')
-                return mode + " got all zeros..."
-            an_action = DnSAction(mode, self.data, raw=True) # data in Memory[memoryLoc]
-            self.DnSQueue.put(an_action)
-        return mode + " successfully finished..."
+
     
     
     def get_surfCurve(self):

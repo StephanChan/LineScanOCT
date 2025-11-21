@@ -74,7 +74,7 @@ class Camera(QThread):
             self.UninitBoard()
         print(self.exit_message)
         
-    def ExitWithErrorPrompt(errString, pfResult = None):
+    def ExitWithErrorPrompt(self, errString, pfResult = None):
         print(errString)
         if pfResult is not None:
             print(pfResult)
@@ -151,14 +151,14 @@ class Camera(QThread):
             #     print(elem.Name)
             # print('\r')
             
-            if self.ui.ACQMode.currentText() in ['FiniteBline', 'FiniteAline','Cscan','FiniteBlineDyn','CscanDyn']:
+            if self.ui.ACQMode.currentText() in ['FiniteBline', 'FiniteAline','FiniteCscan']:
                 pfResult = self.pfCam.SetFeatureEnum("AcquisitionMode", "MultiFrame")
                 if pfResult != pf.Error.NONE:
                     self.ExitWithErrorPrompt("Could not set acquisitionMode", pfResult)
                 pfResult = self.pfCam.SetFeatureInt("AcquisitionFrameCount", self.BlinesPerAcq)
                 if pfResult != pf.Error.NONE:
                     self.ExitWithErrorPrompt("Could not set acquisition Frame Count", pfResult)
-            elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousAline']:
+            elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousAline','ContinuousCscan']:
                 pfResult = self.pfCam.SetFeatureEnum("AcquisitionMode", "Continuous")
                 if pfResult != pf.Error.NONE:
                     self.ExitWithErrorPrompt("Could not set acquisitionMode", pfResult)
@@ -170,7 +170,7 @@ class Camera(QThread):
             pfResult, pfFeatureParam =self.pfCam.GetFeatureFloat("ExposureTime")
             if pfResult != pf.Error.NONE:
                 self.ExitWithErrorPrompt("Could not get ExposureTime", pfResult)
-            self.ui.Exposure_display.setValue(pfFeatureParam)
+            self.ui.Exposure_display.setValue(pfFeatureParam/1000)
             
             pfResult = self.pfCam.SetFeatureEnum("ExposureMode", "Timed")
             if pfResult != pf.Error.NONE:
@@ -223,7 +223,7 @@ class Camera(QThread):
             self.ui.FrameRate.setValue(pfFeatureParam)
             
             self.SetupStream()
-        self.DbackQueue.put(0)
+        # self.DbackQueue.put(0)
         
     def GetTemp(self):
         if not SIM:
@@ -269,13 +269,14 @@ class Camera(QThread):
         NBlines = self.Memory[0].shape[0]
         BlinesCount = 0
         while BlinesCount < self.BlinesPerAcq and self.ui.RunButton.isChecked():
-            # t0=time.time()
+            t0=time.time()
             [pfResult, pfBuffer] = self.pfStream.GetNextBuffer()
+            # print(pfResult)
             if pfResult == pf.Error.NONE:
                 #Get image object from buffer
-                # t1=time.time()
+                t1=time.time()
                 pfBuffer.GetImage(pfImage)
-                # t2=time.time()
+                t2=time.time()
                 if self.ui.PixelFormat_display.text() in ['Mono8']:
                     Bline = np.array(pfImage, copy = False)
                 else:
@@ -286,9 +287,9 @@ class Camera(QThread):
                 
                 # print(Bline[0:10,0:5])
 
-                # t3=time.time()
+                t3=time.time()
                 self.Memory[self.MemoryLoc][BlinesCount % NBlines] = Bline
-                # t3=time.time()
+                t4=time.time()
                 # fig = plt.figure()
                 # plt.imshow(imageData)
                 # plt.show()
@@ -296,11 +297,13 @@ class Camera(QThread):
                 # print('t1-t0: ', round(t1-t0,6))
                 # print('t2-t1: ', round(t2-t1,6))
                 # print('t3-t2: ', round(t3-t2,6))
+                # print('t4-t3: ', round(t4-t3,6))
                 
                 
             #Release frame buffer, otherwise ring buffer will get full
             self.pfStream.ReleaseBuffer(pfBuffer)
             BlinesCount += 1
+            # print(BlinesCount)
             if BlinesCount % NBlines == 0:
                 an_action = DbackAction(self.MemoryLoc)
                 self.DbackQueue.put(an_action)

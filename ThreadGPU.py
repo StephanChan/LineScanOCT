@@ -7,7 +7,7 @@ Created on Tue Dec 12 16:50:25 2023
 from PyQt5.QtCore import  QThread
 import time
 global SIM
-from scipy.ndimage import uniform_filter1d, gaussian_filter, median_filter, uniform_filter
+from scipy.ndimage import uniform_filter1d, gaussian_filter, median_filter, uniform_filter,uniform_filter1d
 try:
     import cupy
     SIM = False
@@ -68,7 +68,7 @@ class GPUThread(QThread):
         self.defwin()
         self.definterp()
         self.update_Dispersion()
-        self.update_background()
+        # self.update_background()
         # self.update_FFTlength()
         self.QueueOut()
         
@@ -117,7 +117,10 @@ class GPUThread(QThread):
             # print('data shape', shape)
             # print('GPU receives:',self.data_CPU[0,0,0:10])
             # subtract background and remove first 100 samples
-            self.data_CPU = self.data_CPU - np.tile(self.background,[self.data_CPU.shape[0],1,1])
+            t0=time.time()
+            self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=101, axis=2)
+            print('background subtraction took ', round(time.time()-t0,4),'s')
+            # self.data_CPU = self.data_CPU - np.tile(self.background,[self.data_CPU.shape[0],1,1])
             Alines =self.data_CPU.shape[0]*self.data_CPU.shape[1]
             self.data_CPU=self.data_CPU.reshape([Alines, samples])
 
@@ -151,8 +154,8 @@ class GPUThread(QThread):
             # print(self.data_CPU[0:3])
             # interpolation
             # t2 = time.time() 
-            yp_gpu = y_gpu
-            # self.interp_kernel((8,8),(16,16), (Alines, samples, x_gpu, xp_gpu, y_gpu, indice1, indice2, yp_gpu))
+            # yp_gpu = y_gpu
+            self.interp_kernel((8,8),(16,16), (Alines, samples, x_gpu, xp_gpu, y_gpu, indice1, indice2, yp_gpu))
             # print('time for interpolation: ', round(time.time()-t2,5))
             yp_gpu = cupy.reshape(yp_gpu,[Alines, samples])
             # yp_gpu[:,0] = 0
@@ -177,6 +180,7 @@ class GPUThread(QThread):
             # self.data_CPU = self.data_CPU[:,Pixel_start: Pixel_start+Pixel_range ]*self.AMPLIFICATION
             #######################################
             data_gpu  = cupy.fft.fft(yp_gpu*dispersion, axis=fftAxis)/samples
+            # data_gpu  = cupy.fft.fft(yp_gpu, axis=fftAxis)/samples
             # print(data_gpu[0:10,0:5])
 
             data_gpu = cupy.absolute(data_gpu[:,Pixel_start:Pixel_start + Pixel_range])
@@ -184,7 +188,7 @@ class GPUThread(QThread):
             self.data_CPU = cupy.asnumpy(data_gpu)*self.AMPLIFICATION
             self.data_CPU = self.data_CPU.reshape(shape[0],shape[1],Pixel_range)
             # print('data_CPU shape', self.data_CPU.shape)
-            print('data_CPU:', self.data_CPU[0,0,0:5])
+            # print('data_CPU:', self.data_CPU[0,0,0:15])
             if self.ui.DynCheckBox.isChecked() and mode in [ 'FiniteBline', 'FiniteCscan']:
                 Dyn = self.Dynamic_Processing()
                 print('dyn:',Dyn[0,0:5])
@@ -225,7 +229,8 @@ class GPUThread(QThread):
         if not (SIM or self.SIM):
             self.data_CPU = np.float32(self.Memory[memoryLoc].copy())
             shape = self.data_CPU.shape
-            self.data_CPU = self.data_CPU - np.tile(self.background,[self.ui.BlineAVG.value(),1,1])
+            self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=101, axis=2)
+            # self.data_CPU = self.data_CPU - np.tile(self.background,[self.ui.BlineAVG.value(),1,1])
             Alines =self.data_CPU.shape[0]*self.data_CPU.shape[1]
             self.data_CPU=self.data_CPU.reshape([Alines, samples])
             # print(self.data_CPU.shape, b.shape)
@@ -317,7 +322,7 @@ class GPUThread(QThread):
         background_path = self.ui.BG_DIR.text()
         # print(dispersion_path+'/dspPhase.bin')
         if os.path.isfile(background_path):
-            self.background  = np.float32(np.fromfile(background_path, dtype=np.float32)).reshape([samples, self.ui.AlinePerBline.value()])
+            self.background  = np.float32(np.fromfile(background_path, dtype=np.float32)).reshape([samples, self.ui.AlinesPerBline.value()])
             self.background = np.transpose(self.background)
             # print(self.background.shape)
 

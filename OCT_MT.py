@@ -132,7 +132,7 @@ class GPUThread_2(GPUThread):
             self.GPU2weaverQueue = GPU2weaverQueue
             self.log = log
             self.SIM = SIM
-            self.AMPLIFICATION = 1#AMPLIFICATION
+            self.AMPLIFICATION = 10#AMPLIFICATION
             
 # wrap Galvo&Stage control thread with queues
 from ThreadAODO import AODOThread

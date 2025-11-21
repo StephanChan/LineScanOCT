@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-# Form implementation generated from reading ui file 'D:\LineScanOCT\LineScanOCT-master\GUI.ui'
+# Form implementation generated from reading ui file 'D:\LineScanOCT\LineScanOCT_code\GUI.ui'
 #
 # Created by: PyQt5 UI code generator 5.15.10
 #
@@ -115,7 +115,7 @@ class Ui_MainWindow(object):
         self.XZmax.setMaximum(65535)
         self.XZmax.setSingleStep(1)
         self.XZmax.setPageStep(5)
-        self.XZmax.setProperty("value", 10000)
+        self.XZmax.setProperty("value", 1000)
         self.XZmax.setOrientation(QtCore.Qt.Horizontal)
         self.XZmax.setObjectName("XZmax")
         self.verticalLayout_18.addWidget(self.XZmax)
@@ -157,7 +157,7 @@ class Ui_MainWindow(object):
         self.Intmax.setMaximum(65535)
         self.Intmax.setSingleStep(2)
         self.Intmax.setPageStep(5)
-        self.Intmax.setProperty("value", 10000)
+        self.Intmax.setProperty("value", 1000)
         self.Intmax.setOrientation(QtCore.Qt.Horizontal)
         self.Intmax.setObjectName("Intmax")
         self.verticalLayout_19.addWidget(self.Intmax)
@@ -883,11 +883,11 @@ class Ui_MainWindow(object):
         self.label_3.setEnabled(False)
         self.label_3.setObjectName("label_3")
         self.gridLayout_6.addWidget(self.label_3, 4, 0, 1, 1)
-        self.doubleSpinBox = QtWidgets.QDoubleSpinBox(self.groupBox_5)
-        self.doubleSpinBox.setEnabled(False)
-        self.doubleSpinBox.setMaximum(10000.0)
-        self.doubleSpinBox.setObjectName("doubleSpinBox")
-        self.gridLayout_6.addWidget(self.doubleSpinBox, 4, 1, 1, 1)
+        self.FrameRate = QtWidgets.QDoubleSpinBox(self.groupBox_5)
+        self.FrameRate.setEnabled(False)
+        self.FrameRate.setMaximum(10000.0)
+        self.FrameRate.setObjectName("FrameRate")
+        self.gridLayout_6.addWidget(self.FrameRate, 4, 1, 1, 1)
         self.horizontalLayout_6.addWidget(self.groupBox_5)
         self.tabWidget.addTab(self.PhotonFocus, "")
         self.horizontalLayout_4.addWidget(self.tabWidget)
@@ -1281,7 +1281,7 @@ class Ui_MainWindow(object):
         self.LoadBG.setText(_translate("MainWindow", "Load Background files"))
         self.Tabs.setTabText(self.Tabs.indexOf(self.tab_2), _translate("MainWindow", "图像预处理"))
         self.label_44.setText(_translate("MainWindow", "控制卡名称"))
-        self.SyncDO.setItemText(0, _translate("MainWindow", "port0/line0"))
+        self.SyncDO.setItemText(0, _translate("MainWindow", "port0/line0:7"))
         self.AODOboard.setHtml(_translate("MainWindow", "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n"
 "<html><head><meta name=\"qrichtext\" content=\"1\" /><style type=\"text/css\">\n"
 "p, li { white-space: pre-wrap; }\n"

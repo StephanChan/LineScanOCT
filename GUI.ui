@@ -279,7 +279,7 @@
                 <number>5</number>
                </property>
                <property name="value">
-                <number>10000</number>
+                <number>1000</number>
                </property>
                <property name="orientation">
                 <enum>Qt::Horizontal</enum>
@@ -389,7 +389,7 @@
                 <number>5</number>
                </property>
                <property name="value">
-                <number>10000</number>
+                <number>1000</number>
                </property>
                <property name="orientation">
                 <enum>Qt::Horizontal</enum>
@@ -2215,7 +2215,7 @@
                   </widget>
                  </item>
                  <item row="4" column="1">
-                  <widget class="QDoubleSpinBox" name="doubleSpinBox">
+                  <widget class="QDoubleSpinBox" name="FrameRate">
                    <property name="enabled">
                     <bool>false</bool>
                    </property>
@@ -2668,7 +2668,7 @@
               <widget class="QComboBox" name="SyncDO">
                <item>
                 <property name="text">
-                 <string>port0/line0</string>
+                 <string>port0/line0:7</string>
                 </property>
                </item>
               </widget>
