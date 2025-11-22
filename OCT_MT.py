@@ -190,6 +190,8 @@ class GUI(MainWindow):
         self.ui.BG_DIR.textChanged.connect(self.update_background)
         self.ui.AlinesPerBline.valueChanged.connect(self.update_background)
         self.ui.offsetH.valueChanged.connect(self.update_background)
+        self.ui.NSamples.valueChanged.connect(self.update_background)
+        self.ui.offsetW.valueChanged.connect(self.update_background)
         self.ui.InD_DIR.textChanged.connect(self.update_Dispersion)
         self.ui.Xmove2.clicked.connect(self.Xmove2)
         self.ui.Ymove2.clicked.connect(self.Ymove2)

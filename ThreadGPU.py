@@ -7,7 +7,7 @@ Created on Tue Dec 12 16:50:25 2023
 from PyQt5.QtCore import  QThread
 import time
 global SIM
-from scipy.ndimage import uniform_filter1d, gaussian_filter, median_filter, uniform_filter,uniform_filter1d
+from scipy.ndimage import uniform_filter1d
 try:
     import cupy
     SIM = False
@@ -63,12 +63,13 @@ class GPUThread(QThread):
                         }
                 }
             ''','interp1d')
+        
             
     def run(self):
         self.defwin()
         self.definterp()
         self.update_Dispersion()
-        # self.update_background()
+        self.update_background()
         # self.update_FFTlength()
         self.QueueOut()
         
@@ -116,12 +117,13 @@ class GPUThread(QThread):
             shape = self.data_CPU.shape
             # print('data shape', shape)
             # print('GPU receives:',self.data_CPU[0,0,0:10])
-            # subtract background and remove first 100 samples
+            # subtract background
             t0=time.time()
+            self.data_CPU = self.data_CPU - np.tile(self.background,[shape[0],1,1])
             self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=101, axis=2)
             print('background subtraction took ', round(time.time()-t0,4),'s')
-            # self.data_CPU = self.data_CPU - np.tile(self.background,[self.data_CPU.shape[0],1,1])
-            Alines =self.data_CPU.shape[0]*self.data_CPU.shape[1]
+            
+            Alines =shape[0]*shape[1]
             self.data_CPU=self.data_CPU.reshape([Alines, samples])
 
             # plt.figure()
@@ -140,8 +142,6 @@ class GPUThread(QThread):
             # start = time.time()
             # transfer data to GPU
             
-            self.data_CPU = self.data_CPU.reshape(Alines * samples)
-
             x_gpu  = cupy.array(self.intpX)
             xp_gpu  = cupy.array(self.intpXp)
             y_gpu  = cupy.array(self.data_CPU)
@@ -149,6 +149,7 @@ class GPUThread(QThread):
             indice2 = cupy.array(self.indice[1,:])
             yp_gpu = cupy.zeros(self.data_CPU.shape, dtype = cupy.float32)
             dispersion = cupy.array(self.dispersion)
+            
             # print(self.dispersion.shape)
             # print('data to gpu takes ', round(time.time()-t1,3))
             # print(self.data_CPU[0:3])
@@ -229,12 +230,16 @@ class GPUThread(QThread):
         if not (SIM or self.SIM):
             self.data_CPU = np.float32(self.Memory[memoryLoc].copy())
             shape = self.data_CPU.shape
+            # print('data shape', shape)
+            # print('GPU receives:',self.data_CPU[0,0,0:10])
+            # subtract background
+            t0=time.time()
+            self.data_CPU = self.data_CPU - np.tile(self.background,[shape[0],1,1])
             self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=101, axis=2)
-            # self.data_CPU = self.data_CPU - np.tile(self.background,[self.ui.BlineAVG.value(),1,1])
-            Alines =self.data_CPU.shape[0]*self.data_CPU.shape[1]
+            print('background subtraction took ', round(time.time()-t0,4),'s')
+            
+            Alines =shape[0]*shape[1]
             self.data_CPU=self.data_CPU.reshape([Alines, samples])
-            # print(self.data_CPU.shape, b.shape)
-            # subtract background and remove first 100 samples
             
             fftAxis = 1
             # # zero-padding data before FFT
@@ -253,7 +258,7 @@ class GPUThread(QThread):
             self.data_CPU = self.data_CPU[:,Pixel_start: Pixel_start+Pixel_range ]*self.AMPLIFICATION
             # data_CPU = data_CPU.reshape([shape[0],Pixel_range * np.uint32(Alines/shape[0])])
             self.data_CPU = self.data_CPU.reshape(shape[0],shape[1],Pixel_range)
-            print('data_CPU:', self.data_CPU[0,0,0:5])
+            # print('data_CPU:', self.data_CPU[0,0,0:5])
             if self.ui.DynCheckBox.isChecked() and mode in [ 'FiniteBline', 'FiniteCscan']:
                 Dyn = self.Dynamic_Processing()
                 print('dyn:',Dyn[0,0:5])
@@ -291,15 +296,26 @@ class GPUThread(QThread):
         dispersion_path = self.ui.InD_DIR.text()
         # print(dispersion_path+'/dspPhase.bin')
         if os.path.isfile(dispersion_path+'/dspPhase.bin'):
-            self.intpX  = np.float32(np.fromfile(dispersion_path+'/intpX.bin', dtype=np.float32))
-            self.intpXp  = np.float32(np.fromfile(dispersion_path+'/intpXp.bin', dtype=np.float32))
-            self.indice = np.uint16(np.fromfile(dispersion_path+'/intpIndice.bin', dtype=np.uint16)).reshape([2,samples])
-            self.dispersion = np.float32(np.fromfile(dispersion_path+'/dspPhase.bin', dtype=np.float32)).reshape([1, samples])
-            self.dispersion = np.complex64(np.exp(-1j*self.dispersion))
-            self.ui.statusbar.showMessage("load disperison compensation success...")
-            # self.ui.PrintOut.append("load disperison compensation success...")
-            self.log.write("load disperison compensation success...")
-            print("load disperison compensation success...")
+            try:
+                self.intpX  = np.float32(np.fromfile(dispersion_path+'/intpX.bin', dtype=np.float32))
+                self.intpXp  = np.float32(np.fromfile(dispersion_path+'/intpXp.bin', dtype=np.float32))
+                self.indice = np.uint16(np.fromfile(dispersion_path+'/intpIndice.bin', dtype=np.uint16)).reshape([2,samples])
+                self.dispersion = np.float32(np.fromfile(dispersion_path+'/dspPhase.bin', dtype=np.float32)).reshape([1, samples])
+                self.dispersion = np.complex64(np.exp(-1j*self.dispersion))
+                self.ui.statusbar.showMessage("load disperison compensation success...")
+                # self.ui.PrintOut.append("load disperison compensation success...")
+                self.log.write("load disperison compensation success...")
+                print("load disperison compensation success...")
+            except:
+                self.intpX  = np.float32(np.linspace(0,1,samples))
+                self.intpXp  = np.float32(np.linspace(0,1,samples))
+                self.indice = np.uint16(np.linspace(0,samples-1,samples)).reshape([samples,1])
+                self.indice = np.tile(self.indice,[1,2])
+                self.dispersion = np.complex64(np.ones(samples)).reshape([1,samples])
+                self.ui.statusbar.showMessage('no disperison compensation found...using default')
+                # self.ui.PrintOut.append("no disperison compensation found...")
+                self.log.write("no disperison compensation found...using default")
+                print("no disperison compensation found...using default")
         else:
             
             self.intpX  = np.float32(np.linspace(0,1,samples))
@@ -316,27 +332,32 @@ class GPUThread(QThread):
         # get samples per Aline
         samples = self.ui.NSamples.value()# - self.ui.DelaySamples.value()
         # print('GPU dispersion samples: ',samples)
-            
+        Xpixels = self.ui.AlinesPerBline.value()
         # self.window = np.float32(np.hanning(samples))
         # update dispersion and window
         background_path = self.ui.BG_DIR.text()
         # print(dispersion_path+'/dspPhase.bin')
         if os.path.isfile(background_path):
-            self.background  = np.float32(np.fromfile(background_path, dtype=np.float32)).reshape([samples, self.ui.AlinesPerBline.value()])
-            self.background = np.transpose(self.background)
-            # print(self.background.shape)
-
-            # plt.figure()
-            # plt.imshow(self.background)
-            # plt.show()
-            self.ui.statusbar.showMessage("load background success...")
-            # self.ui.PrintOut.append("load disperison compensation success...")
-            self.log.write("load background success...")
-            print("load background success...")
+            try:
+                self.background  = np.float32(np.fromfile(background_path, dtype=np.float32)).reshape([samples, Xpixels])
+                self.background = np.transpose(self.background)
+                # print(self.background.shape)
+    
+                # plt.figure()
+                # plt.imshow(self.background)
+                # plt.show()
+                self.ui.statusbar.showMessage("load background success...")
+                # self.ui.PrintOut.append("load disperison compensation success...")
+                self.log.write("load background success...")
+                print("load background success...")
+            except:
+                self.background = np.zeros([Xpixels, samples])
+                self.ui.statusbar.showMessage('no background found...using default')
+                # self.ui.PrintOut.append("no disperison compensation found...")
+                self.log.write("no background found...using default")
+                print("no background found...using default")
         else:
-            
-            self.background = np.zeros([self.ui.AlinesPerBline.value(), samples])
-            
+            self.background = np.zeros([Xpixels, samples])
             self.ui.statusbar.showMessage('no background found...using default')
             # self.ui.PrintOut.append("no disperison compensation found...")
             self.log.write("no background found...using default")

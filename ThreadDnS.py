@@ -7,7 +7,7 @@ Created on Tue Dec 12 18:26:44 2023
 """
 
 from PyQt5.QtCore import  QThread
-from Generaic_functions import LinePlot, findchangept, RGBImagePlot
+from Generaic_functions import LinePlot, findchangept, RGBImagePlot, fastLinePlot
 import numpy as np
 import traceback
 global SCALE
@@ -117,7 +117,7 @@ class DnSThread(QThread):
         self.ui.statusbar.showMessage("Display and save Thread successfully exited...")
             
     def print_display_counts(self):
-        message = str(self.display_actions)+ ' Blines displayed\n'
+        message = str(self.display_actions)+ self.ui.ACQMode.currentText() +' displayed\n'
         print(message)
         # self.ui.PrintOut.append(message)
         self.log.write(message)
@@ -147,16 +147,19 @@ class DnSThread(QThread):
         self.Aline = Ascan
         # float32 data type
         if self.ui.FFTDevice.currentText() in ['None']:
-            m=self.ui.XZmin.value()
-            M=self.ui.XZmax.value()
+            ym=self.ui.XZmin.value()
+            yM=self.ui.XZmax.value()
         else:
-            m=self.ui.XZmin.value()
-            M=self.ui.XZmax.value()
-        t0=time.time()
-        pixmap = LinePlot(Ascan, [], m, M)
-        print('time for line plot took ',round(time.time()-t0,3))
+            ym=self.ui.XZmin.value()
+            yM=self.ui.XZmax.value()
+        # t0=time.time()
+        # pixmap = LinePlot(Ascan, [], ym, yM)
+        w = self.ui.XZplane.width()
+        h = self.ui.XZplane.height()
+        pixmap = fastLinePlot(Ascan, width=w, height=h, m=ym, M=yM )
+        # print('time for line plot took ',round(time.time()-t0,3))
         # clear content on the waveformLabel
-        self.ui.XZplane.clear()
+        # self.ui.XZplane.clear()
         # update iamge on the waveformLabel
         self.ui.XZplane.setPixmap(pixmap)
         
@@ -344,12 +347,14 @@ class DnSThread(QThread):
                     # if self.ui.LOG.currentText() == '10log10':
                     #     data=10*np.log10(data+0.000001)
                     if self.ui.FFTDevice.currentText() in ['None']:
-                        m=self.ui.XZmin.value()
-                        M=self.ui.XZmax.value()
+                        ym=self.ui.XZmin.value()
+                        yM=self.ui.XZmax.value()
                     else:
-                        m=self.ui.XZmin.value()
-                        M=self.ui.XZmax.value()
-                    pixmap = LinePlot(self.Aline, [], m, M)
+                        ym=self.ui.XZmin.value()
+                        yM=self.ui.XZmax.value()
+                    w = self.ui.XZplane.width()
+                    h = self.ui.XZplane.height()
+                    pixmap = fastLinePlot(self.Aline, width=w, height=h, m=ym, M=yM )
                     # clear content on the waveformLabel
                     self.ui.XZplane.clear()
                     # update iamge on the waveformLabel

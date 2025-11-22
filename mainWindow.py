@@ -208,11 +208,10 @@ class MainWindow(QMainWindow):
         self.ui.AlinesPerBline.setValue(AlinesPerBline)
         # set offsetH limit
         # self.ui.offsetH.setMaximum((MaxHeight - Height)//2)
-        self.ui.Xoffsetlength.setMaximum((MaxHeight - AlinesPerBline)*cameraStepSize/1000)
-        self.ui.Xoffsetlength.setMinimum(0)#-(MaxHeight - AlinesPerBline)//2*cameraStepSize/1000)
+        self.ui.Xoffsetlength.setMaximum((MaxHeight - AlinesPerBline)//2*cameraStepSize/1000)
+        self.ui.Xoffsetlength.setMinimum(-(MaxHeight - AlinesPerBline)//2*cameraStepSize/1000)
         # Calculate offsetH pixel numbers based on corrected user set offsetLength
-        offsetH = np.uint16(np.round(self.ui.Xoffsetlength.value()*1000/cameraStepSize))
-        # print(offsetH)
+        offsetH = (MaxHeight - AlinesPerBline)//2+np.int16(np.round(self.ui.Xoffsetlength.value()*1000/cameraStepSize))
         self.ui.offsetH.setValue(offsetH)
         
     def Calculate_Galvo_settings(self):

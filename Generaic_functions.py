@@ -14,6 +14,8 @@ import numpy as np
 import os
 from PyQt5.QtGui import QPixmap, QImage
 from matplotlib import pyplot as plt
+from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor
+from PyQt5.QtCore import Qt, QPointF
 
 class LOG():
     def __init__(self, ui):
@@ -163,6 +165,38 @@ def LinePlot(AOwaveform, DOwaveform = None, m=2, M=4):
     pixmap = QPixmap('lineplot.jpg')
     return pixmap
 
+def fastLinePlot(AOwaveform, DOwaveform = None, width=800, height=300, m=2, M=4 ):
+    """
+    Render a 1D waveform directly to QPixmap (FAST!)
+    """
+    if m is None: m = np.min(AOwaveform)
+    if M is None: M = np.max(AOwaveform)
+
+    # Create empty pixmap
+    pixmap = QPixmap(width, height)
+    pixmap.fill(Qt.white)
+
+    # Draw using QPainter
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(QColor(0, 0, 200), 2)
+    painter.setPen(pen)
+
+    n = len(AOwaveform)
+    x_scale = width / (n - 1)
+    y_scale = height / (M - m+1)
+
+    # Precompute transformed points
+    points = [
+        QPointF(i * x_scale, height - ((AOwaveform[i] - m) * y_scale))
+        for i in range(n)
+    ]
+    # Draw polyline
+    painter.drawPolyline(*points)
+    painter.end()
+
+    return pixmap
+
 def ScatterPlot(mosaic):
     # clear content on plot
     plt.cla()
@@ -188,7 +222,7 @@ def RGBImagePlot(matrix1 = [], matrix2 = [], m=0, M=1):
         matrix1 = np.array(matrix1)
         matrix1[matrix1<m] = m
         matrix1[matrix1>M] = M
-        matrix1 = np.uint8((matrix1-m)/np.abs(M-m+0.00001)*127)
+        matrix1 = np.uint8((matrix1-m+0.01)/np.abs(M-m+0.1)*127)
         height, width = matrix1.shape
     if len(matrix2)>0:
         matrix2 = np.array(matrix2)
@@ -196,7 +230,7 @@ def RGBImagePlot(matrix1 = [], matrix2 = [], m=0, M=1):
         matrix2[matrix2>M] = M
         # adjust image brightness
         
-        matrix2 = np.uint8((matrix2-m)/np.abs(M-m+0.00001)*127)
+        matrix2 = np.uint8((matrix1-m+0.01)/np.abs(M-m+0.1)*127)
    
         height, width = matrix2.shape
     
