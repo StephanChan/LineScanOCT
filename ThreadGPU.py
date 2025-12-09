@@ -7,7 +7,7 @@ Created on Tue Dec 12 16:50:25 2023
 from PyQt5.QtCore import  QThread
 import time
 global SIM
-from scipy.ndimage import uniform_filter1d
+from scipy.ndimage import uniform_filter1d, gaussian_filter
 try:
     import cupy
     SIM = False
@@ -119,9 +119,10 @@ class GPUThread(QThread):
             # print('GPU receives:',self.data_CPU[0,0,0:10])
             # subtract background
             t0=time.time()
-            self.data_CPU = self.data_CPU - np.tile(self.background,[shape[0],1,1])
-            self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=101, axis=2)
-            print('background subtraction took ', round(time.time()-t0,4),'s')
+            # self.data_CPU = self.data_CPU - np.tile(self.background,[shape[0],1,1])
+            self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=51, axis=2)
+            if round(time.time()-t0,4) >1:
+                print('background subtraction took ', round(time.time()-t0,3),'s')
             
             Alines =shape[0]*shape[1]
             self.data_CPU=self.data_CPU.reshape([Alines, samples])
@@ -154,10 +155,11 @@ class GPUThread(QThread):
             # print('data to gpu takes ', round(time.time()-t1,3))
             # print(self.data_CPU[0:3])
             # interpolation
-            # t2 = time.time() 
+            t2 = time.time() 
             # yp_gpu = y_gpu
             self.interp_kernel((8,8),(16,16), (Alines, samples, x_gpu, xp_gpu, y_gpu, indice1, indice2, yp_gpu))
-            # print('time for interpolation: ', round(time.time()-t2,5))
+            if round(time.time()-t2,4) >0.2:
+                print('time for interpolation: ', round(time.time()-t2,3))
             yp_gpu = cupy.reshape(yp_gpu,[Alines, samples])
             # yp_gpu[:,0] = 0
             # yp = cupy.asnumpy(yp_gpu)
@@ -183,11 +185,11 @@ class GPUThread(QThread):
             data_gpu  = cupy.fft.fft(yp_gpu*dispersion, axis=fftAxis)/samples
             # data_gpu  = cupy.fft.fft(yp_gpu, axis=fftAxis)/samples
             # print(data_gpu[0:10,0:5])
-
+            
             data_gpu = cupy.absolute(data_gpu[:,Pixel_start:Pixel_start + Pixel_range])
-
+            
             self.data_CPU = cupy.asnumpy(data_gpu)*self.AMPLIFICATION
-            self.data_CPU = self.data_CPU.reshape(shape[0],shape[1],Pixel_range)
+            self.data_CPU = self.data_CPU.reshape(shape[0],shape[1],data_gpu.shape[1])
             # print('data_CPU shape', self.data_CPU.shape)
             # print('data_CPU:', self.data_CPU[0,0,0:15])
             if self.ui.DynCheckBox.isChecked() and mode in [ 'FiniteBline', 'FiniteCscan']:

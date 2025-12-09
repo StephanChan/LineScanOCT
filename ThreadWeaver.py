@@ -139,49 +139,79 @@ class WeaverThread(QThread):
         self.InitMemory()
         an_action = DnSAction('Clear')
         self.DnSQueue.put(an_action)
+        # t0=time.time()
+        # print(self.DbackQueue.qsize())
         an_action = DAction('ConfigureBoard')
         self.DQueue.put(an_action)
         # self.DbackQueue.get()
-        time.sleep(0.5)
-        # print('here1')
+        # time.sleep(0.5)
+        t1=time.time()
         ###########################################################################################
         # start AODO 
         an_action = AODOAction('ConfigTask')
         self.AODOQueue.put(an_action)
+        self.StagebackQueue.get()
+        t2=time.time()
         # start camera
+        while self.DbackQueue.qsize()>0:
+            print('current dbackqueue size:', self.DbackQueue.qsize())
+            try:
+                self.DbackQueue.get_nowait()
+            except:
+                break
         an_action = DAction('StartAcquire')
         self.DQueue.put(an_action)
+        self.DbackQueue.get()
+        t3=time.time()
 
+        # print('current dbackqueue size:', self.DbackQueue.qsize())
         an_action = AODOAction('StartTask')
         self.AODOQueue.put(an_action)
         self.StagebackQueue.get()
+        t4=time.time()
+        print('\n')
+        # print('Camera config took: ',round(t1-t0,3),'sec')
+        print('Galvo board config took: ',round(t2-t1,3),'sec')
+        print('Camera start took: ',round(t3-t2,3),'sec')
+        print('Galvo board start took: ',round(t4-t3,3),'sec')
+        # print('current dbackqueue size:', self.DbackQueue.qsize())
+        print('\n')
 
-        # print('here2')
         for iAcq in range(self.NAcq):
             start = time.time()
             ######################################### collect data
             # collect data from digitizer, data format: [Y pixels, Xpixels, Z pixels]
+            
+            # print('current dbackqueue size:', self.DbackQueue.qsize())
             an_action = self.DbackQueue.get() # never time out
-            print('time to fetch data: '+str(round(time.time()-start,3)))
-            memoryLoc = an_action.action
-            # print(memoryLoc)
-
-            ############################################### display and save data
-            if self.ui.FFTDevice.currentText() in ['None']:
-                # put raw spectrum data into memory for dipersion compensation and background subtraction usage
-                self.data = self.Memory[memoryLoc].copy()
-                # In None mode, directly do display and save
-                if np.sum(self.data)<10:
-                    print('spectral data all zeros!')
-                    # self.ui.PrintOut.append('spectral data all zeros!')
-                    self.log.write('spectral data all zeros!')
-                    return mode + " got all zeros..."
-                an_action = DnSAction(mode, self.data, raw=True) # data in Memory[memoryLoc]
-                self.DnSQueue.put(an_action)
+            # print(an_action)
+            # print('current dbackqueue size:', self.DbackQueue.qsize())
+            if an_action != 0:
+                print('time to fetch data: '+str(round(time.time()-start,3)))
+                memoryLoc = an_action.action
+                # print(memoryLoc)
+    
+                ############################################### display and save data
+                if self.ui.FFTDevice.currentText() in ['None']:
+                    # put raw spectrum data into memory for dipersion compensation and background subtraction usage
+                    self.data = self.Memory[memoryLoc].copy()
+                    # In None mode, directly do display and save
+                    if np.sum(self.data)<10:
+                        print('spectral data all zeros!')
+                        # self.ui.PrintOut.append('spectral data all zeros!')
+                        self.log.write('spectral data all zeros!')
+                        message = 'spectral data all zeros!'
+                    else:
+                        an_action = DnSAction(mode, self.data, raw=True) # data in Memory[memoryLoc]
+                        self.DnSQueue.put(an_action)
+                        message = mode + " successfully finished..."
+                else:
+                    # In other modes, do FFT first
+                    an_action = GPUAction(self.ui.FFTDevice.currentText(), mode, memoryLoc)
+                    self.GPUQueue.put(an_action)
+                    message = mode + " successfully finished..."
             else:
-                # In other modes, do FFT first
-                an_action = GPUAction(self.ui.FFTDevice.currentText(), mode, memoryLoc)
-                self.GPUQueue.put(an_action)
+                message = 'an_action is 0'
                     
                 
         an_action = AODOAction('tryStopTask')
@@ -189,7 +219,9 @@ class WeaverThread(QThread):
         an_action = AODOAction('CloseTask')
         self.AODOQueue.put(an_action)
         self.StagebackQueue.get() # wait for AODO CloseTask
-        return mode + " successfully finished..."
+        # print(message)
+        # print('current dbackqueue size:', self.DbackQueue.qsize())
+        return message
     
             
     def RptScan(self, mode):
@@ -199,23 +231,32 @@ class WeaverThread(QThread):
         an_action = DAction('ConfigureBoard')
         self.DQueue.put(an_action)
         # self.DbackQueue.get()
-        time.sleep(0.5)
+        # time.sleep(0.5)
         # an_action = DnSAction('Clear')
         # self.DnSQueue.put(an_action)
         # config AODO
         an_action = AODOAction('ConfigTask')
         self.AODOQueue.put(an_action)
-        
+        self.StagebackQueue.get()
         data_backs = 0 # count number of data backs
         
+                
+        while self.DbackQueue.qsize()>0:
+            try:
+                print('current dbackqueue size:', self.DbackQueue.qsize())
+                self.DbackQueue.get_nowait()
+            except:
+                break
         # start digitizer for one acuquqisition
         an_action = DAction('StartAcquire')
         self.DQueue.put(an_action)
+        self.DbackQueue.get()
+
         # start AODO 
         an_action = AODOAction('StartTask')
         self.AODOQueue.put(an_action)
         self.StagebackQueue.get()
-        
+
         ######################################################### repeat acquisition until Stop button is clicked
         while self.ui.RunButton.isChecked():
             ######################################### collect data
@@ -523,7 +564,7 @@ class WeaverThread(QThread):
         BLINE = self.data.reshape([Yrpt, Xpixels, self.ui.NSamples.value()])
         
         background = np.transpose(np.float32(np.mean(BLINE,0)))
-        background = np.smooth()
+        # background = np.smooth()
         # print(background.shape)
         filePath = self.ui.DIR.toPlainText()
         current_time = datetime.datetime.now()

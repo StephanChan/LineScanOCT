@@ -51,7 +51,7 @@ class Camera(QThread):
                 if self.item.action == 'ConfigureBoard':
                     self.ConfigureBoard()
                 elif self.item.action == 'StartAcquire':
-                    if not SIM:
+                    if not (SIM or self.SIM):
                         self.StartAcquire()
                     else:
                         self.simData()         
@@ -86,52 +86,55 @@ class Camera(QThread):
 
         
     def InitBoard(self):
-        if not SIM:
+        if not (SIM or self.SIM):
             #Discover cameras in the network or connected to the USB port
             discovery = pf.PFDiscovery()
             pfResult = discovery.DiscoverCameras()
     
             if pfResult != pf.Error.NONE:
-                self.ExitWithErrorPrompt("Discovery error:", pfResult)
-    
-            #Print all available cameras
-            num_discovered_cameras = discovery.GetCameraCount()
-            camera_info_list = []
-            for x in range(num_discovered_cameras):
-                [pfResult, camera_info] = discovery.GetCameraInfo(x)
-                camera_info_list.append(camera_info) 
-                print("[",x,"]")
-                print(camera_info_list[x])
-    
-            #Prompt user to select a camera
-            # user_input = input("Select camera: ")
-            try:
-                cam_id = 0#int(user_input)
-            except:
-                self.ExitWithErrorPrompt("Error parsing input, not a number")
-    
-            #Check selected camera is within range
-            if not 0 <= cam_id < num_discovered_cameras:
-                self.ExitWithErrorPrompt("Selected camera out of range")
-    
-            selected_cam_info = camera_info_list[cam_id]
-            #Call copy constructor
-            #The camera info list elements are destroyed with PFDiscover
-            if selected_cam_info.GetType() == pf.CameraType.CAMTYPE_GEV:
-                self.cam_info = pf.PFCameraInfoGEV(selected_cam_info)
+                # self.ExitWithErrorPrompt("Discovery error:", pfResult)
+                self.SIM = True
+                # print(self.SIM)
             else:
-                self.cam_info = pf.PFCameraInfoU3V(selected_cam_info)
     
-            #Connect camera
-            self.pfCam = pf.PFCamera()
-    
-            pfResult = self.pfCam.Connect(self.cam_info)
-            #pfResult = pfCam.Connect(ip = "192.168.3.158")
-            if pfResult != pf.Error.NONE:
-                self.ExitWithErrorPrompt(["Could not connect to the selected camera", pfResult])
-            print('camera init success')
-            # return copy_cam_info
-            # self.log.write(message)
+                #Print all available cameras
+                num_discovered_cameras = discovery.GetCameraCount()
+                camera_info_list = []
+                for x in range(num_discovered_cameras):
+                    [pfResult, camera_info] = discovery.GetCameraInfo(x)
+                    camera_info_list.append(camera_info) 
+                    print("[",x,"]")
+                    print(camera_info_list[x])
+        
+                #Prompt user to select a camera
+                # user_input = input("Select camera: ")
+                try:
+                    cam_id = 0#int(user_input)
+                except:
+                    self.ExitWithErrorPrompt("Error parsing input, not a number")
+        
+                #Check selected camera is within range
+                # if not 0 <= cam_id < num_discovered_cameras:
+                #     self.ExitWithErrorPrompt("Selected camera out of range")
+        
+                selected_cam_info = camera_info_list[cam_id]
+                #Call copy constructor
+                #The camera info list elements are destroyed with PFDiscover
+                if selected_cam_info.GetType() == pf.CameraType.CAMTYPE_GEV:
+                    self.cam_info = pf.PFCameraInfoGEV(selected_cam_info)
+                else:
+                    self.cam_info = pf.PFCameraInfoU3V(selected_cam_info)
+        
+                #Connect camera
+                self.pfCam = pf.PFCamera()
+        
+                pfResult = self.pfCam.Connect(self.cam_info)
+                #pfResult = pfCam.Connect(ip = "192.168.3.158")
+                if pfResult != pf.Error.NONE:
+                    self.ExitWithErrorPrompt(["Could not connect to the selected camera", pfResult])
+                print('camera init success')
+                # return copy_cam_info
+                # self.log.write(message)
         
     def ConfigureBoard(self):
         self.AlinesPerBline = self.ui.AlinesPerBline.value()
@@ -142,7 +145,7 @@ class Camera(QThread):
             self.BlinesPerAcq = CONTINUOUS
         elif self.ui.ACQMode.currentText() in ['FiniteCscan']:
             self.BlinesPerAcq = self.ui.Ypixels.value() * self.ui.BlineAVG.value()
-        if not SIM:
+        if not (SIM or self.SIM):
             # get all camera features
             [pfResult, featureList] = self.pfCam.GetFeatureList()
             if pfResult != pf.Error.NONE:
@@ -163,7 +166,22 @@ class Camera(QThread):
                 if pfResult != pf.Error.NONE:
                     self.ExitWithErrorPrompt("Could not set acquisitionMode", pfResult)
             
-            
+            pfResult = self.pfCam.SetFeatureEnum("AcquisitionStatusSelector", self.ui.AcquisitionStatusSelector.currentText())
+            if pfResult != pf.Error.NONE:
+                self.ExitWithErrorPrompt("Could not set AcquisitionStatusSelector feature parameters", pfResult)
+                
+            pfResult = self.pfCam.SetFeatureEnum("TriggerSelector", self.ui.TriggerSelector.currentText())
+            if pfResult != pf.Error.NONE:
+                self.ExitWithErrorPrompt("Could not set TriggerSelector feature parameters", pfResult)
+                
+            pfResult = self.pfCam.SetFeatureEnum("TriggerMode", self.ui.TriggerMode.currentText())
+            if pfResult != pf.Error.NONE:
+                self.ExitWithErrorPrompt("Could not set TriggerMode feature parameters", pfResult)
+                
+            pfResult = self.pfCam.SetFeatureEnum("TriggerSource", self.ui.TriggerSource.currentText())
+            if pfResult != pf.Error.NONE:
+                self.ExitWithErrorPrompt("Could not set TriggerSource feature parameters", pfResult)
+                
             pfResult = self.pfCam.SetFeatureFloat("ExposureTime", self.ui.Exposure.value()*1000)
             if pfResult != pf.Error.NONE:
                 self.ExitWithErrorPrompt("Could not set exposure time", pfResult)
@@ -219,14 +237,24 @@ class Camera(QThread):
                 self.ExitWithErrorPrompt("Error setting Y offset", pfResult)
             
             # get frame rate
-            pfResult, pfFeatureParam = self.pfCam.GetFeatureFloat("AcquisitionFrameRate")
+            pfResult, pfFeatureParam = self.pfCam.GetFeatureFloat("AcquisitionFrameRateMax")
             self.ui.FrameRate.setValue(pfFeatureParam)
             
             self.SetupStream()
+            self.pfImageUnpacked = pf.PFImage()
+            [_, width] = self.pfCam.GetFeatureInt("Width")
+            [_, height] = self.pfCam.GetFeatureInt("Height")
+            #Allocate memory 
+            if not self.pfImageUnpacked.IsMemAllocated():
+               #Allocate 16 bit image
+               pfResult = self.pfImageUnpacked.ReserveImage(pf.GetPixelType("Mono16"), width, height)
+               if pfResult != pf.Error.NONE:
+                  self.ExitWithErrorPrompt("Error allocating image: ", pfResult)
         # self.DbackQueue.put(0)
+        # print('config dbackqueue size:', self.DbackQueue.qsize())
         
     def GetTemp(self):
-        if not SIM:
+        if not (SIM or self.SIM):
             pfResult, pfFeatureParam = self.pfCam.GetFeatureFloat("DeviceTemperature")
             if pfResult != pf.Error.NONE:
                 self.ExitWithErrorPrompt("Could not get teporature feature parameters", pfResult)
@@ -252,22 +280,17 @@ class Camera(QThread):
         if pfResult != pf.Error.NONE:
             self.ExitWithErrorPrompt("Could not start grab process", pfResult)
 
-        [_, width] = self.pfCam.GetFeatureInt("Width")
-        [_, height] = self.pfCam.GetFeatureInt("Height")
+        
         
         pfBuffer = 0
         pfImage = pf.PFImage()
-        pfImageUnpacked = pf.PFImage()
-
-        #Allocate memory 
-        if not pfImageUnpacked.IsMemAllocated():
-           #Allocate 16 bit image
-           pfResult = pfImageUnpacked.ReserveImage(pf.GetPixelType("Mono16"), width, height)
-           if pfResult != pf.Error.NONE:
-              self.ExitWithErrorPrompt("Error allocating image: ", pfResult)
+        
         #开始采集任务
         NBlines = self.Memory[0].shape[0]
         BlinesCount = 0
+        # print('start dbackqueue size:', self.DbackQueue.qsize())
+        self.DbackQueue.put(0)
+        
         while BlinesCount < self.BlinesPerAcq and self.ui.RunButton.isChecked():
             t0=time.time()
             [pfResult, pfBuffer] = self.pfStream.GetNextBuffer()
@@ -280,10 +303,10 @@ class Camera(QThread):
                 if self.ui.PixelFormat_display.text() in ['Mono8']:
                     Bline = np.array(pfImage, copy = False)
                 else:
-                    pfResult = pfImage.ConvertTo(pfImageUnpacked)
+                    pfResult = pfImage.ConvertTo(self.pfImageUnpacked)
                     if pfResult != pf.Error.NONE:
                         self.ExitWithErrorPrompt("Error unpacking image: ", pfResult)
-                    Bline = np.array(pfImageUnpacked, copy = False)
+                    Bline = np.array(self.pfImageUnpacked, copy = False)
                 
                 # print(Bline[0:10,0:5])
 
@@ -300,27 +323,27 @@ class Camera(QThread):
                 # print('t4-t3: ', round(t4-t3,6))
                 
                 
-            #Release frame buffer, otherwise ring buffer will get full
-            self.pfStream.ReleaseBuffer(pfBuffer)
-            BlinesCount += 1
-            # print(BlinesCount)
-            if BlinesCount % NBlines == 0:
-                an_action = DbackAction(self.MemoryLoc)
-                self.DbackQueue.put(an_action)
-                self.MemoryLoc = (self.MemoryLoc+1) % self.memoryCount
-                print('MemoryLoc:', self.MemoryLoc)
-                
-
-                # handle pause action
-                if self.ui.PauseButton.isChecked():
-                    pfResult = self.pfCam.Freeze()
-                    if pfResult != pf.Error.NONE:
-                        self.ExitWithErrorPrompt("Error stopping grab process", pfResult)
-                    while self.ui.PauseButton.isChecked() and self.ui.RunButton.isChecked():
-                        time.sleep(0.5)
-                    pfResult = self.pfCam.Grab()
-                    if pfResult != pf.Error.NONE:
-                        self.ExitWithErrorPrompt("Could not start grab process", pfResult)
+                #Release frame buffer, otherwise ring buffer will get full
+                self.pfStream.ReleaseBuffer(pfBuffer)
+                BlinesCount += 1
+                # print(BlinesCount)
+                if BlinesCount % NBlines == 0:
+                    an_action = DbackAction(self.MemoryLoc)
+                    self.DbackQueue.put(an_action)
+                    self.MemoryLoc = (self.MemoryLoc+1) % self.memoryCount
+                    # print('MemoryLoc:', self.MemoryLoc)
+                    
+    
+                    # handle pause action
+                    if self.ui.PauseButton.isChecked():
+                        pfResult = self.pfCam.Freeze()
+                        if pfResult != pf.Error.NONE:
+                            self.ExitWithErrorPrompt("Error stopping grab process", pfResult)
+                        while self.ui.PauseButton.isChecked() and self.ui.RunButton.isChecked():
+                            time.sleep(0.5)
+                        pfResult = self.pfCam.Grab()
+                        if pfResult != pf.Error.NONE:
+                            self.ExitWithErrorPrompt("Could not start grab process", pfResult)
             
         #Stop frame grabbing
         pfResult = self.pfCam.Freeze()
@@ -330,7 +353,7 @@ class Camera(QThread):
             
     
     def UninitBoard(self):
-        if not SIM:
+        if not (SIM or self.SIM):
             #Disconnect camera
             pfResult = self.pfCam.Disconnect()
             if pfResult != pf.Error.NONE:
@@ -348,6 +371,8 @@ class Camera(QThread):
         # print(NBlines)
         #开始采集任务
         BlinesCount = 0
+        self.DbackQueue.put(0)
+        # print('start dbackqueue size:', self.DbackQueue.qsize())
         while BlinesCount < self.BlinesPerAcq and self.ui.RunButton.isChecked():
             # t0=time.time()
             
@@ -365,7 +390,7 @@ class Camera(QThread):
                 an_action = DbackAction(self.MemoryLoc)
                 self.DbackQueue.put(an_action)
                 self.MemoryLoc = (self.MemoryLoc+1) % self.memoryCount
-                print('MemoryLoc:', self.MemoryLoc)
+                # print('MemoryLoc:', self.MemoryLoc)
                 
 
             # handle pause action

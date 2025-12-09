@@ -63,23 +63,23 @@ global use_maya
 use_maya = False
 
 # Combine threads together for specific functionality, such as Mosaic scan, that is the so-called "weaver"
-WeaverQueue = Queue(maxsize = 0)
+WeaverQueue = Queue()
 # Queue for scanning thread
-AODOQueue = Queue(maxsize = 0)
+AODOQueue = Queue()
 # Queue for scanning thread report back to weaver
-StagebackQueue = Queue(maxsize = 0)
+StagebackQueue = Queue()
 # Queue for display and saving thread
-DnSQueue = Queue(maxsize = 0)
+DnSQueue = Queue()
 # Queue for FFT thread
-GPUQueue = Queue(maxsize = 0)
+GPUQueue = Queue()
 # Queue for FFT thread report back to weaver
-GPU2weaverQueue = Queue(maxsize = 0)
+GPU2weaverQueue = Queue()
 # Queue for digitizer thread
-DQueue = Queue(maxsize = 0)
+DQueue = Queue()
 # Queue for digitizer report back to weaver
-DbackQueue = Queue(maxsize = 0)
+DbackQueue = Queue()
 # Queue for pausing or stopping a task
-PauseQueue = Queue(maxsize = 0)  
+PauseQueue = Queue()  
 
         
 # wrap digitzer thread with global queues and Memory and ui and log function
@@ -199,6 +199,9 @@ class GUI(MainWindow):
         self.ui.XUP.clicked.connect(self.XUP)
         self.ui.YUP.clicked.connect(self.YUP)
         self.ui.ZUP.clicked.connect(self.ZUP)
+        self.ui.XHome.clicked.connect(self.XHome)
+        self.ui.YHome.clicked.connect(self.YHome)
+        self.ui.ZHome.clicked.connect(self.ZHome)
         self.ui.XDOWN.clicked.connect(self.XDOWN)
         self.ui.YDOWN.clicked.connect(self.YDOWN)
         self.ui.ZDOWN.clicked.connect(self.ZDOWN)
@@ -317,6 +320,19 @@ class GUI(MainWindow):
         StagebackQueue.get()
     def ZDOWN(self):
         an_action = AODOAction('ZDOWN')
+        AODOQueue.put(an_action)
+        StagebackQueue.get()
+        
+    def XHome(self):
+        an_action = AODOAction('XHome')
+        AODOQueue.put(an_action)
+        StagebackQueue.get()
+    def YHome(self):
+        an_action = AODOAction('YHome')
+        AODOQueue.put(an_action)
+        StagebackQueue.get()
+    def ZHome(self):
+        an_action = AODOAction('ZHome')
         AODOQueue.put(an_action)
         StagebackQueue.get()
         

@@ -1,12 +1,5 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sun Dec  7 15:10:40 2025
-
-@author: admin
-"""
-
-# -*- coding: utf-8 -*-
-"""
 Created on Tue Dec 12 16:51:20 2023
 
 @author: admin
@@ -17,8 +10,7 @@ global SIM
 SIM = False
 ###########################################
 from PyQt5.QtCore import  QThread
-from Zolix_control import Stepper
-st = Stepper()
+
 try:
     import nidaqmx as ni
     from nidaqmx.constants import AcquisitionType as Atype
@@ -75,12 +67,6 @@ class AODOThread(QThread):
                     self.DirectMove(axis = 'Y')
                 elif self.item.action == 'Zmove2':
                     self.DirectMove(axis = 'Z')
-                elif self.item.action == 'XHome':
-                    self.Home(axis = 'X')
-                elif self.item.action == 'YHome':
-                    self.Home(axis = 'Y')
-                elif self.item.action == 'ZHome':
-                    self.Home(axis = 'Z')
                 elif self.item.action == 'XUP':
                     self.StepMove(axis = 'X', Direction = 'UP')
                 elif self.item.action == 'YUP':
@@ -254,31 +240,6 @@ class AODOThread(QThread):
 
         
     def Move(self, axis = 'X'):
-       
-        
-        if axis =='X':
-            distance = self.ui.XPosition.value() - self.ui.Xcurrent.value()
-            st.move(0, distance, self.ui.XSpeed.value())
-            self.ui.Xcurrent.setValue(self.ui.Xcurrent.value()+distance)
-            message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
-            print(message)
-            self.log.write(message)
-           
-        if axis =='Y':
-            distance = self.ui.YPosition.value() - self.ui.Ycurrent.value()
-            st.move(1, distance, self.ui.YSpeed.value())
-            self.ui.Ycurrent.setValue(self.ui.Ycurrent.value()+distance)
-            message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
-            print(message)
-            self.log.write(message)
-            
-        if axis =='Z':
-            distance = self.ui.ZPosition.value() - self.ui.Zcurrent.value()
-            st.move(2, distance*62.5, self.ui.ZSpeed.value())
-            self.ui.Zcurrent.setValue(self.ui.Zcurrent.value()+distance)
-            message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
-            print(message)
-            self.log.write(message)
         
         # if axis == 'X':
         #     self.ui.Xcurrent.setValue(self.ui.Xcurrent.value()+distance)
@@ -289,9 +250,9 @@ class AODOThread(QThread):
         # elif axis == 'Z':
         #     self.ui.Zcurrent.setValue(self.ui.Zcurrent.value()+distance)
         #     # self.ui.ZPosition.setValue(self.Zpos)
-        # message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
-        # print(message)
-        # self.log.write(message)
+        message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
+        print(message)
+        self.log.write(message)
         
     def DirectMove(self, axis):
         self.Move(axis)
@@ -313,23 +274,4 @@ class AODOThread(QThread):
             self.ui.ZPosition.setValue(self.ui.Zcurrent.value()+distance)
             self.Move(axis)
             self.StagebackQueue.put(0)
-            
-    def Home(self, axis):
-        if axis == 'X':
-            st.home(0, self.ui.XSpeed.value())
-            self.ui.XPosition.setValue(0)
-            self.ui.Xcurrent.setValue(0)
-        elif axis == 'Y':
-            st.home(1, self.ui.XSpeed.value())
-            self.ui.YPosition.setValue(0)
-            self.ui.Ycurrent.setValue(0)
-        elif axis == 'Z':
-            st.home(2, self.ui.XSpeed.value())
-            self.ui.ZPosition.setValue(0)
-            self.ui.Zcurrent.setValue(0)
-            
-        message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
-        print(message)
-        self.log.write(message)
-        self.StagebackQueue.put(0)
             

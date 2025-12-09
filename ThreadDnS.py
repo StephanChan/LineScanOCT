@@ -101,7 +101,7 @@ class DnSThread(QThread):
                     self.ui.statusbar.showMessage(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
-                if time.time()-start>0.1:
+                if time.time()-start>1:
                     print('time for DnS:',round(time.time()-start,3))
             except Exception as error:
                 message = "\nAn error occurred:"+" skip the display and save action\n"
@@ -216,6 +216,7 @@ class DnSThread(QThread):
             
     def display_Cscan_Dynamic(self, data, dynamic):
         # print(data.shape)
+        # print(dynamic.shape)
         Zpixels, Xpixels, Yrpt = self.get_FOV_size()
         if Zpixels != data.shape[2]:
             Zpixels = data.shape[2]
@@ -243,11 +244,13 @@ class DnSThread(QThread):
         self.ui.XZplane.setPixmap(pixmap)
         
         if len(self.SampleMosaic)==0:
-            self.SampleMosaic = np.zeros([Xpixels, Ypixels])
-            self.SampleDynamic = np.zeros([Xpixels, Ypixels])
+            self.SampleMosaic = np.zeros([Ypixels, Xpixels])
+        if len(self.SampleDynamic)==0:
+            self.SampleDynamic = np.zeros([Ypixels, Xpixels])
         # print(Bline.shape, self.SampleMosaic.shape)
-        self.SampleMosaic[:,self.DynamicBlineIdx] = np.mean(Bline,1)
-        self.SampleDynamic[:,self.DynamicBlineIdx] = np.mean(dynamic,1)
+        print('Ypixel: ', self.DynamicBlineIdx)
+        self.SampleMosaic[self.DynamicBlineIdx, :] = np.mean(Bline,1)
+        self.SampleDynamic[self.DynamicBlineIdx, :] = np.mean(dynamic,1)
         self.DynamicBlineIdx = self.DynamicBlineIdx + 1
         
         pixmap = RGBImagePlot(matrix1 = np.float32(self.SampleMosaic), m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
@@ -287,12 +290,12 @@ class DnSThread(QThread):
             # reshape into Ypixels x Xpixels x Zpixels
             Cscan = data.reshape([self.ui.Ypixels.value(), self.ui.BlineAVG.value(), Xpixels,Zpixels])
             Cscan=np.mean(Cscan,1)
-            Ypixels = self.ui.Ypixels.value()
+            # Ypixels = self.ui.Ypixels.value()
         else:
             Cscan = data.copy()
         # Aline averaging if needed
         if self.ui.AlineAVG.value() > 1:
-            Cscan = Cscan.reshape([Ypixels,self.ui.NSamples.value(), self.ui.AlineAVG.value(), Zpixels])
+            Cscan = Cscan.reshape([self.ui.Ypixels.value(),self.ui.NSamples.value(), self.ui.AlineAVG.value(), Zpixels])
             Cscan = np.mean(Cscan,2)
             Xpixels = self.ui.NSamples.value()
             
@@ -315,11 +318,16 @@ class DnSThread(QThread):
         if self.use_maya:
             self.ui.mayavi_widget.visualization.update_data(self.Cscan/500)
         if self.ui.Save.isChecked():
-            if raw:
-                data = np.uint16(data)
-            else:
-                data = np.uint16(data/SCALE*65535)
-            self.WriteData(data, self.CscanFilename([Ypixels,Xpixels,Zpixels]))
+            # if raw:
+            #     data = np.uint16(data)
+            # else:
+            #     data = np.uint16(data/SCALE*65535)
+            tif = TIFF.open(self.ui.DIR.toPlainText()+'/'+self.CscanFilename([Ypixels,Xpixels,Zpixels]), mode='w')
+            for ii in range(Ypixels):
+                # self.WriteData(data, self.AlineFilename([Yrpt,Xpixels,Zpixels]))
+                tif.write_image(data[ii])
+            tif.close()
+            # self.WriteData(data, self.CscanFilename([Ypixels,Xpixels,Zpixels]))
         
    
 
@@ -429,7 +437,7 @@ class DnSThread(QThread):
         return filename
     
     def CscanFilename(self, shape):
-        filename = 'Cscan-'+str(self.CscanNum)+'-Y'+str(shape[0])+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.bin'
+        filename = 'Cscan-'+str(self.CscanNum)+'-Y'+str(shape[0])+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
         self.CscanNum = self.CscanNum + 1
         return filename
     

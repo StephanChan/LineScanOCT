@@ -230,6 +230,7 @@ class MainWindow(QMainWindow):
         # Calculate AlinesPerBline pixel numbers based on user set FOV size
         Ypixels = np.uint16(np.round(self.ui.YLength.value()*1000/self.ui.YStepSize.value()))
         self.ui.Ypixels.setValue(Ypixels)
+        self.ui.GalvoBias.setMinimum(-1)
         # Calculate offsetH pixel numbers based on corrected user set offsetLength
         self.ui.GalvoBias.setValue(self.ui.Yoffsetlength.value()/angle2mmratio)
         

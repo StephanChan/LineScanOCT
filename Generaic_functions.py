@@ -43,11 +43,11 @@ def GenGalvoWave(StepSize = 1, Steps = 1000, AVG = 1, obj = '5X', postclocks = 5
     # total number of steps is the product of steps and aline average number
     # use different angle to mm ratio for different objective
     if obj == '5X':
-        angle2mmratio = 2.094/1.19
+        angle2mmratio = 2.094/1.19/3.35
     elif obj == '10X':
-        angle2mmratio = 2.094/2/1.19
+        angle2mmratio = 2.094/2/1.19/1.6
     elif obj == '20X':
-        angle2mmratio = 2.094/1.19/4
+        angle2mmratio = 2.094/1.19/4/3.35
         
     else:
         status = 'objective not calibrated, abort generating Galvo waveform'
@@ -230,7 +230,7 @@ def RGBImagePlot(matrix1 = [], matrix2 = [], m=0, M=1):
         matrix2[matrix2>M] = M
         # adjust image brightness
         
-        matrix2 = np.uint8((matrix1-m+0.01)/np.abs(M-m+0.1)*127)
+        matrix2 = np.uint8((matrix2-m+0.01)/np.abs(M-m+0.1)*127)
    
         height, width = matrix2.shape
     

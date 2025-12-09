@@ -224,8 +224,39 @@ def ConfigureCamera(pfCam, pfCameraInfo):
     if pfResult != pf.Error.NONE:
         ExitWithErrorPrompt("Error setting Height", pfResult)
 
-    pfResult, pfFeatureParam = pfCam.GetFeatureFloat("AcquisitionFrameRate")
-    print('frame rate is: ', pfFeatureParam)
+    # pfResult, pfFeatureParam = pfCam.GetFeatureEnum("EnAcquisitionFrameRate")
+    # if pfResult != pf.Error.NONE:
+    #     ExitWithErrorPrompt("Could not get EnAcquisitionFrameRate feature parameters", pfResult)
+    # pfResult = pfCam.SetFeatureEnum("EnAcquisitionFrameRate", 'True')
+    # if pfResult != pf.Error.NONE:
+    #     ExitWithErrorPrompt("Error setting Height", pfResult)
+        
+    pfResult, pfFeatureParam = pfCam.GetFeatureFloat("AcquisitionFrameRateMax")
+    print('frame rate max is: ', pfFeatureParam)
+    
+    pfResult, pfFeatureParam = pfCam.GetFeatureEnum("AcquisitionStatusSelector")
+    if pfResult != pf.Error.NONE:
+        ExitWithErrorPrompt("Could not get AcquisitionStatusSelector feature parameters", pfResult)
+    else:
+        print('AcquisitionStatusSelector is: ', pfFeatureParam)
+        
+    pfResult, pfFeatureParam = pfCam.GetFeatureEnum("TriggerSelector")
+    if pfResult != pf.Error.NONE:
+        ExitWithErrorPrompt("Could not get TriggerSelector feature parameters", pfResult)
+    else:
+        print('TriggerSelector is: ', pfFeatureParam)
+        
+    pfResult, pfFeatureParam = pfCam.GetFeatureEnum("TriggerMode")
+    if pfResult != pf.Error.NONE:
+        ExitWithErrorPrompt("Could not get TriggerMode feature parameters", pfResult)
+    else:
+        print('TriggerMode is: ', pfFeatureParam)
+        
+    pfResult, pfFeatureParam = pfCam.GetFeatureEnum("TriggerSource")
+    if pfResult != pf.Error.NONE:
+        ExitWithErrorPrompt("Could not get TriggerSource feature parameters", pfResult)
+    else:
+        print('TriggerSource is: ', pfFeatureParam)
     #Set Height to maximum
     # pfResult, pfFeatureParam = pfCam.GetFeatureParams("PowerDown")
     # if pfResult != pf.Error.NONE:
