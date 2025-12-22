@@ -1,0 +1,336 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Dec 22 19:11:24 2025
+
+@author: admin
+"""
+
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Dec  7 15:10:40 2025
+
+@author: admin
+"""
+
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Dec 12 16:51:20 2023
+
+@author: admin
+"""
+###########################################
+
+global SIM
+SIM = False
+###########################################
+from PyQt5.QtCore import  QThread
+from Zolix_control import Stepper
+
+try:
+    st = Stepper()
+    import sys
+    sys.path.append(r"C:\\Program Files (x86)\\ART Technology\\ART-DAQ\\Samples\\Python\\LIB\\")
+    import artdaq as ni
+    from artdaq.constants import AcquisitionType as Atype
+    from artdaq.constants import Edge, ProductCategory, RegenerationMode, Signal 
+except:
+    SIM = True
+    
+from Generaic_functions import GenAODO, LinePlot
+import time
+import traceback
+import numpy as np
+
+
+    
+    
+class AODOThread(QThread):
+    def __init__(self):
+        super().__init__()
+        self.AOtask = None
+        self.DOtask = None
+        
+    
+    def run(self):
+        self.Init_all_termial()
+        self.StagebackQueue.get()
+        self.QueueOut()
+        
+    def QueueOut(self):
+        self.item = self.queue.get()
+        while self.item.action != 'exit':
+            try:
+                if self.item.action == 'Xmove2':
+                    self.DirectMove(axis = 'X')
+                elif self.item.action == 'Ymove2':
+                    self.DirectMove(axis = 'Y')
+                elif self.item.action == 'Zmove2':
+                    self.DirectMove(axis = 'Z')
+                elif self.item.action == 'XHome':
+                    self.Home(axis = 'X')
+                elif self.item.action == 'YHome':
+                    self.Home(axis = 'Y')
+                elif self.item.action == 'ZHome':
+                    self.Home(axis = 'Z')
+                elif self.item.action == 'XUP':
+                    self.StepMove(axis = 'X', Direction = 'UP')
+                elif self.item.action == 'YUP':
+                    self.StepMove(axis = 'Y', Direction = 'UP')
+                elif self.item.action == 'ZUP':
+                    self.StepMove(axis = 'Z', Direction = 'UP')
+                elif self.item.action == 'XDOWN':
+                    self.StepMove(axis = 'X', Direction = 'DOWN')
+                elif self.item.action == 'YDOWN':
+                    self.StepMove(axis = 'Y', Direction = 'DOWN')
+                elif self.item.action == 'ZDOWN':
+                    self.StepMove(axis = 'Z', Direction = 'DOWN')
+                    
+                elif self.item.action == 'Init':
+                    self.Init_all_termial()
+                elif self.item.action == 'Uninit':
+                    self.Uninit()
+                elif self.item.action == 'ConfigTask':
+                    self.ConfigTask()
+                elif self.item.action == 'StartTask':
+                    self.StartTask()
+                elif self.item.action == 'StopTask':
+                    self.StopTask()
+                elif self.item.action == 'tryStopTask':
+                    self.tryStopTask()
+                elif self.item.action == 'CloseTask':
+                    self.CloseTask()
+                elif self.item.action == 'centergalvo':
+                    self.centergalvo()
+
+                else:
+                    message = 'AODO thread is doing something undefined: '+self.item.action
+                    self.ui.statusbar.showMessage(message)
+                    print(message)
+                    # self.ui.PrintOut.append(message)
+                    self.log.write(message)
+            except Exception:
+                message = "\nAn error occurred,"+" skip the AODO action\n"
+                print(message)
+                self.ui.statusbar.showMessage(message)
+                # self.ui.PrintOut.append(message)
+                self.log.write(message)
+                print(traceback.format_exc())
+            self.item = self.queue.get()
+        self.ui.statusbar.showMessage('AODO thread successfully exited')
+
+    def Init_all_termial(self):
+        # Galvo terminal
+        self.GalvoAO = self.ui.AODOboard.toPlainText()+'/'+self.ui.GalvoAO.currentText()
+        
+        # synchronized DO terminal
+        self.SyncDO = self.ui.AODOboard.toPlainText()+'/'+self.ui.SyncDO.currentText()
+        self.Trigger_out = '/'+ self.ui.AODOboard.toPlainText()+'/PFI0'
+        self.Trigger_in ='/'+ self.ui.AODOboard.toPlainText()+'/PFI1'
+        # print(self.GalvoAO, self.SyncDO)
+        self.ui.Xcurrent.setValue(self.ui.XPosition.value())
+        self.ui.Ycurrent.setValue(self.ui.YPosition.value())
+        self.ui.Zcurrent.setValue(self.ui.ZPosition.value())
+        message = "Stage position updated..."
+
+        self.ui.statusbar.showMessage(message)
+        # self.ui.PrintOut.append(message)
+        self.log.write(message)
+        print(message)
+        self.StagebackQueue.put(0)
+    
+    def Uninit(self):
+        if not (SIM or self.SIM):
+            st.enable(0,False)
+            st.enable(1,False)
+            st.enable(2,False)
+            
+            # pass
+        self.StagebackQueue.put(0)
+        
+    def ConfigTask(self):
+        # Generate waveform
+        self.DOwaveform,self.AOwaveform,status = GenAODO(mode=self.ui.ACQMode.currentText(), \
+                                                 obj = self.ui.Objective.currentText(),\
+                                                 postclocks = self.ui.FlyBack.value(), \
+                                                 YStepSize = self.ui.YStepSize.value(), \
+                                                 YSteps =  self.ui.Ypixels.value(), \
+                                                 BVG = self.ui.BlineAVG.value(),\
+                                                 Galvo_bias = self.ui.GalvoBias.value())
+        pixmap = LinePlot(self.AOwaveform,self.DOwaveform, np.min([np.min(self.AOwaveform),0]), np.max([np.max(self.AOwaveform),1]))
+        # clear content on the waveformLabel
+        self.ui.XwaveformLabel.clear()
+        # update iamge on the waveformLabel
+        self.ui.XwaveformLabel.setPixmap(pixmap)
+        if not (SIM or self.SIM): # if not running simulation mode
+            frameRate = 480#np.floor(self.ui.FrameRate.value()-30)*2
+            ######################################################################################
+            # init AO task
+            self.AOtask = ni.Task('AOtask')
+            # Config channel and vertical
+            self.AOtask.ao_channels.add_ao_voltage_chan(physical_channel=self.GalvoAO, \
+                                                  min_val=- 10.0, max_val=10.0, \
+                                                  units=ni.constants.VoltageUnits.VOLTS)
+            # depending on whether continuous or finite, config clock and mode
+            if self.ui.ACQMode.currentText() in ['ContinuousAline', 'ContinuousBline','ContinuousCscan']:
+                mode =  Atype.CONTINUOUS
+            else:
+                mode =  Atype.FINITE
+            self.AOtask.timing.cfg_samp_clk_timing(rate=frameRate, \
+                                                   # source=self.ClockTerm, \
+                                                   # active_edge= Edge.RISING,\
+                                                   sample_mode=mode,samps_per_chan=len(self.AOwaveform))
+            # # Config start mode
+            # self.AOtask.triggers.start_trigger.cfg_dig_edge_start_trig(self.AODOTrig)
+            self.AOtask.export_signals.export_signal(signal_id = Signal.START_TRIGGER, output_terminal = self.Trigger_out)
+            # write waveform and start
+
+            # self.AOtask.start()
+            actual_sampling_rate = self.AOtask.timing.samp_clk_rate
+            print(f"Actual sampling rate: {actual_sampling_rate:g} S/s")
+            # config DO task
+            self.DOtask = ni.Task('DOtask')
+            self.DOtask.do_channels.add_do_chan(lines=self.SyncDO)
+            self.DOtask.timing.cfg_samp_clk_timing(rate=frameRate, \
+                                                   # source=self.ClockTerm, \
+                                                   # active_edge= Edge.RISING,\
+                                                   sample_mode=mode,samps_per_chan=len(self.DOwaveform))
+           
+
+            # self.DOtask.triggers.start_trigger.cfg_dig_edge_start_trig(self.AODOTrig)
+            self.DOtask.triggers.start_trigger.cfg_dig_edge_start_trig(self.Trigger_in)
+            self.DOtask.triggers.sync_type.SLAVE = True
+
+            # self.DOtask.start()
+            # print(DOwaveform.shape)
+            # steps = np.sum(DOwaveform)/25000.0*2/pow(2,1)
+            # message = 'distance per Cscan: '+str(steps)+'mm'
+            # # self.ui.PrintOut.append(message)
+            # print(message)
+            # self.log.write(message)
+        self.StagebackQueue.put(0)
+        return 'AODO configuration success'
+        
+    def StartTask(self):
+        if not (SIM or self.SIM):
+            self.AOtask.write(self.AOwaveform, auto_start = False)
+            self.DOtask.write(self.DOwaveform, auto_start = False)
+            self.DOtask.start()
+            self.AOtask.start()
+        self.StagebackQueue.put(0)
+
+    def StopTask(self):
+        if not (SIM or self.SIM):
+            # self.AOtask.wait_until_done(timeout = 60)
+            self.AOtask.stop()
+            self.DOtask.stop()
+        
+    def tryStopTask(self):
+        if not (SIM or self.SIM):
+            try:
+                self.AOtask.wait_until_done(timeout = 0.5)
+            except:
+                self.AOtask.stop()
+                self.DOtask.stop()
+
+    
+    def CloseTask(self):
+        if not (SIM or self.SIM):
+            self.AOtask.close()
+            self.DOtask.close()
+        self.StagebackQueue.put(0)
+
+    
+    def centergalvo(self):
+        if not (SIM or self.SIM):
+            with ni.Task('AO task') as AOtask:
+                AOtask.ao_channels.add_ao_voltage_chan(physical_channel=self.GalvoAO, \
+                                                      min_val=- 10.0, max_val=10.0, \
+                                                      units=ni.constants.VoltageUnits.VOLTS)
+                AOtask.write(self.ui.GalvoBias.value(), auto_start = True)
+                AOtask.wait_until_done(timeout = 1)
+                AOtask.stop()
+
+        
+    def Move(self, axis = 'X'):
+       
+        
+        if axis =='X':
+            st.enable(0,True)
+            distance = self.ui.XPosition.value() - self.ui.Xcurrent.value()
+            st.move(0, distance, self.ui.XSpeed.value())
+            self.ui.Xcurrent.setValue(self.ui.Xcurrent.value()+distance)
+            message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
+            print(message)
+            self.log.write(message)
+           
+        if axis =='Y':
+            st.enable(1,True)
+            distance = self.ui.YPosition.value() - self.ui.Ycurrent.value()
+            st.move(1, distance, self.ui.YSpeed.value())
+            self.ui.Ycurrent.setValue(self.ui.Ycurrent.value()+distance)
+            message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
+            print(message)
+            self.log.write(message)
+            
+        if axis =='Z':
+            st.enable(2,True)
+            distance = self.ui.ZPosition.value() - self.ui.Zcurrent.value()
+            st.move(2, distance*62.5, self.ui.ZSpeed.value())
+            self.ui.Zcurrent.setValue(self.ui.Zcurrent.value()+distance)
+            message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
+            print(message)
+            self.log.write(message)
+        
+        # if axis == 'X':
+        #     self.ui.Xcurrent.setValue(self.ui.Xcurrent.value()+distance)
+        #     # self.ui.XPosition.setValue(self.Xpos)
+        # elif axis == 'Y':
+        #     self.ui.Ycurrent.setValue(self.ui.Ycurrent.value()+distance)
+        #     # self.ui.YPosition.setValue(self.Ypos)
+        # elif axis == 'Z':
+        #     self.ui.Zcurrent.setValue(self.ui.Zcurrent.value()+distance)
+        #     # self.ui.ZPosition.setValue(self.Zpos)
+        # message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
+        # print(message)
+        # self.log.write(message)
+        
+    def DirectMove(self, axis):
+        self.Move(axis)
+        self.StagebackQueue.put(0)
+        
+    def StepMove(self, axis, Direction):
+        if axis == 'X':
+            distance = self.ui.Xstagestepsize.value() if Direction == 'UP' else -self.ui.Xstagestepsize.value() 
+            self.ui.XPosition.setValue(self.ui.Xcurrent.value()+distance)
+            self.Move(axis)
+            self.StagebackQueue.put(0)
+        elif axis == 'Y':
+            distance = self.ui.Ystagestepsize.value() if Direction == 'UP' else -self.ui.Ystagestepsize.value() 
+            self.ui.YPosition.setValue(self.ui.Ycurrent.value()+distance)
+            self.Move(axis)
+            self.StagebackQueue.put(0)
+        elif axis == 'Z':
+            distance = self.ui.Zstagestepsize.value() if Direction == 'UP' else -self.ui.Zstagestepsize.value() 
+            self.ui.ZPosition.setValue(self.ui.Zcurrent.value()+distance)
+            self.Move(axis)
+            self.StagebackQueue.put(0)
+            
+    def Home(self, axis):
+        if axis == 'X':
+            st.home(0, self.ui.XSpeed.value())
+            self.ui.XPosition.setValue(0)
+            self.ui.Xcurrent.setValue(0)
+        elif axis == 'Y':
+            st.home(1, self.ui.XSpeed.value())
+            self.ui.YPosition.setValue(0)
+            self.ui.Ycurrent.setValue(0)
+        elif axis == 'Z':
+            st.home(2, self.ui.XSpeed.value())
+            self.ui.ZPosition.setValue(0)
+            self.ui.Zcurrent.setValue(0)
+            
+        message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
+        print(message)
+        self.log.write(message)
+        self.StagebackQueue.put(0)
+            
