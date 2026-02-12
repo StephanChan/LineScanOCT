@@ -18,7 +18,7 @@ import traceback
 # system magnification with 10X objective
 
 global Magnification10X
-Magnification10X = 6.7
+Magnification10X = 5.0
 # try:
 #     from traits.api import HasTraits, Instance, on_trait_change
 #     from traitsui.api import View, Item
@@ -106,6 +106,11 @@ class MainWindow(QMainWindow):
         # self.Update_laser()
         # self.update_galvoXwaveform()
         # self.update_Mosaic()
+        self.ui.DepthStartBar.setMaximum(self.ui.NSamples.value())
+        self.ui.DepthStartBar.setValue(self.ui.NSamples.value())
+        self.ui.DepthEndBar.setMaximum(self.ui.NSamples.value())
+        self.ui.DepthEndBar.setValue(0)
+        self.Adjust_Bline_Height()
         self.connectActions()
         
     def setStageMinMax(self):
@@ -175,11 +180,11 @@ class MainWindow(QMainWindow):
     def Calculate_CameraWidth_settings(self):
         # select camera brand
         if self.ui.Camera.currentText() == 'PhotonFocus':
-            CameraPixelSize = 9 # um
-            MaxHeight = 1100
+            CameraPixelSize = 9.0 # um
+            MaxHeight = 1100.0
         elif self.ui.Camera.currentText() == 'XingTu':
             CameraPixelSize = 6.5 # um
-            MaxHeight = 1024
+            MaxHeight = 1024.0
         else:
             status = 'camera not calibrated, abort FOV calculation'
             self.ui.statusbar.showMessage(status)
@@ -211,7 +216,7 @@ class MainWindow(QMainWindow):
         self.ui.Xoffsetlength.setMaximum((MaxHeight - AlinesPerBline)//2*cameraStepSize/1000)
         self.ui.Xoffsetlength.setMinimum(-(MaxHeight - AlinesPerBline)//2*cameraStepSize/1000)
         # Calculate offsetH pixel numbers based on corrected user set offsetLength
-        offsetH = (MaxHeight - AlinesPerBline)//2+np.int16(np.round(self.ui.Xoffsetlength.value()*1000/cameraStepSize))
+        offsetH = np.int16(MaxHeight - AlinesPerBline)//2+np.int16(np.round(self.ui.Xoffsetlength.value()*1000/cameraStepSize))
         self.ui.offsetH.setValue(offsetH)
         
     def Calculate_Galvo_settings(self):
@@ -235,7 +240,7 @@ class MainWindow(QMainWindow):
         self.ui.GalvoBias.setValue(self.ui.Yoffsetlength.value()/angle2mmratio)
         
     def Adjust_Bline_Height(self):
-        self.ui.DepthStart.setValue(1024 - self.ui.DepthStartBar.value())
+        self.ui.DepthStart.setValue(self.ui.NSamples.value() - self.ui.DepthStartBar.value())
         self.ui.DepthRange.setValue(np.max([self.ui.DepthStartBar.value() - self.ui.DepthEndBar.value(),1]))
         
     def SaveSettings(self):

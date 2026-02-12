@@ -43,8 +43,7 @@ class Camera(QThread):
         self.QueueOut()
         
     def QueueOut(self):
-        
-        self.item = self.queue.get()
+        self.item = self.queue.get(1)
         # start = time.time()
         while self.item.action != 'exit':
             try:
@@ -69,7 +68,10 @@ class Camera(QThread):
             # message = 'DIGITIZER spent: '+ str(round(time.time()-start,3))+'s'
             # print(message)
             # self.log.write(message)
-            self.item = self.queue.get()
+            try:
+                self.item = self.queue.get(1)
+            except:
+                self.item = DAction('GetTemp')
         if not (SIM or self.SIM):
             self.UninitBoard()
         print(self.exit_message)
@@ -329,7 +331,7 @@ class Camera(QThread):
                 # print(BlinesCount)
                 if BlinesCount % NBlines == 0:
                     an_action = DbackAction(self.MemoryLoc)
-                    self.DbackQueue.put(an_action)
+                    self.DatabackQueue.put(an_action)
                     self.MemoryLoc = (self.MemoryLoc+1) % self.memoryCount
                     # print('MemoryLoc:', self.MemoryLoc)
                     
@@ -388,7 +390,7 @@ class Camera(QThread):
             BlinesCount += 1
             if BlinesCount % NBlines == 0:
                 an_action = DbackAction(self.MemoryLoc)
-                self.DbackQueue.put(an_action)
+                self.DatabackQueue.put(an_action)
                 self.MemoryLoc = (self.MemoryLoc+1) % self.memoryCount
                 # print('MemoryLoc:', self.MemoryLoc)
                 

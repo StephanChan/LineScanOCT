@@ -1,0 +1,44 @@
+Stage position updated...
+no disperison compensation found...using default
+no background found...using default
+FiniteBline successfully finished...
+FiniteBline successfully finished...
+
+ an FFT action took 1.277 s
+
+
+ an FFT action took 1.354 s
+
+
+ an FFT action took 1.588 s
+
+
+ an FFT action took 1.555 s
+
+
+ an FFT action took 1.713 s
+
+
+ an FFT action took 1.32 s
+
+
+ an FFT action took 1.517 s
+
+
+ an FFT action took 1.387 s
+
+
+ an FFT action took 1.461 s
+
+
+ an FFT action took 1.361 s
+
+
+ an FFT action took 1.339 s
+
+
+ an FFT action took 1.395 s
+
+
+ an FFT action took 1.378 s
+

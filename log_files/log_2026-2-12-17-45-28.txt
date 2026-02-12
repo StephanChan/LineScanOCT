@@ -1,0 +1,316 @@
+Stage position updated...
+no disperison compensation found...using default
+no background found...using default
+FiniteBline successfully finished...
+
+ an FFT action took 1.113 s
+
+FiniteBline successfully finished...
+
+ an FFT action took 1.327 s
+
+
+ an FFT action took 1.618 s
+
+
+ an FFT action took 1.403 s
+
+
+ an FFT action took 1.509 s
+
+
+ an FFT action took 1.34 s
+
+
+ an FFT action took 1.269 s
+
+
+ an FFT action took 1.331 s
+
+
+ an FFT action took 1.453 s
+
+
+ an FFT action took 1.623 s
+
+
+ an FFT action took 1.301 s
+
+
+ an FFT action took 1.352 s
+
+
+ an FFT action took 1.491 s
+
+
+ an FFT action took 1.714 s
+
+
+ an FFT action took 1.381 s
+
+
+ an FFT action took 1.375 s
+
+
+ an FFT action took 1.418 s
+
+
+ an FFT action took 1.334 s
+
+
+ an FFT action took 1.383 s
+
+
+ an FFT action took 1.344 s
+
+
+ an FFT action took 1.559 s
+
+FiniteCscan successfully finished...
+
+ an FFT action took 1.487 s
+
+
+ an FFT action took 1.334 s
+
+
+ an FFT action took 1.255 s
+
+
+ an FFT action took 1.378 s
+
+
+ an FFT action took 1.374 s
+
+
+ an FFT action took 1.496 s
+
+
+ an FFT action took 1.262 s
+
+
+ an FFT action took 1.298 s
+
+
+ an FFT action took 1.27 s
+
+
+ an FFT action took 1.254 s
+
+
+ an FFT action took 1.204 s
+
+
+ an FFT action took 1.231 s
+
+
+ an FFT action took 1.306 s
+
+
+ an FFT action took 1.279 s
+
+
+ an FFT action took 1.198 s
+
+
+ an FFT action took 1.224 s
+
+
+ an FFT action took 1.405 s
+
+
+ an FFT action took 1.371 s
+
+
+ an FFT action took 1.251 s
+
+
+ an FFT action took 1.235 s
+
+
+ an FFT action took 1.314 s
+
+
+ an FFT action took 1.226 s
+
+
+ an FFT action took 1.282 s
+
+
+ an FFT action took 1.284 s
+
+
+ an FFT action took 1.282 s
+
+
+ an FFT action took 1.223 s
+
+
+ an FFT action took 1.205 s
+
+
+ an FFT action took 1.211 s
+
+
+ an FFT action took 1.403 s
+
+
+ an FFT action took 1.32 s
+
+
+ an FFT action took 1.275 s
+
+
+ an FFT action took 1.293 s
+
+
+ an FFT action took 1.373 s
+
+
+ an FFT action took 1.454 s
+
+
+ an FFT action took 1.277 s
+
+
+ an FFT action took 1.231 s
+
+
+ an FFT action took 1.258 s
+
+
+ an FFT action took 1.218 s
+
+
+ an FFT action took 1.207 s
+
+
+ an FFT action took 1.315 s
+
+
+ an FFT action took 1.474 s
+
+
+ an FFT action took 1.307 s
+
+
+ an FFT action took 1.23 s
+
+
+ an FFT action took 1.643 s
+
+
+ an FFT action took 1.363 s
+
+
+ an FFT action took 1.317 s
+
+
+ an FFT action took 1.292 s
+
+
+ an FFT action took 1.412 s
+
+
+ an FFT action took 1.236 s
+
+
+ an FFT action took 1.286 s
+
+
+ an FFT action took 1.223 s
+
+
+ an FFT action took 1.299 s
+
+
+ an FFT action took 1.248 s
+
+
+ an FFT action took 1.398 s
+
+
+ an FFT action took 1.239 s
+
+
+ an FFT action took 1.254 s
+
+
+ an FFT action took 1.26 s
+
+
+ an FFT action took 1.29 s
+
+
+ an FFT action took 1.256 s
+
+
+ an FFT action took 1.315 s
+
+
+ an FFT action took 1.265 s
+
+
+ an FFT action took 1.278 s
+
+
+ an FFT action took 1.255 s
+
+
+ an FFT action took 1.303 s
+
+
+ an FFT action took 1.399 s
+
+
+ an FFT action took 1.323 s
+
+
+ an FFT action took 1.195 s
+
+
+ an FFT action took 1.235 s
+
+
+ an FFT action took 1.284 s
+
+
+ an FFT action took 1.296 s
+
+
+ an FFT action took 1.21 s
+
+
+ an FFT action took 1.308 s
+
+
+ an FFT action took 1.313 s
+
+
+ an FFT action took 1.242 s
+
+
+ an FFT action took 1.232 s
+
+
+ an FFT action took 1.252 s
+
+
+ an FFT action took 1.219 s
+
+
+ an FFT action took 1.266 s
+
+
+ an FFT action took 1.621 s
+
+
+ an FFT action took 1.738 s
+
+
+ an FFT action took 1.304 s
+
+FiniteCscan successfully finished...
+
+ an FFT action took 28.944 s
+

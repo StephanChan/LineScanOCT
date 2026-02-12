@@ -17,8 +17,8 @@ global SIM
 SIM = False
 ###########################################
 from PyQt5.QtCore import  QThread
-from Zolix_control import Stepper
-st = Stepper()
+# from Zolix_control import Stepper
+# st = Stepper()
 try:
     import nidaqmx as ni
     from nidaqmx.constants import AcquisitionType as Atype
@@ -189,8 +189,8 @@ class AODOThread(QThread):
             # write waveform and start
             self.AOtask.write(AOwaveform, auto_start = False)
             # self.AOtask.start()
-            actual_sampling_rate = self.AOtask.timing.samp_clk_rate
-            print(f"Actual sampling rate: {actual_sampling_rate:g} S/s")
+            # actual_sampling_rate = self.AOtask.timing.samp_clk_rate
+            # print(f"Actual sampling rate: {actual_sampling_rate:g} S/s")
             # config DO task
             self.DOtask = ni.Task('DOtask')
             self.DOtask.do_channels.add_do_chan(lines=self.SyncDO)

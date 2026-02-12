@@ -108,15 +108,15 @@ class GPUThread(QThread):
 
     def cudaFFT(self, mode, memoryLoc, args):
         # get samples per Aline
-        samples = self.ui.NSamples.value()# - self.ui.DelaySamples.value()
+        samples = self.ui.NSamples.value()
         # get depth pixels after FFT
         Pixel_start = self.ui.DepthStart.value()
         Pixel_range = self.ui.DepthRange.value()
+        self.data_CPU = np.float32(self.Memory[memoryLoc].copy())
+        shape = self.data_CPU.shape
+        # print('data shape', shape)
+        # print('GPU receives:',self.data_CPU[0,0,0:10])
         if not (SIM or self.SIM):
-            self.data_CPU = np.float32(self.Memory[memoryLoc].copy())
-            shape = self.data_CPU.shape
-            # print('data shape', shape)
-            # print('GPU receives:',self.data_CPU[0,0,0:10])
             # subtract background
             t0=time.time()
             # self.data_CPU = self.data_CPU - np.tile(self.background,[shape[0],1,1])
@@ -157,7 +157,10 @@ class GPUThread(QThread):
             # interpolation
             t2 = time.time() 
             # yp_gpu = y_gpu
-            self.interp_kernel((8,8),(16,16), (Alines, samples, x_gpu, xp_gpu, y_gpu, indice1, indice2, yp_gpu))
+            if self.interp:
+                self.interp_kernel((8,8),(16,16), (Alines, samples, x_gpu, xp_gpu, y_gpu, indice1, indice2, yp_gpu))
+            else:
+                yp_gpu = y_gpu
             if round(time.time()-t2,4) >0.2:
                 print('time for interpolation: ', round(time.time()-t2,3))
             yp_gpu = cupy.reshape(yp_gpu,[Alines, samples])
@@ -189,7 +192,7 @@ class GPUThread(QThread):
             data_gpu = cupy.absolute(data_gpu[:,Pixel_start:Pixel_start + Pixel_range])
             
             self.data_CPU = cupy.asnumpy(data_gpu)*self.AMPLIFICATION
-            self.data_CPU = self.data_CPU.reshape(shape[0],shape[1],data_gpu.shape[1])
+            self.data_CPU = self.data_CPU.reshape(shape[0],shape[1],Pixel_range)
             # print('data_CPU shape', self.data_CPU.shape)
             # print('data_CPU:', self.data_CPU[0,0,0:15])
             if self.ui.DynCheckBox.isChecked() and mode in [ 'FiniteBline', 'FiniteCscan']:
@@ -208,11 +211,16 @@ class GPUThread(QThread):
                 # print('GPU data to weaver')
         
         else:
-            if self.ui.ACQMode.currentText() in ['SingleBline', 'SingleAline','RptBline', 'RptAline']:
+            if self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousAline','FiniteBline', 'FiniteAline']:
                 self.AlineCount = self.ui.BlineAVG.value() * self.ui.AlinesPerBline.value()
-            elif self.ui.ACQMode.currentText() in ['SingleCscan', 'Mosaic','Mosaic+Cut']:
+            elif self.ui.ACQMode.currentText() in ['ContinuousCscan']:
                 self.AlineCount = self.ui.AlinesPerBline.value() * self.ui.Ypixels.value() * self.ui.BlineAVG.value()
-            data_CPU = 65535*np.random.random([self.AlineCount, Pixel_range])
+            elif self.ui.ACQMode.currentText() in ['FiniteCscan']:
+                if self.ui.DynCheckBox.isChecked():
+                    self.AlineCount = self.ui.BlineAVG.value() * self.ui.AlinesPerBline.value()
+                else:
+                    self.AlineCount = self.ui.AlinesPerBline.value() * self.ui.Ypixels.value() * self.ui.BlineAVG.value()
+            data_CPU = 65535*np.random.random([self.AlineCount, Pixel_range]).reshape(shape[0],shape[1],Pixel_range)
             an_action = DnSAction(mode, data = data_CPU, raw = False, args = args) # data in Memory[memoryLoc]
             self.DnSQueue.put(an_action)
             # print('send for display')
@@ -229,64 +237,52 @@ class GPUThread(QThread):
         # get depth pixels after FFT
         Pixel_start = self.ui.DepthStart.value()
         Pixel_range = self.ui.DepthRange.value()
-        if not (SIM or self.SIM):
-            self.data_CPU = np.float32(self.Memory[memoryLoc].copy())
-            shape = self.data_CPU.shape
-            # print('data shape', shape)
-            # print('GPU receives:',self.data_CPU[0,0,0:10])
-            # subtract background
-            t0=time.time()
-            self.data_CPU = self.data_CPU - np.tile(self.background,[shape[0],1,1])
-            self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=101, axis=2)
-            print('background subtraction took ', round(time.time()-t0,4),'s')
-            
-            Alines =shape[0]*shape[1]
-            self.data_CPU=self.data_CPU.reshape([Alines, samples])
-            
-            fftAxis = 1
-            # # zero-padding data before FFT
-            # if data_CPU.shape[1] != self.length_FFT:
-            #     data_padded = np.zeros([Alines, self.length_FFT], dtype = np.float32)
-            #     tmp = np.uint16((self.length_FFT-samples)/2)
-            #     data_padded[:,tmp:samples+tmp] = data_CPU
-            # else:
-            #     data_padded = data_CPU
-            
-            # self.data_CPU = self.data_CPU*self.dispersion
-            # print(self.data_CPU[0:10,0:5])
-            self.data_CPU = np.abs(np.fft.fft(self.data_CPU, axis=fftAxis))/samples
-            # print(self.data_CPU[0:10,0:5])
-            
-            self.data_CPU = self.data_CPU[:,Pixel_start: Pixel_start+Pixel_range ]*self.AMPLIFICATION
-            # data_CPU = data_CPU.reshape([shape[0],Pixel_range * np.uint32(Alines/shape[0])])
-            self.data_CPU = self.data_CPU.reshape(shape[0],shape[1],Pixel_range)
-            # print('data_CPU:', self.data_CPU[0,0,0:5])
-            if self.ui.DynCheckBox.isChecked() and mode in [ 'FiniteBline', 'FiniteCscan']:
-                Dyn = self.Dynamic_Processing()
-                print('dyn:',Dyn[0,0:5])
-            else:
-                Dyn = []
-            # display and save data, data type is float32
-            an_action = DnSAction(mode, data = self.data_CPU, raw = False, dynamic = Dyn, args = args) # data in Memory[memoryLoc]
-            self.DnSQueue.put(an_action)
-            
-            if self.ui.DSing.isChecked():
-                self.GPU2weaverQueue.put(self.data_CPU)
-                # print('GPU data to weaver')
+
+        self.data_CPU = np.float32(self.Memory[memoryLoc].copy())
+        shape = self.data_CPU.shape
+        # print('data shape', shape)
+        # print('GPU receives:',self.data_CPU[0,0,0:10])
+        # subtract background
+        t0=time.time()
+        # self.data_CPU = self.data_CPU - np.tile(self.background,[shape[0],1,1])
+        self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=51, axis=2)
+        if round(time.time()-t0,4) >1:
+            print('background subtraction took ', round(time.time()-t0,3),'s')
+        
+        Alines =shape[0]*shape[1]
+        self.data_CPU=self.data_CPU.reshape([Alines, samples])
+        
+        fftAxis = 1
+        # # zero-padding data before FFT
+        # if data_CPU.shape[1] != self.length_FFT:
+        #     data_padded = np.zeros([Alines, self.length_FFT], dtype = np.float32)
+        #     tmp = np.uint16((self.length_FFT-samples)/2)
+        #     data_padded[:,tmp:samples+tmp] = data_CPU
+        # else:
+        #     data_padded = data_CPU
+        
+        # self.data_CPU = self.data_CPU*self.dispersion
+        # print(self.data_CPU[0:10,0:5])
+        self.data_CPU = np.abs(np.fft.fft(self.data_CPU, axis=fftAxis))/samples
+        # print(self.data_CPU[0:10,0:5])
+        
+        self.data_CPU = self.data_CPU[:,Pixel_start: Pixel_start+Pixel_range ]*self.AMPLIFICATION
+        # data_CPU = data_CPU.reshape([shape[0],Pixel_range * np.uint32(Alines/shape[0])])
+        self.data_CPU = self.data_CPU.reshape(shape[0],shape[1],Pixel_range)
+        # print('data_CPU:', self.data_CPU[0,0,0:5])
+        if self.ui.DynCheckBox.isChecked() and mode in [ 'FiniteBline', 'FiniteCscan']:
+            Dyn = self.Dynamic_Processing()
+            print('dyn:',Dyn[0,0:5])
         else:
-            if self.ui.ACQMode.currentText() in ['SingleBline', 'SingleAline','RptBline', 'RptAline']:
-                self.AlineCount = self.ui.BlineAVG.value() * self.ui.AlinesPerBline.value()
-            elif self.ui.ACQMode.currentText() in ['SingleCscan', 'Mosaic','Mosaic+Cut']:
-                self.AlineCount = self.ui.AlinesPerBline.value() * self.ui.Ypixels.value() * self.ui.BlineAVG.value()
-            data_CPU = 65535*np.random.random([self.AlineCount, Pixel_range])
-            an_action = DnSAction(mode, data = data_CPU, raw = False, args = args) # data in Memory[memoryLoc]
-            self.DnSQueue.put(an_action)
-            # print('send for display')
-            # print(self.ui.DSing.isChecked())
-            if self.ui.DSing.isChecked():
-                self.GPU2weaverQueue.put(data_CPU)
-                # print('GPU data to weaver')
-            # print('GPU finish')
+            Dyn = []
+        # display and save data, data type is float32
+        an_action = DnSAction(mode, data = self.data_CPU, raw = False, dynamic = Dyn, args = args) # data in Memory[memoryLoc]
+        self.DnSQueue.put(an_action)
+        
+        if self.ui.DSing.isChecked():
+            self.GPU2weaverQueue.put(self.data_CPU)
+            # print('GPU data to weaver')
+        
             
     def update_Dispersion(self):
         # get samples per Aline
@@ -299,6 +295,7 @@ class GPUThread(QThread):
         # print(dispersion_path+'/dspPhase.bin')
         if os.path.isfile(dispersion_path+'/dspPhase.bin'):
             try:
+                self.interp = True
                 self.intpX  = np.float32(np.fromfile(dispersion_path+'/intpX.bin', dtype=np.float32))
                 self.intpXp  = np.float32(np.fromfile(dispersion_path+'/intpXp.bin', dtype=np.float32))
                 self.indice = np.uint16(np.fromfile(dispersion_path+'/intpIndice.bin', dtype=np.uint16)).reshape([2,samples])
@@ -309,26 +306,27 @@ class GPUThread(QThread):
                 self.log.write("load disperison compensation success...")
                 print("load disperison compensation success...")
             except:
-                self.intpX  = np.float32(np.linspace(0,1,samples))
-                self.intpXp  = np.float32(np.linspace(0,1,samples))
-                self.indice = np.uint16(np.linspace(0,samples-1,samples)).reshape([samples,1])
-                self.indice = np.tile(self.indice,[1,2])
-                self.dispersion = np.complex64(np.ones(samples)).reshape([1,samples])
-                self.ui.statusbar.showMessage('no disperison compensation found...using default')
+                self.interp = False
+                # self.intpX  = np.float32(np.linspace(0,1,samples))
+                # self.intpXp  = np.float32(np.linspace(0,1,samples))
+                # self.indice = np.uint16(np.linspace(0,samples-1,samples)).reshape([samples,1])
+                # self.indice = np.tile(self.indice,[1,2])
+                # self.dispersion = np.complex64(np.ones(samples)).reshape([1,samples])
+                self.ui.statusbar.showMessage('no disperison compensation found...skip interpolation')
                 # self.ui.PrintOut.append("no disperison compensation found...")
-                self.log.write("no disperison compensation found...using default")
-                print("no disperison compensation found...using default")
+                self.log.write("no disperison compensation found...skip interpolation")
+                print("no disperison compensation found...skip interpolation")
         else:
-            
-            self.intpX  = np.float32(np.linspace(0,1,samples))
-            self.intpXp  = np.float32(np.linspace(0,1,samples))
-            self.indice = np.uint16(np.linspace(0,samples-1,samples)).reshape([samples,1])
-            self.indice = np.tile(self.indice,[1,2])
-            self.dispersion = np.complex64(np.ones(samples)).reshape([1,samples])
-            self.ui.statusbar.showMessage('no disperison compensation found...using default')
+            self.interp = False
+            # self.intpX  = np.float32(np.linspace(0,1,samples))
+            # self.intpXp  = np.float32(np.linspace(0,1,samples))
+            # self.indice = np.uint16(np.linspace(0,samples-1,samples)).reshape([samples,1])
+            # self.indice = np.tile(self.indice,[1,2])
+            # self.dispersion = np.complex64(np.ones(samples)).reshape([1,samples])
+            self.ui.statusbar.showMessage('no disperison compensation found...skip interpolation')
             # self.ui.PrintOut.append("no disperison compensation found...")
-            self.log.write("no disperison compensation found...using default")
-            print("no disperison compensation found...using default")
+            self.log.write("no disperison compensation found...skip interpolation")
+            print("no disperison compensation found...skip interpolation")
         
     def update_background(self):
         # get samples per Aline
@@ -380,18 +378,29 @@ class GPUThread(QThread):
         self.FFT_actions = 0
         
     def Dynamic_Processing(self, EPS=1e-3):
-        # only for Bline processing, Cscan processing need to do after all data are saved in disk
-        data_GPU = cupy.array(self.data_CPU)
-        data_GPU = cupy.moveaxis(data_GPU, 0, -1)  # (Y,X,Z,T)
-        time_mean = cupy.mean(data_GPU, axis=(1, 2), keepdims=True)  # (1,1,T)
-        data_GPU = data_GPU / (time_mean + EPS)
-        data_GPU = uniform_filter1d(data_GPU.get(), size=10, axis=2, mode='nearest')
-
-        liv = cupy.var(data_GPU, axis=2, ddof=0)  # 1/N（与论文一致）
-        dynamic_GPU = gaussian_filter(liv, sigma=(1, 1))
-        dynamic = cupy.asnumpy(dynamic_GPU)*1000
-        # print(dynamic[0,0:5])
-        return dynamic
+        if not (SIM or self.SIM):
+            # only for Bline processing, Cscan processing need to do after all data are saved in disk
+            data_GPU = cupy.array(self.data_CPU) # (T,X,Z)
+            # data_GPU = cupy.moveaxis(data_GPU, 0, -1)  # (Z,X,T)
+            time_mean = cupy.mean(data_GPU, axis=(1, 2), keepdims=True)  # (T,1,1)
+            data_GPU = data_GPU / (time_mean + EPS)
+            data_GPU = uniform_filter1d(data_GPU.get(), size=10, axis=0, mode='nearest')
+        
+            liv = cupy.var(data_GPU, axis=0, ddof=0)  # 1/N（与论文一致）
+            dynamic_GPU = gaussian_filter(liv, sigma=(1, 1))
+            dynamic = cupy.asnumpy(dynamic_GPU)*1000
+            # print(dynamic[0,0:5])
+            return dynamic
+        else:
+            data_CPU = self.data_CPU.copy()# (T,X,Z)
+            time_mean = np.mean(data_CPU, axis=(1, 2), keepdims=True)  # (T,1,1)
+            data_CPU = data_CPU / (time_mean + EPS)
+            data_CPU = uniform_filter1d(data_CPU, size=10, axis=0, mode='nearest')
+            print(data_CPU.shape)
+            liv = np.var(data_CPU, axis=0, ddof=0)  # 1/N（与论文一致）
+            dynamic = gaussian_filter(liv, sigma=(1, 1))
+            # print(dynamic[0,0:5])
+            return dynamic
 
         
    

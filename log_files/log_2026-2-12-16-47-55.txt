@@ -1,0 +1,10 @@
+Stage position updated...
+no disperison compensation found...using default
+no background found...using default
+FiniteBline successfully finished...
+453 data received by weaver
+ContinuousBline successfully finished...
+46 FFT actions taken place
+
+46ContinuousBline displayed
+

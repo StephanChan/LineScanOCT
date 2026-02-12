@@ -45,14 +45,12 @@ from mainWindow import MainWindow
 from Actions import *
 from Generaic_functions import LOG
 import time
-# init global memory for temporary storage of generated raw data, make it more than 2 for parallel acquisition and processing
+# init global memory for raw data, make it more than 2 for parallel acquisition and processing
 global memoryCount
 memoryCount = 10
 
 global Memory
 Memory = list(range(memoryCount))
-
-####################### select which digitizer to use, ART or Alazar
 
 
 # simulation switch, set it to be True for simulation
@@ -78,8 +76,8 @@ GPU2weaverQueue = Queue()
 DQueue = Queue()
 # Queue for digitizer report back to weaver
 DbackQueue = Queue()
-# Queue for pausing or stopping a task
-PauseQueue = Queue()  
+# Queue for data pointer back
+DatabackQueue = Queue()
 
         
 # wrap digitzer thread with global queues and Memory and ui and log function
@@ -94,6 +92,7 @@ class Camera_2(Camera):
         self.ui = ui
         self.queue = DQueue
         self.DbackQueue = DbackQueue
+        self.DatabackQueue = DatabackQueue
         self.log = log
         self.SIM = SIM    
             
@@ -106,13 +105,12 @@ class WeaverThread_2(WeaverThread):
         self.Memory = Memory
         self.memoryCount = memoryCount
         self.ui = ui
-        # self.Digitizer = Digitizer
         self.queue = WeaverQueue
         self.DnSQueue = DnSQueue
         self.AODOQueue = AODOQueue
         self.StagebackQueue = StagebackQueue
-        self.PauseQueue = PauseQueue
         self.DbackQueue = DbackQueue
+        self.DatabackQueue = DatabackQueue
         self.GPUQueue = GPUQueue
         self.DQueue = DQueue
         self.GPU2weaverQueue = GPU2weaverQueue
@@ -128,7 +126,6 @@ class GPUThread_2(GPUThread):
             self.ui = ui
             self.queue = GPUQueue
             self.DnSQueue = DnSQueue
-            # self.Digitizer = Digitizer
             self.GPU2weaverQueue = GPU2weaverQueue
             self.log = log
             self.SIM = SIM
@@ -141,7 +138,6 @@ class AODOThread_2(AODOThread):
         super().__init__()
         self.ui = ui
         self.queue = AODOQueue
-        # self.Digitizer = Digitizer
         self.StagebackQueue = StagebackQueue
         self.log = log
         self.SIM = SIM
@@ -153,7 +149,6 @@ class DnSThread_2(DnSThread):
         super().__init__()
         self.ui = ui
         self.queue = DnSQueue
-        # self.Digitizer = Digitizer
         self.log = log
         self.use_maya = use_maya
         
@@ -183,8 +178,7 @@ class GUI(MainWindow):
         self.ui.Intmin.valueChanged.connect(self.Update_contrast_Mosaic)
         self.ui.Dynmax.valueChanged.connect(self.Update_contrast_Dyn)
         self.ui.Dynmin.valueChanged.connect(self.Update_contrast_Dyn)
-        # connect buttons to functionalities
-        # self.ui.RedoDC.clicked.connect(self.redo_dispersion_compensation)
+
         self.ui.redoBG.clicked.connect(self.redo_background)
         self.ui.redoSurf.clicked.connect(self.redo_surface)
         self.ui.BG_DIR.textChanged.connect(self.update_background)
@@ -240,8 +234,6 @@ class GUI(MainWindow):
         DQueue.put(exit_element)
         
     def run_task(self):
-        while PauseQueue.qsize()>0:
-            PauseQueue.get()
         # RptAline and SingleAline is for checking Aline profile, we don't need to capture each Aline, only acquire and display ~30 Alines per second
         
         # RptBline and SingleBline is for checking Bline profile, we don't need to capture each Bline, only acquire and display ~30 Blines per second.
@@ -364,11 +356,6 @@ class GUI(MainWindow):
             WeaverQueue.put(an_action)
         # wait until weaver done
         
-    def RepTest2(self):
-        if self.ui.ZstageTest2.isChecked():
-            an_action = WeaverAction('ZstageRepeatibility2')
-            WeaverQueue.put(an_action)
-
     def Gotozero(self):
         if self.ui.Gotozero.isChecked():
             an_action = WeaverAction('Gotozero')
@@ -381,16 +368,13 @@ class GUI(MainWindow):
         
     def Pause_task(self):
         if self.ui.PauseButton.isChecked():
-            # PauseQueue.put('Pause')
-            # self.ui.PauseButton.setText('Resume')
+            self.ui.PauseButton.setText('Resume')
             self.ui.statusbar.showMessage('acquisition paused...')
         else:
-            # PauseQueue.put('Resume')
-            # self.ui.PauseButton.setText('Pause')
+            self.ui.PauseButton.setText('Pause')
             self.ui.statusbar.showMessage('acquisition resumed...')
       
     def Stop_task(self):
-        # PauseQueue.put('Stop')
         self.ui.statusbar.showMessage('acquisition stopped...')
         
     def update_Dispersion(self):

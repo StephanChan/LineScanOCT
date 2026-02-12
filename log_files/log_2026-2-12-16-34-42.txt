@@ -1,0 +1,6 @@
+no disperison compensation found...using default
+Stage position updated...
+no background found...using default
+FiniteBline successfully finished...
+An error occurred, skip the FFT action
+

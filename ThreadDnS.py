@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import datetime
 import os
 from scipy import ndimage
-from libtiff import TIFF
+# from libtiff import TIFF
 import time
 
 class DnSThread(QThread):
@@ -198,7 +198,7 @@ class DnSThread(QThread):
             self.DynBline = []
             pixmap = RGBImagePlot(matrix1 = np.float32(self.Bline), m=self.ui.XZmin.value(), M=self.ui.XZmax.value())
         # clear content on the waveformLabel
-        self.ui.XZplane.clear()
+        # self.ui.XZplane.clear()
         # update iamge on the waveformLabel
         self.ui.XZplane.setPixmap(pixmap)
         
@@ -239,7 +239,7 @@ class DnSThread(QThread):
         self.DynBline = np.transpose(dynamic)
         pixmap = RGBImagePlot(matrix1 = np.float32(self.Bline), matrix2 = np.float32(self.DynBline*1), m=self.ui.XZmin.value(), M=self.ui.XZmax.value())
         # clear content on the waveformLabel
-        self.ui.XZplane.clear()
+        # self.ui.XZplane.clear()
         # update iamge on the waveformLabel
         self.ui.XZplane.setPixmap(pixmap)
         
@@ -255,13 +255,13 @@ class DnSThread(QThread):
         
         pixmap = RGBImagePlot(matrix1 = np.float32(self.SampleMosaic), m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
         # clear content on the waveformLabel
-        self.ui.SampleMosaic.clear()
+        # self.ui.SampleMosaic.clear()
         # update iamge on the waveformLabel
         self.ui.SampleMosaic.setPixmap(pixmap)
         
         pixmap = RGBImagePlot(matrix2 = np.float32(self.SampleDynamic), m=self.ui.Dynmin.value(), M=self.ui.Dynmax.value())
         # clear content on the waveformLabel
-        self.ui.SampleDynamic.clear()
+        # self.ui.SampleDynamic.clear()
         # update iamge on the waveformLabel
         self.ui.SampleDynamic.setPixmap(pixmap)
         
@@ -304,14 +304,14 @@ class DnSThread(QThread):
         # print(plane.shape)
         pixmap = RGBImagePlot(matrix1 = self.Bline, m=self.ui.XZmin.value(), M=self.ui.XZmax.value())
         # clear content on the waveformLabel
-        self.ui.XZplane.clear()
+        # self.ui.XZplane.clear()
         # update image on the waveformLabel
         self.ui.XZplane.setPixmap(pixmap)
         
         self.SampleMosaic = np.mean(Cscan,2)# has to be first index, otherwise the memory space is not continuous
         pixmap = RGBImagePlot(matrix1 = self.SampleMosaic, m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
         # clear content on the waveformLabel
-        self.ui.SampleMosaic.clear()
+        # self.ui.SampleMosaic.clear()
         # update image on the waveformLabel
         self.ui.SampleMosaic.setPixmap(pixmap)
         ###################### plot 3D visulaization
@@ -364,7 +364,7 @@ class DnSThread(QThread):
                     h = self.ui.XZplane.height()
                     pixmap = fastLinePlot(self.Aline, width=w, height=h, m=ym, M=yM )
                     # clear content on the waveformLabel
-                    self.ui.XZplane.clear()
+                    # self.ui.XZplane.clear()
                     # update iamge on the waveformLabel
                     self.ui.XZplane.setPixmap(pixmap)
                 except Exception as error:
@@ -382,7 +382,7 @@ class DnSThread(QThread):
                         pixmap = RGBImagePlot(matrix1=np.float32(self.Bline), m=self.ui.XZmin.value(), M=self.ui.XZmax.value())
                     # clear content on the waveformLabel
                     # print(self.Bline[0,0:5])
-                    self.ui.XZplane.clear()
+                    # self.ui.XZplane.clear()
                     # update iamge on the waveformLabel
                     self.ui.XZplane.setPixmap(pixmap)
                 except:
@@ -395,7 +395,7 @@ class DnSThread(QThread):
             try:
                 pixmap = RGBImagePlot(matrix1=self.SampleMosaic, m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
                 # clear content on the waveformLabel
-                self.ui.SampleMosaic.clear()
+                # self.ui.SampleMosaic.clear()
                 # update iamge on the waveformLabel
                 self.ui.SampleMosaic.setPixmap(pixmap)
             except:
@@ -408,7 +408,7 @@ class DnSThread(QThread):
             try:
                 pixmap = RGBImagePlot(matrix2=self.SampleDynamic, m=self.ui.Dynmin.value(), M=self.ui.Dynmax.value())
                 # clear content on the waveformLabel
-                self.ui.SampleDynamic.clear()
+                # self.ui.SampleDynamic.clear()
                 # update iamge on the waveformLabel
                 self.ui.SampleDynamic.setPixmap(pixmap)
             except:

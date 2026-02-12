@@ -1,0 +1,38 @@
+Stage position updated...
+no disperison compensation found...using default
+no background found...using default
+FiniteBline successfully finished...
+82 data received by weaver
+ContinuousBline successfully finished...
+30ContinuousBline displayed
+
+83 FFT actions taken place
+
+84 data received by weaver
+ContinuousBline successfully finished...
+61ContinuousBline displayed
+
+8 FFT actions taken place
+
+60 data received by weaver
+ContinuousBline successfully finished...
+17ContinuousBline displayed
+
+18 FFT actions taken place
+
+255 data received by weaver
+ContinuousBline successfully finished...
+76ContinuousBline displayed
+
+77 FFT actions taken place
+
+no background found...using default
+no background found...using default
+no background found...using default
+no background found...using default
+no background found...using default
+no background found...using default
+no background found...using default
+no background found...using default
+no background found...using default
+FiniteCscan successfully finished...

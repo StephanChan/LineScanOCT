@@ -1,0 +1,96 @@
+no disperison compensation found...using default
+Stage position updated...
+no background found...using default
+FiniteBline successfully finished...
+FiniteBline successfully finished...
+FiniteBline successfully finished...
+163 data received by weaver
+19 FFT actions taken place
+
+19ContinuousBline displayed
+
+ContinuousBline successfully finished...
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+643 data received by weaver
+36 FFT actions taken place
+
+ContinuousBline successfully finished...
+36ContinuousBline displayed
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+An error occurred, skip the FFT action
+
+79 data received by weaver
+0ContinuousBline displayed
+
+0 FFT actions taken place
+
+ContinuousBline successfully finished...

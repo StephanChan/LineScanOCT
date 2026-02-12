@@ -36,12 +36,14 @@ class WeaverThread(QThread):
             # self.ui.statusbar.showMessage('King thread is doing: '+self.item.action)
             try:
                 if self.item.action in ['ContinuousAline','ContinuousBline','ContinuousCscan']:
+                    self.InitMemory()
                     message = self.RptScan(self.item.action)
                     self.ui.statusbar.showMessage(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
                     
                 elif self.item.action in ['FiniteBline', 'FiniteAline', 'FiniteCscan']:
+                    self.InitMemory()
                     message = self.SingleScan(self.item.action)
                     self.ui.statusbar.showMessage(message)
                     # self.ui.PrintOut.append(message)
@@ -56,13 +58,15 @@ class WeaverThread(QThread):
                     if not os.path.exists(self.ui.DIR.toPlainText()+'/fitting'):
                         os.mkdir(self.ui.DIR.toPlainText()+'/fitting')
                     # do fast pre-scan to identify tissue area
-                    status= self.PreMosaic()
-                    if status != 'success' :
-                        status = "action aborted by user..."
+                    self.InitMemory()
+                    message= self.PreMosaic()
+                    if message != 'success' :
+                        message = "action aborted by user..."
                     else:
-                        status = self.Mosaic()
-                    # self.ui.PrintOut.append(status)
-                    self.log.write(status)
+                        self.InitMemory()
+                        message = self.Mosaic()
+                    # self.ui.PrintOut.append(message)
+                    self.log.write(message)
 
                 elif self.item.action == 'ZstageRepeatibility':
                     message = self.ZstageRepeatibility()
@@ -89,7 +93,7 @@ class WeaverThread(QThread):
                     self.log.write(message)
 
             except Exception as error:
-                message = "An error occurred,"+"skip the acquisition action\n"
+                message = "An error occurred in"+  self.item.action + "\n"
                 self.ui.statusbar.showMessage(message)
                 # self.ui.PrintOut.append(message)
                 self.log.write(message)
@@ -136,7 +140,6 @@ class WeaverThread(QThread):
         ###########################################################################################
         
     def SingleScan(self, mode):
-        self.InitMemory()
         an_action = DnSAction('Clear')
         self.DnSQueue.put(an_action)
         # t0=time.time()
@@ -144,7 +147,6 @@ class WeaverThread(QThread):
         an_action = DAction('ConfigureBoard')
         self.DQueue.put(an_action)
         # self.DbackQueue.get()
-        # time.sleep(0.5)
         t1=time.time()
         ###########################################################################################
         # start AODO 
@@ -153,12 +155,12 @@ class WeaverThread(QThread):
         self.StagebackQueue.get()
         t2=time.time()
         # start camera
-        while self.DbackQueue.qsize()>0:
-            print('current dbackqueue size:', self.DbackQueue.qsize())
-            try:
-                self.DbackQueue.get_nowait()
-            except:
-                break
+        # while self.DbackQueue.qsize()>0:
+        #     print('current dbackqueue size:', self.DbackQueue.qsize())
+        #     try:
+        #         self.DbackQueue.get_nowait()
+        #     except:
+        #         break
         an_action = DAction('StartAcquire')
         self.DQueue.put(an_action)
         self.DbackQueue.get()
@@ -181,10 +183,8 @@ class WeaverThread(QThread):
             start = time.time()
             ######################################### collect data
             # collect data from digitizer, data format: [Y pixels, Xpixels, Z pixels]
-            
             # print('current dbackqueue size:', self.DbackQueue.qsize())
-            an_action = self.DbackQueue.get() # never time out
-            # print(an_action)
+            an_action = self.DatabackQueue.get() # never time out
             # print('current dbackqueue size:', self.DbackQueue.qsize())
             if an_action != 0:
                 print('time to fetch data: '+str(round(time.time()-start,3)))
@@ -225,15 +225,11 @@ class WeaverThread(QThread):
     
             
     def RptScan(self, mode):
-        self.InitMemory()
         an_action = DnSAction('Clear')
         self.DnSQueue.put(an_action)
         an_action = DAction('ConfigureBoard')
         self.DQueue.put(an_action)
         # self.DbackQueue.get()
-        # time.sleep(0.5)
-        # an_action = DnSAction('Clear')
-        # self.DnSQueue.put(an_action)
         # config AODO
         an_action = AODOAction('ConfigTask')
         self.AODOQueue.put(an_action)
@@ -241,12 +237,12 @@ class WeaverThread(QThread):
         data_backs = 0 # count number of data backs
         
                 
-        while self.DbackQueue.qsize()>0:
-            try:
-                print('current dbackqueue size:', self.DbackQueue.qsize())
-                self.DbackQueue.get_nowait()
-            except:
-                break
+        # while self.DbackQueue.qsize()>0:
+        #     try:
+        #         print('current dbackqueue size:', self.DbackQueue.qsize())
+        #         self.DbackQueue.get_nowait()
+        #     except:
+        #         break
         # start digitizer for one acuquqisition
         an_action = DAction('StartAcquire')
         self.DQueue.put(an_action)
@@ -261,8 +257,8 @@ class WeaverThread(QThread):
         while self.ui.RunButton.isChecked():
             ######################################### collect data
             # print('waiting...')
-            try:
-                an_action = self.DbackQueue.get(timeout=1) # never time out
+            try: # use try-except in cases where Stop button clicked and camera stopped prior to while loop
+                an_action = self.DatabackQueue.get(timeout=1) # never time out
                 memoryLoc = an_action.action
                 # print(memoryLoc)
                 data_backs += 1
@@ -282,17 +278,21 @@ class WeaverThread(QThread):
                 print('camera stopped')
             # handle pause action
             if self.ui.PauseButton.isChecked():
+                # camera will wait for trigger, no need to stop
+                # stop AODO task, can be restarted
                 an_action = AODOAction('StopTask')
                 self.AODOQueue.put(an_action)
+                # wait until stop button or pause button is clicked
                 while self.ui.PauseButton.isChecked() and self.ui.RunButton.isChecked():
                     time.sleep(0.5)
+                # if resume, restart AODO task
                 if not self.ui.PauseButton.isChecked():
                     # start AODO 
-                    # time.sleep(0.5) # wait until camera first resumed acquisition
                     an_action = AODOAction('StartTask')
                     self.AODOQueue.put(an_action)
                     self.StagebackQueue.get()
-        
+        # Camera will stop once Stop Button is clicked
+        # AODO thread will need StopTask command
         an_action = AODOAction('tryStopTask')
         self.AODOQueue.put(an_action)
         print('AODO stopped')

@@ -1,0 +1,7 @@
+Stage position updated...
+no disperison compensation found...using default
+no background found...using default
+FiniteBline successfully finished...
+
+An error occurred: skip the display and save action
+

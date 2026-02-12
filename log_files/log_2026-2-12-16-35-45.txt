@@ -1,0 +1,36 @@
+Stage position updated...
+no disperison compensation found...using default
+no background found...using default
+no background found...using default
+no background found...using default
+no background found...using default
+no background found...using default
+no background found...using default
+no background found...using default
+no background found...using default
+FiniteBline successfully finished...
+FiniteBline successfully finished...
+87 data received by weaver
+ContinuousBline successfully finished...
+10 FFT actions taken place
+
+10ContinuousBline displayed
+
+59 data received by weaver
+ContinuousBline successfully finished...
+6ContinuousBline displayed
+
+0 FFT actions taken place
+
+56 data received by weaver
+ContinuousBline successfully finished...
+6ContinuousBline displayed
+
+0 FFT actions taken place
+
+
+An error occurred, skip the AODO action
+
+
+An error occurred, skip the AODO action
+
