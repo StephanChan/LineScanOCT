@@ -49,9 +49,9 @@ class Camera(QThread):
             try:
                 if self.item.action == 'ConfigureBoard':
                     self.ConfigureBoard()
-                elif self.item.action == 'StartAcquire':
+                elif self.item.action == 'Acquire':
                     if not (SIM or self.SIM):
-                        self.StartAcquire()
+                        self.Acquire()
                     else:
                         self.simData()         
                 elif self.item.action == 'UninitBoard':
@@ -277,7 +277,7 @@ class Camera(QThread):
     
         # return pfStream
         
-    def StartAcquire(self):
+    def Acquire(self):
         pfResult = self.pfCam.Grab()
         if pfResult != pf.Error.NONE:
             self.ExitWithErrorPrompt("Could not start grab process", pfResult)

@@ -16,7 +16,6 @@ import os
 import matplotlib.pyplot as plt
 from scipy.signal import hilbert
 import datetime
-
 # axial pixel size, measure with a microscope glass slide
 global ZPIXELSIZE
 ZPIXELSIZE = 4.4 # unit: um
@@ -161,7 +160,7 @@ class WeaverThread(QThread):
         #         self.DbackQueue.get_nowait()
         #     except:
         #         break
-        an_action = DAction('StartAcquire')
+        an_action = DAction('Acquire')
         self.DQueue.put(an_action)
         self.DbackQueue.get()
         t3=time.time()
@@ -244,7 +243,7 @@ class WeaverThread(QThread):
         #     except:
         #         break
         # start digitizer for one acuquqisition
-        an_action = DAction('StartAcquire')
+        an_action = DAction('Acquire')
         self.DQueue.put(an_action)
         self.DbackQueue.get()
 
@@ -555,15 +554,14 @@ class WeaverThread(QThread):
         print('acquiring Bline')
         self.ui.RunButton.setChecked(True)
         self.SingleScan(self.ui.ACQMode.currentText())
-
-        time.sleep(2)
         print('got Bline')
+        print(self.data.shape)
         #######################################################################
         Xpixels = self.ui.AlinesPerBline.value()
         Yrpt = self.ui.BlineAVG.value()
         BLINE = self.data.reshape([Yrpt, Xpixels, self.ui.NSamples.value()])
         
-        background = np.transpose(np.float32(np.mean(BLINE,0)))
+        background = np.float32(np.mean(BLINE,0))
         # background = np.smooth()
         # print(background.shape)
         filePath = self.ui.DIR.toPlainText()
@@ -591,34 +589,31 @@ class WeaverThread(QThread):
     
     def get_surfCurve(self):
         
+        print('start getting background...')
         mode = self.ui.ACQMode.currentText()
         device = self.ui.FFTDevice.currentText()
-        self.ui.ACQMode.setCurrentText('SingleCscan')
+        self.ui.ACQMode.setCurrentText('FiniteBline')
         self.ui.FFTDevice.setCurrentText('GPU')
         self.ui.DSing.setChecked(True)
         ############################# measure an Cscan
+        print('acquiring Bline')
+        self.ui.RunButton.setChecked(True)
         self.SingleScan('SingleCscan')
-        while self.GPU2weaverQueue.qsize()<1:
-            time.sleep(1)
+        # while self.GPU2weaverQueue.qsize()<1:
+        #     time.sleep(1)
         cscan =self.GPU2weaverQueue.get()
-  
+        
         Zpixels = self.ui.DepthRange.value()
         # get number of X pixels
-        Xpixels = self.ui.NSamples.value()*self.ui.AlineAVG.value()
-        if self.Digitizer == 'ART':
-            Xpixels = Xpixels + self.ui.PreClock.value()*2 + self.ui.PostClock.value()
+        Xpixels = self.ui.AlinesPerBline.value()
         # get number of Y pixels
         Ypixels = self.ui.Ypixels.value()* self.ui.BlineAVG.value()
         # reshape into Ypixels x Xpixels x Zpixels
         cscan = cscan.reshape([Ypixels,Xpixels,Zpixels])
-        # trim fly-back pixels
-        if self.Digitizer == 'ART':    
-            cscan = cscan[:,self.ui.PreClock.value():self.ui.NSamples.value()*self.ui.AlineAVG.value()+self.ui.PreClock.value()]
-            Xpixels = self.ui.NSamples.value()*self.ui.AlineAVG.value()
         
         Bline = np.float32(np.mean(cscan,0))
         surfCurve = np.zeros([Xpixels])
-        import matplotlib.pyplot as plt
+
         plt.figure()
         plt.imshow(Bline)
         plt.title('Bline for finding surface')
@@ -626,7 +621,6 @@ class WeaverThread(QThread):
             surfCurve[xx] = findchangept(Bline[xx,:],1)
         
         surfCurve = surfCurve - min(surfCurve)
-        import matplotlib.pyplot as plt
         plt.figure()
         plt.plot(surfCurve)
         plt.title('surface')
@@ -642,16 +636,5 @@ class WeaverThread(QThread):
         self.ui.ACQMode.setCurrentText(mode)
         self.ui.FFTDevice.setCurrentText(device)
         self.ui.DSing.setChecked(False)
-        
-        # load surface profile for high res imaging
-        if os.path.isfile(self.ui.Surf_DIR.text()):
-            self.surfCurve = np.uint16(np.fromfile(self.ui.Surf_DIR.text(), dtype=np.uint16))
-            if self.surfCurve.shape[0] != Xpixels:
-                self.surfCurve = np.zeros([Xpixels],dtype = np.uint16)
-                print('surface data not match FOV setting, using all zeros')
-                self.surfCurve = np.zeros([Xpixels],dtype = np.uint16)
-        else:
-            print('surface data not found, using all zeros')
-            self.surfCurve = np.zeros([Xpixels],dtype = np.uint16)
         return 'surface measruement success...'
     

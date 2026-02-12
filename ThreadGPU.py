@@ -339,8 +339,7 @@ class GPUThread(QThread):
         # print(dispersion_path+'/dspPhase.bin')
         if os.path.isfile(background_path):
             try:
-                self.background  = np.float32(np.fromfile(background_path, dtype=np.float32)).reshape([samples, Xpixels])
-                self.background = np.transpose(self.background)
+                self.background  = np.float32(np.fromfile(background_path, dtype=np.float32)).reshape([Xpixels,samples])
                 # print(self.background.shape)
     
                 # plt.figure()

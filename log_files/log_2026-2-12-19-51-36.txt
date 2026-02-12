@@ -1,0 +1,16 @@
+no disperison compensation found...skip interpolation
+Stage position updated...
+no background found...using default
+FiniteBline successfully finished...
+599 data received by weaver
+ContinuousBline successfully finished...
+180 FFT actions taken place
+
+180ContinuousBline displayed
+
+147 data received by weaver
+ContinuousBline successfully finished...
+44ContinuousBline displayed
+
+45 FFT actions taken place
+

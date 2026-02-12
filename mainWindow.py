@@ -319,7 +319,7 @@ class MainWindow(QMainWindow):
     def chooseSurfaceFile(self):
         fileName_choose, filetype = QFileDialog.getOpenFileName(self,  
                                    "select surface file",  
-                                   os.getcwd(), # 起始路径 
+                                   self.ui.DIR.toPlainText(), # 起始路径 
                                    "All Files (*);;Text Files (*.txt)")   # 设置文件扩展名过滤,用双分号间隔
 
         if fileName_choose == "":
@@ -327,34 +327,34 @@ class MainWindow(QMainWindow):
            return
         self.ui.Surf_DIR.setText(fileName_choose)
         
-    def chooseDarkFieldFile(self):
-        fileName_choose, filetype = QFileDialog.getOpenFileName(self,  
-                                   "select dark field file",  
-                                   os.getcwd(), # 起始路径 
-                                   "All Files (*);;Text Files (*.txt)")   # 设置文件扩展名过滤,用双分号间隔
+    # def chooseDarkFieldFile(self):
+    #     fileName_choose, filetype = QFileDialog.getOpenFileName(self,  
+    #                                "select dark field file",  
+    #                                os.getcwd(), # 起始路径 
+    #                                "All Files (*);;Text Files (*.txt)")   # 设置文件扩展名过滤,用双分号间隔
 
-        if fileName_choose == "":
-           print("\n use default")
-           return
-        self.ui.DarkField_DIR.setText(fileName_choose)
+    #     if fileName_choose == "":
+    #        print("\n use default")
+    #        return
+    #     self.ui.DarkField_DIR.setText(fileName_choose)
     
-    def chooseFlatFieldFile(self):
-        fileName_choose, filetype = QFileDialog.getOpenFileName(self,  
-                                   "select flat field file",  
-                                   os.getcwd(), # 起始路径 
-                                   "All Files (*);;Text Files (*.txt)")   # 设置文件扩展名过滤,用双分号间隔
+    # def chooseFlatFieldFile(self):
+    #     fileName_choose, filetype = QFileDialog.getOpenFileName(self,  
+    #                                "select flat field file",  
+    #                                os.getcwd(), # 起始路径 
+    #                                "All Files (*);;Text Files (*.txt)")   # 设置文件扩展名过滤,用双分号间隔
 
-        if fileName_choose == "":
-           print("\n use default")
-           return
-        self.ui.FlatField_DIR.setText(fileName_choose)
+    #     if fileName_choose == "":
+    #        print("\n use default")
+    #        return
+    #     self.ui.FlatField_DIR.setText(fileName_choose)
 
     def chooseDir(self):
         if self.ui.Save.isChecked():
             
              dir_choose = QFileDialog.getExistingDirectory(self,  
                                          "select saving directory",  
-                                         os.getcwd()) # 起始路径
+                                         self.ui.DIR.toPlainText()) # 起始路径
         
              if dir_choose == "":
                  print("\n use default")
@@ -380,7 +380,7 @@ class MainWindow(QMainWindow):
     def chooseInD(self):
          dir_choose = QFileDialog.getExistingDirectory(self,  
                                      "select saving directory",  
-                                     os.getcwd()) # 起始路径
+                                     self.ui.InD_DIR.text()) # 起始路径
 
          if dir_choose == "":
              print("\n use default")
@@ -390,7 +390,7 @@ class MainWindow(QMainWindow):
     def chooseBackground(self):
         fileName_choose, filetype = QFileDialog.getOpenFileName(self,  
                                    "select background file",  
-                                   os.getcwd(), # 起始路径 
+                                   self.ui.DIR.toPlainText(), # 起始路径 
                                    "All Files (*);;Text Files (*.txt)")   # 设置文件扩展名过滤,用双分号间隔
 
         if fileName_choose == "":
