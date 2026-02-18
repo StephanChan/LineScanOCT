@@ -173,6 +173,8 @@ class GUI(MainWindow):
         # self.ui.TrimSamples.valueChanged.connect(self.update_Dispersion)
         # set stage boundary
         self.ui.XZmax.valueChanged.connect(self.Update_contrast_Bline)
+        # self.ui.DepthStart.valueChanged.connect(self.Update_contrast_Bline)
+        # self.ui.DepthRange.valueChanged.connect(self.Update_contrast_Bline)
         self.ui.XZmin.valueChanged.connect(self.Update_contrast_Bline)
         self.ui.Intmax.valueChanged.connect(self.Update_contrast_Mosaic)
         self.ui.Intmin.valueChanged.connect(self.Update_contrast_Mosaic)
