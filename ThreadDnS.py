@@ -117,7 +117,7 @@ class DnSThread(QThread):
         self.ui.statusbar.showMessage("Display and save Thread successfully exited...")
             
     def print_display_counts(self):
-        message = str(self.display_actions)+ self.ui.ACQMode.currentText() +' displayed\n'
+        message = str(self.display_actions) + ' ' + self.ui.ACQMode.currentText() +' displayed\n'
         print(message)
         # self.ui.PrintOut.append(message)
         self.log.write(message)

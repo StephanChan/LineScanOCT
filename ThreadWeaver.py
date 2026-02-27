@@ -54,16 +54,21 @@ class WeaverThread(QThread):
                         os.mkdir(self.ui.DIR.toPlainText()+'/aip')
                     if not os.path.exists(self.ui.DIR.toPlainText()+'/surf'):
                         os.mkdir(self.ui.DIR.toPlainText()+'/surf')
-                    if not os.path.exists(self.ui.DIR.toPlainText()+'/fitting'):
-                        os.mkdir(self.ui.DIR.toPlainText()+'/fitting')
-                    # do fast pre-scan to identify tissue area
-                    self.InitMemory()
-                    message= self.PreMosaic()
-                    if message != 'success' :
-                        message = "action aborted by user..."
-                    else:
-                        self.InitMemory()
-                        message = self.Mosaic()
+
+                    # TODO: take an image, manually find tissue region, generate scan pattern
+                    # for each scan region:
+                        # do fast scan to identify tissue area
+                        # adjust scan patern in X Y Z dimension
+                        # do viability scan
+                        
+                    # # do fast pre-scan to identify tissue area
+                    # self.InitMemory()
+                    # message= self.PreMosaic()
+                    # if message != 'success' :
+                    #     message = "action aborted by user..."
+                    # else:
+                    #     self.InitMemory()
+                    #     message = self.Mosaic()
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
 
@@ -154,12 +159,7 @@ class WeaverThread(QThread):
         self.StagebackQueue.get()
         t2=time.time()
         # start camera
-        # while self.DbackQueue.qsize()>0:
-        #     print('current dbackqueue size:', self.DbackQueue.qsize())
-        #     try:
-        #         self.DbackQueue.get_nowait()
-        #     except:
-        #         break
+
         an_action = DAction('Acquire')
         self.DQueue.put(an_action)
         self.DbackQueue.get()
@@ -182,14 +182,11 @@ class WeaverThread(QThread):
             start = time.time()
             ######################################### collect data
             # collect data from digitizer, data format: [Y pixels, Xpixels, Z pixels]
-            # print('current dbackqueue size:', self.DbackQueue.qsize())
             an_action = self.DatabackQueue.get() # never time out
-            # print('current dbackqueue size:', self.DbackQueue.qsize())
             if an_action != 0:
                 print('time to fetch data: '+str(round(time.time()-start,3)))
                 memoryLoc = an_action.action
                 # print(memoryLoc)
-    
                 ############################################### display and save data
                 if self.ui.FFTDevice.currentText() in ['None']:
                     # put raw spectrum data into memory for dipersion compensation and background subtraction usage
@@ -212,14 +209,12 @@ class WeaverThread(QThread):
             else:
                 message = 'an_action is 0'
                     
-                
         an_action = AODOAction('tryStopTask')
         self.AODOQueue.put(an_action)
         an_action = AODOAction('CloseTask')
         self.AODOQueue.put(an_action)
         self.StagebackQueue.get() # wait for AODO CloseTask
-        # print(message)
-        # print('current dbackqueue size:', self.DbackQueue.qsize())
+        print(message)
         return message
     
             
@@ -234,14 +229,7 @@ class WeaverThread(QThread):
         self.AODOQueue.put(an_action)
         self.StagebackQueue.get()
         data_backs = 0 # count number of data backs
-        
-                
-        # while self.DbackQueue.qsize()>0:
-        #     try:
-        #         print('current dbackqueue size:', self.DbackQueue.qsize())
-        #         self.DbackQueue.get_nowait()
-        #     except:
-        #         break
+
         # start digitizer for one acuquqisition
         an_action = DAction('Acquire')
         self.DQueue.put(an_action)
@@ -255,7 +243,6 @@ class WeaverThread(QThread):
         ######################################################### repeat acquisition until Stop button is clicked
         while self.ui.RunButton.isChecked():
             ######################################### collect data
-            # print('waiting...')
             try: # use try-except in cases where Stop button clicked and camera stopped prior to while loop
                 an_action = self.DatabackQueue.get(timeout=1) # never time out
                 memoryLoc = an_action.action
@@ -264,17 +251,27 @@ class WeaverThread(QThread):
                 if memoryLoc < self.ui.DisplayRatio.value():
                     ######################################### display data
                     if self.ui.FFTDevice.currentText() in ['None']:
+                        # put raw spectrum data into memory for dipersion compensation and background subtraction usage
+                        self.data = self.Memory[memoryLoc].copy()
                         # In None mode, directly do display and save
-                        data = self.Memory[memoryLoc].copy()
-                        an_action = DnSAction(mode, data, raw=True) # data in Memory[memoryLoc]
-                        self.DnSQueue.put(an_action)
+                        if np.sum(self.data)<10:
+                            print('spectral data all zeros!')
+                            # self.ui.PrintOut.append('spectral data all zeros!')
+                            self.log.write('spectral data all zeros!')
+                            message = 'spectral data all zeros!'
+                        else:
+                            an_action = DnSAction(mode, self.data, raw=True) # data in Memory[memoryLoc]
+                            self.DnSQueue.put(an_action)
+                            message = mode + " successfully finished..."
                     else:
                         # In other modes, do FFT first
                         an_action = GPUAction(self.ui.FFTDevice.currentText(), mode, memoryLoc)
                         self.GPUQueue.put(an_action)
+                        message = mode + " successfully finished..."
                     ######################################## check if Pause or Stop button is clicked
             except:
-                print('camera stopped')
+                pass
+                # print('camera stopped')
             # handle pause action
             if self.ui.PauseButton.isChecked():
                 # camera will wait for trigger, no need to stop
@@ -294,19 +291,19 @@ class WeaverThread(QThread):
         # AODO thread will need StopTask command
         an_action = AODOAction('tryStopTask')
         self.AODOQueue.put(an_action)
-        print('AODO stopped')
         # close AODO
         an_action = AODOAction('CloseTask')
         self.AODOQueue.put(an_action)
         self.StagebackQueue.get() # wait for AODO CloseTask
         # digitizer will close automatically
-        message = str(data_backs)+ ' data received by weaver'
+        message = message + str(data_backs)+ ' data received by weaver'
         self.log.write(message)
+        print(message)
         an_action = GPUAction('display_FFT_actions')
         self.GPUQueue.put(an_action)
         an_action = DnSAction('display_counts')
         self.DnSQueue.put(an_action)
-        return mode + ' successfully finished...'
+        return message
   
 
     
@@ -326,7 +323,7 @@ class WeaverThread(QThread):
         # value = value.reshape([self.ui.AlinesPerBline.value()*self.ui.BlineAVG.value(),\
         #                        self.ui.NSamples.value()*self.ui.AlineAVG.value()//self.Yds,self.Yds]).mean(-1)
         self.ui.tileMean.setValue(np.mean(value))
-        if np.sum(value > self.ui.AgarValue.value())>value.shape[1]*value.shape[0]*0.05: 
+        if np.sum(value > self.ui.ThresholdValue.value())>value.shape[1]*value.shape[0]*0.05: 
             self.tile_flag[stripes - 1][cscans] = 1
             self.ui.TissueRadio.setChecked(True)
             self.tmp_cscan = self.tmp_cscan + cscan/100.0

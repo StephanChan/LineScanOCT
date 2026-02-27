@@ -24,9 +24,9 @@ global SIM
 SIM = False
 ###########################################
 from PyQt5.QtCore import  QThread
-from Zolix_control import Stepper
 
 try:
+    from Zolix_control import Stepper
     st = Stepper()
     import sys
     sys.path.append(r"C:\\Program Files (x86)\\ART Technology\\ART-DAQ\\Samples\\Python\\LIB\\")

@@ -21,7 +21,7 @@
        <number>6</number>
       </property>
       <item row="0" column="5">
-       <widget class="QDoubleSpinBox" name="AgarValue">
+       <widget class="QDoubleSpinBox" name="ThresholdValue">
         <property name="minimumSize">
          <size>
           <width>100</width>
@@ -1856,6 +1856,11 @@
               <string>XingTu</string>
              </property>
             </item>
+            <item>
+             <property name="text">
+              <string>Daheng</string>
+             </property>
+            </item>
            </widget>
           </item>
           <item row="4" column="5">
@@ -1950,324 +1955,315 @@
              <attribute name="title">
               <string>PhotonFocus</string>
              </attribute>
-             <layout class="QHBoxLayout" name="horizontalLayout_6">
-              <item>
-               <widget class="QGroupBox" name="groupBox_5">
-                <property name="title">
-                 <string>Setting</string>
+             <layout class="QGridLayout" name="gridLayout_6">
+              <item row="0" column="0">
+               <widget class="QLabel" name="label">
+                <property name="text">
+                 <string>当前曝光时间(ms):</string>
                 </property>
-                <layout class="QGridLayout" name="gridLayout_6">
-                 <item row="4" column="3">
-                  <widget class="QLabel" name="label_9">
-                   <property name="text">
-                    <string>波长偏置（像素）:</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="1" column="3">
-                  <widget class="QLabel" name="label_7">
-                   <property name="text">
-                    <string>Set Gain:</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="0" column="1" colspan="2">
-                  <widget class="QDoubleSpinBox" name="Exposure_display">
-                   <property name="enabled">
-                    <bool>false</bool>
-                   </property>
-                   <property name="maximum">
-                    <double>10000000.000000000000000</double>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="2" column="4">
-                  <widget class="QComboBox" name="PixelFormat">
-                   <item>
-                    <property name="text">
-                     <string>Mono12Packed</string>
-                    </property>
-                   </item>
-                   <item>
-                    <property name="text">
-                     <string>Mono8</string>
-                    </property>
-                   </item>
-                   <item>
-                    <property name="text">
-                     <string>Mono10</string>
-                    </property>
-                   </item>
-                   <item>
-                    <property name="text">
-                     <string>Mono12</string>
-                    </property>
-                   </item>
-                   <item>
-                    <property name="text">
-                     <string>Mono10Packed</string>
-                    </property>
-                   </item>
-                  </widget>
-                 </item>
-                 <item row="1" column="4">
-                  <widget class="QComboBox" name="DGain">
-                   <item>
-                    <property name="text">
-                     <string>Gain1x</string>
-                    </property>
-                   </item>
-                   <item>
-                    <property name="text">
-                     <string>Gain2x</string>
-                    </property>
-                   </item>
-                   <item>
-                    <property name="text">
-                     <string>Gain4x</string>
-                    </property>
-                   </item>
-                   <item>
-                    <property name="text">
-                     <string>Gain8x</string>
-                    </property>
-                   </item>
-                  </widget>
-                 </item>
-                 <item row="4" column="1">
-                  <widget class="QDoubleSpinBox" name="FrameRate">
-                   <property name="enabled">
-                    <bool>false</bool>
-                   </property>
-                   <property name="maximum">
-                    <double>10000.000000000000000</double>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="3" column="3">
-                  <widget class="QLabel" name="XstepsLabel">
-                   <property name="text">
-                    <string>波长数量（像素）：</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="2" column="1">
-                  <widget class="QLabel" name="PixelFormat_display">
-                   <property name="enabled">
-                    <bool>false</bool>
-                   </property>
-                   <property name="text">
-                    <string>Mono8</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="0" column="5">
-                  <widget class="QLabel" name="label_18">
-                   <property name="text">
-                    <string>AcquisitionStatusSelector</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="4" column="4">
-                  <widget class="QSpinBox" name="offsetW">
-                   <property name="maximum">
-                    <number>1600</number>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="3" column="0">
-                  <widget class="QLabel" name="label_5">
-                   <property name="text">
-                    <string>相机温度：</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="3" column="4">
-                  <widget class="QSpinBox" name="NSamples">
-                   <property name="wrapping">
-                    <bool>false</bool>
-                   </property>
-                   <property name="minimum">
-                    <number>1</number>
-                   </property>
-                   <property name="maximum">
-                    <number>1600</number>
-                   </property>
-                   <property name="singleStep">
-                    <number>8</number>
-                   </property>
-                   <property name="value">
-                    <number>1600</number>
-                   </property>
-                   <property name="displayIntegerBase">
-                    <number>10</number>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="1" column="0">
-                  <widget class="QLabel" name="label_2">
-                   <property name="text">
-                    <string>Current Gain:</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="2" column="0">
-                  <widget class="QLabel" name="label_11">
-                   <property name="text">
-                    <string>当前像素位深：</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="0" column="4">
-                  <widget class="QDoubleSpinBox" name="Exposure">
-                   <property name="maximum">
-                    <double>1000.000000000000000</double>
-                   </property>
-                   <property name="singleStep">
-                    <double>0.100000000000000</double>
-                   </property>
-                   <property name="value">
-                    <double>1.000000000000000</double>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="0" column="3">
-                  <widget class="QLabel" name="label_6">
-                   <property name="text">
-                    <string>设定曝光时间（ms）:</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="4" column="0">
-                  <widget class="QLabel" name="label_3">
-                   <property name="enabled">
-                    <bool>false</bool>
-                   </property>
-                   <property name="text">
-                    <string>帧率：</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="3" column="1">
-                  <widget class="QDoubleSpinBox" name="Temporature">
-                   <property name="enabled">
-                    <bool>false</bool>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="1" column="1">
-                  <widget class="QLabel" name="DGain_display">
-                   <property name="enabled">
-                    <bool>false</bool>
-                   </property>
-                   <property name="text">
-                    <string>Gain1x</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="0" column="0">
-                  <widget class="QLabel" name="label">
-                   <property name="text">
-                    <string>当前曝光时间(ms):</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="2" column="3">
-                  <widget class="QLabel" name="label_8">
-                   <property name="text">
-                    <string>像素位深：</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="0" column="6">
-                  <widget class="QComboBox" name="AcquisitionStatusSelector">
-                   <item>
-                    <property name="text">
-                     <string>AcquisitionTriggerWait</string>
-                    </property>
-                   </item>
-                  </widget>
-                 </item>
-                 <item row="1" column="6">
-                  <widget class="QComboBox" name="TriggerSelector">
-                   <item>
-                    <property name="text">
-                     <string>FrameStart</string>
-                    </property>
-                   </item>
-                  </widget>
-                 </item>
-                 <item row="2" column="6">
-                  <widget class="QComboBox" name="TriggerMode">
-                   <item>
-                    <property name="text">
-                     <string>On</string>
-                    </property>
-                   </item>
-                   <item>
-                    <property name="text">
-                     <string>Off</string>
-                    </property>
-                   </item>
-                  </widget>
-                 </item>
-                 <item row="1" column="5">
-                  <widget class="QLabel" name="label_19">
-                   <property name="text">
-                    <string>TriggerSelector</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="2" column="5">
-                  <widget class="QLabel" name="label_20">
-                   <property name="text">
-                    <string>TriggerMode</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="3" column="5">
-                  <widget class="QLabel" name="label_22">
-                   <property name="text">
-                    <string>TriggerSource</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="3" column="6">
-                  <widget class="QComboBox" name="TriggerSource">
-                   <item>
-                    <property name="text">
-                     <string>Line0</string>
-                    </property>
-                   </item>
-                  </widget>
-                 </item>
-                 <item row="4" column="5">
-                  <widget class="QLabel" name="label_34">
-                   <property name="text">
-                    <string>TriggerActivation</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="4" column="6">
-                  <widget class="QComboBox" name="TriggerActivation">
-                   <item>
-                    <property name="text">
-                     <string>RisingEdge</string>
-                    </property>
-                   </item>
-                   <item>
-                    <property name="text">
-                     <string>FallingEdge</string>
-                    </property>
-                   </item>
-                   <item>
-                    <property name="text">
-                     <string>AnyEdge</string>
-                    </property>
-                   </item>
-                  </widget>
-                 </item>
-                </layout>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QDoubleSpinBox" name="Exposure_display">
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+                <property name="maximum">
+                 <double>10000000.000000000000000</double>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="2">
+               <widget class="QLabel" name="label_6">
+                <property name="text">
+                 <string>设定曝光时间（ms）:</string>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="3">
+               <widget class="QDoubleSpinBox" name="Exposure">
+                <property name="maximum">
+                 <double>1000.000000000000000</double>
+                </property>
+                <property name="singleStep">
+                 <double>0.100000000000000</double>
+                </property>
+                <property name="value">
+                 <double>1.000000000000000</double>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="4">
+               <widget class="QLabel" name="label_18">
+                <property name="text">
+                 <string>AcquisitionStatusSelector</string>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="5">
+               <widget class="QComboBox" name="AcquisitionStatusSelector">
+                <item>
+                 <property name="text">
+                  <string>AcquisitionTriggerWait</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+              <item row="1" column="0">
+               <widget class="QLabel" name="label_2">
+                <property name="text">
+                 <string>Current Gain:</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="QLabel" name="DGain_display">
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+                <property name="text">
+                 <string>Gain1x</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="2">
+               <widget class="QLabel" name="label_7">
+                <property name="text">
+                 <string>Set Gain:</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="3">
+               <widget class="QComboBox" name="DGain">
+                <item>
+                 <property name="text">
+                  <string>Gain1x</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Gain2x</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Gain4x</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Gain8x</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+              <item row="1" column="4">
+               <widget class="QLabel" name="label_19">
+                <property name="text">
+                 <string>TriggerSelector</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="5">
+               <widget class="QComboBox" name="TriggerSelector">
+                <item>
+                 <property name="text">
+                  <string>FrameStart</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+              <item row="2" column="0">
+               <widget class="QLabel" name="label_11">
+                <property name="text">
+                 <string>当前像素位深：</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="1">
+               <widget class="QLabel" name="PixelFormat_display">
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+                <property name="text">
+                 <string>Mono8</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="2">
+               <widget class="QLabel" name="label_8">
+                <property name="text">
+                 <string>像素位深：</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="3">
+               <widget class="QComboBox" name="PixelFormat">
+                <item>
+                 <property name="text">
+                  <string>Mono12Packed</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Mono8</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Mono10</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Mono12</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Mono10Packed</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+              <item row="2" column="4">
+               <widget class="QLabel" name="label_20">
+                <property name="text">
+                 <string>TriggerMode</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="5">
+               <widget class="QComboBox" name="TriggerMode">
+                <item>
+                 <property name="text">
+                  <string>On</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Off</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+              <item row="3" column="0">
+               <widget class="QLabel" name="label_5">
+                <property name="text">
+                 <string>相机温度：</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="1">
+               <widget class="QDoubleSpinBox" name="Temporature">
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="2">
+               <widget class="QLabel" name="XstepsLabel">
+                <property name="text">
+                 <string>波长数量（像素）：</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="3">
+               <widget class="QSpinBox" name="NSamples">
+                <property name="wrapping">
+                 <bool>false</bool>
+                </property>
+                <property name="minimum">
+                 <number>1</number>
+                </property>
+                <property name="maximum">
+                 <number>1600</number>
+                </property>
+                <property name="singleStep">
+                 <number>8</number>
+                </property>
+                <property name="value">
+                 <number>1600</number>
+                </property>
+                <property name="displayIntegerBase">
+                 <number>10</number>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="4">
+               <widget class="QLabel" name="label_22">
+                <property name="text">
+                 <string>TriggerSource</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="5">
+               <widget class="QComboBox" name="TriggerSource">
+                <item>
+                 <property name="text">
+                  <string>Line0</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+              <item row="4" column="0">
+               <widget class="QLabel" name="label_3">
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+                <property name="text">
+                 <string>帧率：</string>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="1">
+               <widget class="QDoubleSpinBox" name="FrameRate">
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+                <property name="maximum">
+                 <double>10000.000000000000000</double>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="2">
+               <widget class="QLabel" name="label_9">
+                <property name="text">
+                 <string>波长偏置（像素）:</string>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="3">
+               <widget class="QSpinBox" name="offsetW">
+                <property name="maximum">
+                 <number>1600</number>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="4">
+               <widget class="QLabel" name="label_34">
+                <property name="text">
+                 <string>TriggerActivation</string>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="5">
+               <widget class="QComboBox" name="TriggerActivation">
+                <item>
+                 <property name="text">
+                  <string>RisingEdge</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>FallingEdge</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>AnyEdge</string>
+                 </property>
+                </item>
                </widget>
               </item>
              </layout>
@@ -2820,17 +2816,17 @@ p, li { white-space: pre-wrap; }
           <string>Testing</string>
          </attribute>
          <layout class="QGridLayout" name="gridLayout_17">
-          <item row="0" column="0">
-           <widget class="QPushButton" name="TestButten1">
-            <property name="text">
-             <string>DnS Init Surf</string>
-            </property>
-           </widget>
-          </item>
           <item row="2" column="0">
            <widget class="QPushButton" name="TestButten3">
             <property name="text">
              <string>DnS Display Surface</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="0">
+           <widget class="QPushButton" name="TestButten1">
+            <property name="text">
+             <string>DnS Init Surf</string>
             </property>
            </widget>
           </item>
@@ -2840,6 +2836,19 @@ p, li { white-space: pre-wrap; }
              <string>DnS Process SurfScan</string>
             </property>
            </widget>
+          </item>
+          <item row="0" column="1">
+           <spacer name="horizontalSpacer_2">
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
           </item>
          </layout>
         </widget>

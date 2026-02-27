@@ -132,7 +132,7 @@ class GPUThread_2(GPUThread):
             self.AMPLIFICATION = 10#AMPLIFICATION
             
 # wrap Galvo&Stage control thread with queues
-from ThreadAODO import AODOThread
+from ThreadAODO_art import AODOThread
 class AODOThread_2(AODOThread):
     def __init__(self, ui, log):
         super().__init__()
