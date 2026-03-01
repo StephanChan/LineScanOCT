@@ -180,7 +180,7 @@ class Camera(QThread):
             if pfResult != pf.Error.NONE:
                 self.ExitWithErrorPrompt("Could not set TriggerSelector feature parameters", pfResult)
                 
-            pfResult = self.pfCam.SetFeatureEnum("TriggerMode", self.ui.TriggerMode.currentText())
+            pfResult = self.pfCam.SetFeatureEnum("TriggerMode", self.ui.TriggerON.currentText())
             if pfResult != pf.Error.NONE:
                 self.ExitWithErrorPrompt("Could not set TriggerMode feature parameters", pfResult)
                 
@@ -256,7 +256,7 @@ class Camera(QThread):
                pfResult = self.pfImageUnpacked.ReserveImage(pf.GetPixelType("Mono16"), width, height)
                if pfResult != pf.Error.NONE:
                   self.ExitWithErrorPrompt("Error allocating image: ", pfResult)
-        # self.DbackQueue.put(0)
+        self.DbackQueue.put(0)
         # print('config dbackqueue size:', self.DbackQueue.qsize())
         
     def GetTemp(self):

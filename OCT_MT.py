@@ -82,7 +82,7 @@ DatabackQueue = Queue()
         
 # wrap digitzer thread with global queues and Memory and ui and log function
 
-from ThreadCamera import Camera
+from ThreadCamera_DH import Camera
 class Camera_2(Camera):
     def __init__(self, ui, log):
         super().__init__()

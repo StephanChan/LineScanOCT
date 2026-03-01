@@ -135,7 +135,7 @@ class AODOThread(QThread):
         self.SyncDO = self.ui.AODOboard.toPlainText()+'/'+self.ui.SyncDO.currentText()
         self.Trigger_out = '/'+ self.ui.AODOboard.toPlainText()+'/PFI3'
         self.Trigger_in ='/'+ self.ui.AODOboard.toPlainText()+'/PFI7'
-        print(self.GalvoAO, self.SyncDO)
+        # print(self.GalvoAO, self.SyncDO)
         self.ui.Xcurrent.setValue(self.ui.XPosition.value())
         self.ui.Ycurrent.setValue(self.ui.YPosition.value())
         self.ui.Zcurrent.setValue(self.ui.ZPosition.value())
@@ -171,7 +171,12 @@ class AODOThread(QThread):
         # update iamge on the waveformLabel
         self.ui.XwaveformLabel.setPixmap(pixmap)
         if not (SIM or self.SIM): # if not running simulation mode
-            frameRate = 400#np.floor(self.ui.FrameRate.value()-30)*2
+            if self.ui.Camera.currentText() == 'Daheng':
+                frameRate = self.ui.FrameRate_DH.value()#np.floor(self.ui.FrameRate.value()-30)*2
+            elif self.ui.Camera.currentText() == 'PhotonFocus':
+                frameRate = self.ui.FrameRate.value()
+            else:
+                frameRate = 400
             ######################################################################################
             # init AO task
             self.AOtask = ni.Task('AOtask')

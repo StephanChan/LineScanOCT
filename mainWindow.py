@@ -107,9 +107,9 @@ class MainWindow(QMainWindow):
         # self.update_galvoXwaveform()
         # self.update_Mosaic()
         self.ui.DepthStartBar.setMaximum(self.ui.NSamples.value())
-        self.ui.DepthStartBar.setValue(self.ui.NSamples.value())
+        # self.ui.DepthStartBar.setValue(self.ui.NSamples.value())
         self.ui.DepthEndBar.setMaximum(self.ui.NSamples.value())
-        self.ui.DepthEndBar.setValue(0)
+        # self.ui.DepthEndBar.setValue(0)
         self.Adjust_Bline_Height()
         self.connectActions()
         
@@ -149,6 +149,7 @@ class MainWindow(QMainWindow):
     def LoadSettings(self, config_filepath):
         settings = qc.QSettings(config_filepath, qc.QSettings.IniFormat)
         for ii in dir(self.ui):
+            # print(ii, type(self.ui.__getattribute__(ii)) )
             if ii == 'ACQMode':
                 pass
             elif type(self.ui.__getattribute__(ii)) == QW.QComboBox:
@@ -176,6 +177,16 @@ class MainWindow(QMainWindow):
                     self.ui.__getattribute__(ii).setText(settings.value(ii))
                 except:
                     print(ii, ' setting missing, using default...')
+            elif type(self.ui.__getattribute__(ii)) == QW.QSlider:
+                try:
+                    self.ui.__getattribute__(ii).setValue(int(settings.value(ii)))
+                except:
+                    print(ii, ' setting missing, using default...')
+            elif type(self.ui.__getattribute__(ii)) == QW.QScrollBar:
+                try:
+                    self.ui.__getattribute__(ii).setValue(int(settings.value(ii)))
+                except:
+                    print(ii, ' setting missing, using default...')
             elif type(self.ui.__getattribute__(ii)) == QW.QPushButton:
                 if settings.value(ii) in ['true', 'True']:
                     status = True
@@ -185,6 +196,7 @@ class MainWindow(QMainWindow):
                     self.ui.__getattribute__(ii).setChecked(status)
                 except:
                     print(ii, ' setting missing, using default...')
+        
                 
     def Calculate_CameraWidth_settings(self):
         # select camera brand
@@ -255,6 +267,7 @@ class MainWindow(QMainWindow):
     def SaveSettings(self):
         settings = qc.QSettings("config.ini", qc.QSettings.IniFormat)
         for ii in dir(self.ui):
+            # print(ii, type(self.ui.__getattribute__(ii)) )
             if type(self.ui.__getattribute__(ii)) == QW.QComboBox:
                 settings.setValue(ii,self.ui.__getattribute__(ii).currentText())
             elif type(self.ui.__getattribute__(ii)) == QW.QDoubleSpinBox:
@@ -267,6 +280,11 @@ class MainWindow(QMainWindow):
                 settings.setValue(ii,self.ui.__getattribute__(ii).text())
             elif type(self.ui.__getattribute__(ii)) == QW.QPushButton:
                 settings.setValue(ii,self.ui.__getattribute__(ii).isChecked())
+            elif type(self.ui.__getattribute__(ii)) == QW.QSlider:
+                settings.setValue(ii,self.ui.__getattribute__(ii).value())
+            elif type(self.ui.__getattribute__(ii)) == QW.QScrollBar:
+                settings.setValue(ii,self.ui.__getattribute__(ii).value())
+                # print(ii,self.ui.__getattribute__(ii).value())
             
     def connectActions(self):
         self.ui.Objective.currentTextChanged.connect(self.Calculate_CameraWidth_settings)

@@ -146,11 +146,11 @@ class WeaverThread(QThread):
     def SingleScan(self, mode):
         an_action = DnSAction('Clear')
         self.DnSQueue.put(an_action)
-        # t0=time.time()
+        t0=time.time()
         # print(self.DbackQueue.qsize())
         an_action = DAction('ConfigureBoard')
         self.DQueue.put(an_action)
-        # self.DbackQueue.get()
+        self.DbackQueue.get()
         t1=time.time()
         ###########################################################################################
         # start AODO 
@@ -171,7 +171,7 @@ class WeaverThread(QThread):
         self.StagebackQueue.get()
         t4=time.time()
         print('\n')
-        # print('Camera config took: ',round(t1-t0,3),'sec')
+        print('Camera config took: ',round(t1-t0,3),'sec')
         print('Galvo board config took: ',round(t2-t1,3),'sec')
         print('Camera start took: ',round(t3-t2,3),'sec')
         print('Galvo board start took: ',round(t4-t3,3),'sec')
@@ -224,7 +224,7 @@ class WeaverThread(QThread):
         self.DnSQueue.put(an_action)
         an_action = DAction('ConfigureBoard')
         self.DQueue.put(an_action)
-        # self.DbackQueue.get()
+        self.DbackQueue.get()
         # config AODO
         an_action = AODOAction('ConfigTask')
         self.AODOQueue.put(an_action)
