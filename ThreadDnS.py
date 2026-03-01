@@ -61,7 +61,7 @@ class DnSThread(QThread):
                     self.display_actions += 1
                 elif self.item.action in ['FiniteCscan','ContinuousCscan']:
                     self.display_actions += 1
-                    if len(self.item.dynamic)>0:
+                    if self.ui.DynCheckBox.isChecked():
                         self.display_Cscan_Dynamic(self.item.data, self.item.dynamic)
                     else:
                         self.Display_Cscan(self.item.data, self.item.raw)
@@ -245,12 +245,14 @@ class DnSThread(QThread):
         
         if len(self.SampleMosaic)==0:
             self.SampleMosaic = np.zeros([Ypixels, Xpixels])
-        if len(self.SampleDynamic)==0:
-            self.SampleDynamic = np.zeros([Ypixels, Xpixels])
+        if any(dynamic):
+            if len(self.SampleDynamic)==0:
+                self.SampleDynamic = np.zeros([Ypixels, Xpixels])
         # print(Bline.shape, self.SampleMosaic.shape)
         print('Ypixel: ', self.DynamicBlineIdx)
         self.SampleMosaic[self.DynamicBlineIdx, :] = np.mean(Bline,1)
-        self.SampleDynamic[self.DynamicBlineIdx, :] = np.mean(dynamic,1)
+        if any(dynamic):
+            self.SampleDynamic[self.DynamicBlineIdx, :] = np.mean(dynamic,1)
         self.DynamicBlineIdx = self.DynamicBlineIdx + 1
         
         pixmap = RGBImagePlot(matrix1 = np.float32(self.SampleMosaic), m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
@@ -259,11 +261,12 @@ class DnSThread(QThread):
         # update iamge on the waveformLabel
         self.ui.SampleMosaic.setPixmap(pixmap)
         
-        pixmap = RGBImagePlot(matrix2 = np.float32(self.SampleDynamic), m=self.ui.Dynmin.value(), M=self.ui.Dynmax.value())
-        # clear content on the waveformLabel
-        # self.ui.SampleDynamic.clear()
-        # update iamge on the waveformLabel
-        self.ui.SampleDynamic.setPixmap(pixmap)
+        if any(dynamic):
+            pixmap = RGBImagePlot(matrix2 = np.float32(self.SampleDynamic), m=self.ui.Dynmin.value(), M=self.ui.Dynmax.value())
+            # clear content on the waveformLabel
+            # self.ui.SampleDynamic.clear()
+            # update iamge on the waveformLabel
+            self.ui.SampleDynamic.setPixmap(pixmap)
         
         if self.ui.Save.isChecked():
             CscanBlineFileName, CscanDynBlineFileName = self.CscanDynFilename([Yrpt,Xpixels,Zpixels])
@@ -273,10 +276,11 @@ class DnSThread(QThread):
                 tif.write_image(data[ii])
             tif.close()
             
-            tif = TIFF.open(self.ui.DIR.toPlainText()+'/'+CscanDynBlineFileName, mode='a')
-            # self.WriteData(data, self.AlineFilename([Yrpt,Xpixels,Zpixels]))
-            tif.write_image(dynamic)
-            tif.close()
+            if any(dynamic):
+                tif = TIFF.open(self.ui.DIR.toPlainText()+'/'+CscanDynBlineFileName, mode='a')
+                # self.WriteData(data, self.AlineFilename([Yrpt,Xpixels,Zpixels]))
+                tif.write_image(dynamic)
+                tif.close()
         
         
     def Display_Cscan(self, data, raw = False):

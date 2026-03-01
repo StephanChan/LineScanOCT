@@ -31,9 +31,15 @@ try:
     st = Stepper()
     import sys
     sys.path.append(r"C:\\Program Files (x86)\\ART Technology\\ART-DAQ\\Samples\\Python\\LIB\\")
-    import artdaq as ni
-    from artdaq.constants import AcquisitionType as Atype
-    from artdaq.constants import Edge, ProductCategory, RegenerationMode, Signal 
+    
+    if "ni" not in sys.modules:
+        import artdaq as ni
+        from artdaq.constants import AcquisitionType as Atype
+        from artdaq.constants import Edge, ProductCategory, RegenerationMode, Signal 
+    else:
+        # Module already loaded – you can safely use it
+        pass
+    
 except:
     print('stage init failed, using simulation')
     SIM = True

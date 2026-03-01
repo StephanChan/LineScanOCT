@@ -9,26 +9,24 @@ import time
 from time import process_time
 import cupy as cp
 import matplotlib.pyplot as plt
+from scipy.ndimage import uniform_filter1d, gaussian_filter
 
 # define number of samples per FFT and total number of FFTs
 nSamp = 1600
-nFFT = 110000
+nX = 1100
+nY = 100
 # init raw data
-x = 500*np.arange(nSamp)/nSamp
-xp = np.arange(x[1],x[-1],(x[-1]-x[1])/nSamp)
 
-data = np.sin(2*np.pi*x)
-data = np.float32(np.tile(data,[nFFT,1]))
-noise = np.random.rand(nFFT,nSamp)*0.1
-data = np.float32(data + noise)
+data = np.random.rand(nY, nX, nSamp)
 
-window = np.complex64(np.hanning(nSamp))
+background = np.zeros([nX, nSamp])
+# window = np.complex64(np.hanning(nSamp))
 # define CUDA kernel that calculate the product of two arrays
-winfunc = cp.ElementwiseKernel(
-    'float32 x, complex64 y',
-    'complex64 z',
-    'z=x*y',
-    'winfunc')
+# winfunc = cp.ElementwiseKernel(
+#     'float32 x, complex64 y',
+#     'complex64 z',
+#     'z=x*y',
+#     'winfunc')
 
 # define interpolation kernel
 interp_kernel = cp.RawKernel(r'''
@@ -59,7 +57,7 @@ void interp1d(long long NAlines, long long NSamples, float* x, float* xp, float*
 ''','interp1d')
         
 fftAxis = 1
-from scipy.interpolate import interp1d
+# from scipy.interpolate import interp1d
 
 # # calculate and time NumPy FFT, i.e., performming FFT using CPU
 # # t0 = time.time()
@@ -74,8 +72,16 @@ from scipy.interpolate import interp1d
 # print('\n CPU interpolation time is: ',t2-t1)
 # print('CPU FFT time is: ',t3-t2,'\n')
 
-# calculate and time GPU FFT
-
+################################################################ calculate and time GPU FFT
+dispersion_path = "E:/IOCTData/disperison_compensation"
+import os
+# print(dispersion_path+'/dspPhase.bin')
+if os.path.isfile(dispersion_path+'/dspPhase.bin'):
+    intpX  = np.float32(np.fromfile(dispersion_path+'/intpX.bin', dtype=np.float32))
+    intpXp  = np.float32(np.fromfile(dispersion_path+'/intpXp.bin', dtype=np.float32))
+    indice = np.uint16(np.fromfile(dispersion_path+'/intpIndice.bin', dtype=np.uint16)).reshape([2,nSamp])
+    dispersion = np.float32(np.fromfile(dispersion_path+'/dspPhase.bin', dtype=np.float32)).reshape([1, nSamp])
+    dispersion = np.complex64(np.exp(-1j*dispersion))
 ##
 # data = np.float32(data + noise)
 t1 = time.time()
@@ -83,13 +89,21 @@ t1 = time.time()
 # t1 = process_time()
 # transfer input data to Device
 # mempool= cp.get_default_memory_pool()
-data_gpu  = cp.array(data)
-x_gpu = cp.array(x)
-xp_gpu = cp.array(xp)
+shape = data.shape
+data = data - np.tile(background,[shape[0],1,1])
+data = data - uniform_filter1d(data, size=51, axis=2)
+
+Alines =shape[0]*shape[1]
+data=data.reshape([Alines, nSamp])
+
+
+x_gpu  = cp.array(intpX)
+xp_gpu  = cp.array(intpXp)
+y_gpu  = cp.array(data)
+indice1 = cp.array(indice[0,:])
+indice2 = cp.array(indice[1,:])
 yp_gpu = cp.zeros(data.shape, dtype = cp.float32)
-indice = np.arange(nSamp)
-indice1 = cp.array(indice)
-indice2 = cp.array(indice)
+dispersion = cp.array(dispersion)
 # window_gpu = cp.array(window)
 # calculate array product
 t2 = time.time()
@@ -98,7 +112,7 @@ t2 = time.time()
 # tp2 = process_time()
 
 
-interp_kernel((8,8),(16,16), (nFFT, nSamp, x_gpu, xp_gpu, data_gpu, indice1, indice2, yp_gpu))
+interp_kernel((8,8),(16,16), (Alines, nSamp, x_gpu, xp_gpu, y_gpu, indice1, indice2, yp_gpu))
 t3 = time.time()
 data_gpu  = cp.fft.fft(yp_gpu, axis=fftAxis)
 # print(data_gpu[0:10,0:5])

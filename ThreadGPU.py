@@ -114,6 +114,10 @@ class GPUThread(QThread):
         Pixel_range = self.ui.DepthRange.value()
         self.data_CPU = np.float32(self.Memory[memoryLoc].copy())
         shape = self.data_CPU.shape
+
+        if self.background_tile.shape != shape:
+            self.background_tile = np.tile(self.background,[shape[0],1,1])
+
         # print('data shape', shape)
         # print('GPU receives:',self.data_CPU[0,0,0:10])
         if not (SIM or self.SIM):
@@ -122,7 +126,7 @@ class GPUThread(QThread):
             # plt.figure()
             # plt.imshow(self.data_CPU[0,:,:])
             # plt.show()
-            self.data_CPU = self.data_CPU - np.tile(self.background,[shape[0],1,1])
+            self.data_CPU = self.data_CPU - self.background_tile
             # plt.figure()
             # plt.imshow(self.data_CPU[0,:,:])
             # plt.show()
@@ -130,8 +134,9 @@ class GPUThread(QThread):
             # plt.imshow(self.background)
             # plt.show()
             self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=51, axis=2)
-            if round(time.time()-t0,4) >1:
-                print('background subtraction took ', round(time.time()-t0,3),'s')
+            t1=time.time()
+            if round(t1-t0,4) >0.1:
+                print('background subtraction took ', round(t1-t0,3),'s')
             
             Alines =shape[0]*shape[1]
             self.data_CPU=self.data_CPU.reshape([Alines, samples])
@@ -165,13 +170,16 @@ class GPUThread(QThread):
             # print(self.data_CPU[0:3])
             # interpolation
             t2 = time.time() 
+            if round(t2-t1,4) >0.1:
+                print('time for data transfer to GPU: ', round(t2-t1,3))
             # yp_gpu = y_gpu
             if self.interp:
                 self.interp_kernel((8,8),(16,16), (Alines, samples, x_gpu, xp_gpu, y_gpu, indice1, indice2, yp_gpu))
             else:
                 yp_gpu = y_gpu
-            if round(time.time()-t2,4) >0.2:
-                print('time for interpolation: ', round(time.time()-t2,3))
+            t3=time.time()
+            if round(t3-t2,4) >0.1:
+                print('time for interpolation: ', round(t3-t2,3))
             yp_gpu = cupy.reshape(yp_gpu,[Alines, samples])
             # yp_gpu[:,0] = 0
             # yp = cupy.asnumpy(yp_gpu)
@@ -195,6 +203,9 @@ class GPUThread(QThread):
             # self.data_CPU = self.data_CPU[:,Pixel_start: Pixel_start+Pixel_range ]*self.AMPLIFICATION
             #######################################
             data_gpu  = cupy.fft.fft(yp_gpu*dispersion, axis=fftAxis)/samples
+            t4=time.time()
+            if round(t4-t3,4) >0.1:
+                print('time for FFT: ', round(t4-t3,3))
             # data_gpu  = cupy.fft.fft(yp_gpu, axis=fftAxis)/samples
             # print(data_gpu[0:10,0:5])
             
@@ -202,13 +213,20 @@ class GPUThread(QThread):
             
             self.data_CPU = cupy.asnumpy(data_gpu)*self.AMPLIFICATION
             self.data_CPU = self.data_CPU.reshape(shape[0],shape[1],Pixel_range)
+            t5=time.time()
+            if round(t5-t4,4) >0.1:
+                print('time for data to CPU: ', round(t5-t4,3))
             # print('data_CPU shape', self.data_CPU.shape)
             # print('data_CPU:', self.data_CPU[0,0,0:15])
             if self.ui.DynCheckBox.isChecked() and mode in [ 'FiniteBline', 'FiniteCscan']:
-                Dyn = self.Dynamic_Processing()
-                print('dyn:',Dyn[0,0:5])
+                # Dyn = self.Dynamic_Processing()
+                # print('dyn:',Dyn[0,0:5])
+                Dyn = []
             else:
                 Dyn = []
+            t6=time.time()
+            if round(t6-t5,4) >0.1:
+                print('time for dynamic calculation: ', round(t6-t5,3))
             # display and save data, data type is float32
             an_action = DnSAction(mode, data = self.data_CPU, raw = False, dynamic = Dyn, args = args) # data in Memory[memoryLoc]
             self.DnSQueue.put(an_action)
@@ -370,6 +388,8 @@ class GPUThread(QThread):
             # self.ui.PrintOut.append("no disperison compensation found...")
             self.log.write("no background found...using default")
             print("no background found...using default")
+        self.background_tile = self.background
+        
 
     def update_FFTlength(self):
         self.length_FFT = 2
