@@ -11,8 +11,8 @@ import cupy as cp
 import matplotlib.pyplot as plt
 
 # define number of samples per FFT and total number of FFTs
-nSamp = 1024
-nFFT = 1000
+nSamp = 1600
+nFFT = 110000
 # init raw data
 x = 500*np.arange(nSamp)/nSamp
 xp = np.arange(x[1],x[-1],(x[-1]-x[1])/nSamp)
@@ -61,18 +61,18 @@ void interp1d(long long NAlines, long long NSamples, float* x, float* xp, float*
 fftAxis = 1
 from scipy.interpolate import interp1d
 
-# calculate and time NumPy FFT, i.e., performming FFT using CPU
-# t0 = time.time()
-data_cpu = data#*np.transpose(window)
-t1 = time.time()
-f = interp1d(x,data_cpu,axis = 1)
-data2 = f(xp)
-t2 = time.time()
-data_cpu     = np.fft.fft(data2, axis=fftAxis)
-t3 = time.time()
-# print('\n CPU windowing time is: ',t1-t0)
-print('\n CPU interpolation time is: ',t2-t1)
-print('CPU FFT time is: ',t3-t2,'\n')
+# # calculate and time NumPy FFT, i.e., performming FFT using CPU
+# # t0 = time.time()
+# data_cpu = data#*np.transpose(window)
+# t1 = time.time()
+# f = interp1d(x,data_cpu,axis = 1)
+# data2 = f(xp)
+# t2 = time.time()
+# data_cpu     = np.fft.fft(data2, axis=fftAxis)
+# t3 = time.time()
+# # print('\n CPU windowing time is: ',t1-t0)
+# print('\n CPU interpolation time is: ',t2-t1)
+# print('CPU FFT time is: ',t3-t2,'\n')
 
 # calculate and time GPU FFT
 
