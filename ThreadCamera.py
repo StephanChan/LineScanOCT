@@ -13,6 +13,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 global SIM
+# SIM=True
 try:
     sys.path.append(os.path.join(os.environ['PF_ROOT'],'PFSDK','bin/Python'))
     os.add_dll_directory(os.path.join(os.environ['PF_ROOT'],'PFSDK','bin'))
@@ -22,6 +23,7 @@ try:
     import colorama
     SIM = False
 except:
+    print('Camera init failed, using simulation')
     SIM = True
 
 from Actions import DbackAction, DAction
@@ -134,6 +136,8 @@ class Camera(QThread):
                 #pfResult = pfCam.Connect(ip = "192.168.3.158")
                 if pfResult != pf.Error.NONE:
                     self.ExitWithErrorPrompt(["Could not connect to the selected camera", pfResult])
+                    print('Camera init failed, using simulation')
+                    self.SIM = True
                 print('camera init success')
                 # return copy_cam_info
                 # self.log.write(message)

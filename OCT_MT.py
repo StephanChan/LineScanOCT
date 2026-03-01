@@ -293,7 +293,6 @@ class GUI(MainWindow):
     def XUP(self):
         an_action = AODOAction('XUP')
         AODOQueue.put(an_action)
-        
         StagebackQueue.get()
     def YUP(self):
         an_action = AODOAction('YUP')

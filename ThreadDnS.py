@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import datetime
 import os
 from scipy import ndimage
-# from libtiff import TIFF
+from libtiff import TIFF
 import time
 
 class DnSThread(QThread):

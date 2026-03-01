@@ -25,6 +25,7 @@ SIM = False
 ###########################################
 from PyQt5.QtCore import  QThread
 
+
 try:
     from Zolix_control import Stepper
     st = Stepper()
@@ -34,6 +35,7 @@ try:
     from artdaq.constants import AcquisitionType as Atype
     from artdaq.constants import Edge, ProductCategory, RegenerationMode, Signal 
 except:
+    print('stage init failed, using simulation')
     SIM = True
     
 from Generaic_functions import GenAODO, LinePlot
@@ -110,6 +112,7 @@ class AODOThread(QThread):
                     self.log.write(message)
             except Exception:
                 message = "\nAn error occurred,"+" skip the AODO action\n"
+                print(Exception)
                 print(message)
                 self.ui.statusbar.showMessage(message)
                 # self.ui.PrintOut.append(message)
@@ -124,9 +127,9 @@ class AODOThread(QThread):
         
         # synchronized DO terminal
         self.SyncDO = self.ui.AODOboard.toPlainText()+'/'+self.ui.SyncDO.currentText()
-        self.Trigger_out = '/'+ self.ui.AODOboard.toPlainText()+'/PFI0'
-        self.Trigger_in ='/'+ self.ui.AODOboard.toPlainText()+'/PFI1'
-        # print(self.GalvoAO, self.SyncDO)
+        self.Trigger_out = '/'+ self.ui.AODOboard.toPlainText()+'/PFI3'
+        self.Trigger_in ='/'+ self.ui.AODOboard.toPlainText()+'/PFI7'
+        print(self.GalvoAO, self.SyncDO)
         self.ui.Xcurrent.setValue(self.ui.XPosition.value())
         self.ui.Ycurrent.setValue(self.ui.YPosition.value())
         self.ui.Zcurrent.setValue(self.ui.ZPosition.value())
@@ -162,7 +165,7 @@ class AODOThread(QThread):
         # update iamge on the waveformLabel
         self.ui.XwaveformLabel.setPixmap(pixmap)
         if not (SIM or self.SIM): # if not running simulation mode
-            frameRate = 480#np.floor(self.ui.FrameRate.value()-30)*2
+            frameRate = 400#np.floor(self.ui.FrameRate.value()-30)*2
             ######################################################################################
             # init AO task
             self.AOtask = ni.Task('AOtask')
@@ -185,8 +188,8 @@ class AODOThread(QThread):
             # write waveform and start
 
             # self.AOtask.start()
-            actual_sampling_rate = self.AOtask.timing.samp_clk_rate
-            print(f"Actual sampling rate: {actual_sampling_rate:g} S/s")
+            # actual_sampling_rate = self.AOtask.timing.samp_clk_rate
+            # print(f"Actual sampling rate: {actual_sampling_rate:g} S/s")
             # config DO task
             self.DOtask = ni.Task('DOtask')
             self.DOtask.do_channels.add_do_chan(lines=self.SyncDO)
@@ -198,7 +201,7 @@ class AODOThread(QThread):
 
             # self.DOtask.triggers.start_trigger.cfg_dig_edge_start_trig(self.AODOTrig)
             self.DOtask.triggers.start_trigger.cfg_dig_edge_start_trig(self.Trigger_in)
-            self.DOtask.triggers.sync_type.SLAVE = True
+            # self.DOtask.triggers.sync_type.SLAVE = True
 
             # self.DOtask.start()
             # print(DOwaveform.shape)
@@ -242,7 +245,7 @@ class AODOThread(QThread):
     
     def centergalvo(self):
         if not (SIM or self.SIM):
-            with ni.Task('AO task') as AOtask:
+            with ni.Task('AOtask') as AOtask:
                 AOtask.ao_channels.add_ao_voltage_chan(physical_channel=self.GalvoAO, \
                                                       min_val=- 10.0, max_val=10.0, \
                                                       units=ni.constants.VoltageUnits.VOLTS)
@@ -257,7 +260,7 @@ class AODOThread(QThread):
         if axis =='X':
             st.enable(0,True)
             distance = self.ui.XPosition.value() - self.ui.Xcurrent.value()
-            st.move(0, distance, self.ui.XSpeed.value())
+            st.move(0, -distance, self.ui.XSpeed.value())
             self.ui.Xcurrent.setValue(self.ui.Xcurrent.value()+distance)
             message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
             print(message)
@@ -266,7 +269,9 @@ class AODOThread(QThread):
         if axis =='Y':
             st.enable(1,True)
             distance = self.ui.YPosition.value() - self.ui.Ycurrent.value()
-            st.move(1, distance, self.ui.YSpeed.value())
+            # print(distance, self.ui.YPosition.value())
+            st.move(1, -distance, self.ui.YSpeed.value())
+            # print(self.ui.Ycurrent.value()+distance, self.ui.YPosition.value())
             self.ui.Ycurrent.setValue(self.ui.Ycurrent.value()+distance)
             message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
             print(message)
@@ -275,7 +280,7 @@ class AODOThread(QThread):
         if axis =='Z':
             st.enable(2,True)
             distance = self.ui.ZPosition.value() - self.ui.Zcurrent.value()
-            st.move(2, distance*62.5, self.ui.ZSpeed.value())
+            st.move(2, -distance*62.5, self.ui.ZSpeed.value()*70)
             self.ui.Zcurrent.setValue(self.ui.Zcurrent.value()+distance)
             message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
             print(message)
@@ -303,17 +308,15 @@ class AODOThread(QThread):
             distance = self.ui.Xstagestepsize.value() if Direction == 'UP' else -self.ui.Xstagestepsize.value() 
             self.ui.XPosition.setValue(self.ui.Xcurrent.value()+distance)
             self.Move(axis)
-            self.StagebackQueue.put(0)
         elif axis == 'Y':
             distance = self.ui.Ystagestepsize.value() if Direction == 'UP' else -self.ui.Ystagestepsize.value() 
             self.ui.YPosition.setValue(self.ui.Ycurrent.value()+distance)
             self.Move(axis)
-            self.StagebackQueue.put(0)
         elif axis == 'Z':
             distance = self.ui.Zstagestepsize.value() if Direction == 'UP' else -self.ui.Zstagestepsize.value() 
             self.ui.ZPosition.setValue(self.ui.Zcurrent.value()+distance)
             self.Move(axis)
-            self.StagebackQueue.put(0)
+        self.StagebackQueue.put(0)
             
     def Home(self, axis):
         if axis == 'X':
@@ -321,11 +324,11 @@ class AODOThread(QThread):
             self.ui.XPosition.setValue(0)
             self.ui.Xcurrent.setValue(0)
         elif axis == 'Y':
-            st.home(1, self.ui.XSpeed.value())
+            st.home(1, self.ui.YSpeed.value())
             self.ui.YPosition.setValue(0)
             self.ui.Ycurrent.setValue(0)
         elif axis == 'Z':
-            st.home(2, self.ui.XSpeed.value())
+            st.home(2, self.ui.ZSpeed.value()*70)
             self.ui.ZPosition.setValue(0)
             self.ui.Zcurrent.setValue(0)
             

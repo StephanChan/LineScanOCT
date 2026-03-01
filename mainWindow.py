@@ -122,6 +122,15 @@ class MainWindow(QMainWindow):
         
         self.ui.ZPosition.setMinimum(self.ui.Zmin.value())
         self.ui.ZPosition.setMaximum(self.ui.Zmax.value())
+        
+        self.ui.Xcurrent.setMinimum(self.ui.Xmin.value())
+        self.ui.Xcurrent.setMaximum(self.ui.Xmax.value())
+        
+        self.ui.Ycurrent.setMinimum(self.ui.Ymin.value())
+        self.ui.Ycurrent.setMaximum(self.ui.Ymax.value())
+        
+        self.ui.Zcurrent.setMinimum(self.ui.Zmin.value())
+        self.ui.Zcurrent.setMaximum(self.ui.Zmax.value())
     
     
         

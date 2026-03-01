@@ -182,6 +182,7 @@ class WeaverThread(QThread):
             start = time.time()
             ######################################### collect data
             # collect data from digitizer, data format: [Y pixels, Xpixels, Z pixels]
+            print('waiting for camera data...')
             an_action = self.DatabackQueue.get() # never time out
             if an_action != 0:
                 print('time to fetch data: '+str(round(time.time()-start,3)))
@@ -546,10 +547,11 @@ class WeaverThread(QThread):
         BAvg = self.ui.BlineAVG.value()
         self.ui.ACQMode.setCurrentText('FiniteBline')
         self.ui.FFTDevice.setCurrentText('None')
-        self.ui.BlineAVG.setValue(50)
+        self.ui.BlineAVG.setValue(200)
         ############################# measure an Aline
         print('acquiring Bline')
         self.ui.RunButton.setChecked(True)
+        self.InitMemory()
         self.SingleScan(self.ui.ACQMode.currentText())
         print('got Bline')
         print(self.data.shape)
@@ -559,6 +561,9 @@ class WeaverThread(QThread):
         BLINE = self.data.reshape([Yrpt, Xpixels, self.ui.NSamples.value()])
         
         background = np.float32(np.mean(BLINE,0))
+        plt.figure()
+        plt.imshow(background)
+        plt.show()
         # background = np.smooth()
         # print(background.shape)
         filePath = self.ui.DIR.toPlainText()
@@ -595,6 +600,7 @@ class WeaverThread(QThread):
         ############################# measure an Cscan
         print('acquiring Bline')
         self.ui.RunButton.setChecked(True)
+        self.InitMemory()
         self.SingleScan('SingleCscan')
         # while self.GPU2weaverQueue.qsize()<1:
         #     time.sleep(1)

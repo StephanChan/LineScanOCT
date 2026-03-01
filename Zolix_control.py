@@ -6,7 +6,7 @@ Created on Tue Nov 11 14:28:32 2025
 """
 import devices_zc300 as de
 import time
-import time
+
 zc = de.ZC300()
 # 假设 ZC300 类已经定义好了
 class Stepper:
@@ -21,8 +21,8 @@ class Stepper:
 
         
     def move(self,axis,distance,speed):
-
-        zc.zc300_set_unit(axis, self.unit) 
+        # print(axis, distance, speed)
+        zc.zc300_set_unit(axis, self.unit)
         zc.zc300_set_move_speed(axis,speed*self.idx)
         distance = round(distance*self.idx)
         a =  zc.zc300_move(axis, 1, distance)  
@@ -37,10 +37,10 @@ class Stepper:
 
         zc.zc300_set_unit(axis, self.unit) 
         # zc.zc300_set_move_speed(axis,speed*self.idx)
-        zc.zc300_set_home_speed(axis,speed*self.idx)  # 1表示相对移动，5mm的移动
-        zc.zc300_set_home_mode(axis,2)
+        zc.zc300_set_home_speed(axis,speed*self.idx)  # 70: Z
+        zc.zc300_set_home_mode(axis,3)
         a = zc.zc300_home(axis)
-        print(a)
+        # print(a)
         if a == False:
             print('move',axis,a,'failed')
         while not zc.zc300_get_idle(axis):  # 只要电移台没有空闲，表示它在移动
