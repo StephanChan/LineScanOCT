@@ -289,9 +289,6 @@ class AODOThread(QThread):
             distance = self.ui.XPosition.value() - self.ui.Xcurrent.value()
             st.move(0, -distance, self.ui.XSpeed.value())
             self.ui.Xcurrent.setValue(self.ui.Xcurrent.value()+distance)
-            message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
-            print(message)
-            self.log.write(message)
            
         if axis =='Y':
             st.enable(1,True)
@@ -300,18 +297,12 @@ class AODOThread(QThread):
             st.move(1, -distance, self.ui.YSpeed.value())
             # print(self.ui.Ycurrent.value()+distance, self.ui.YPosition.value())
             self.ui.Ycurrent.setValue(self.ui.Ycurrent.value()+distance)
-            message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
-            print(message)
-            self.log.write(message)
             
         if axis =='Z':
             st.enable(2,True)
             distance = self.ui.ZPosition.value() - self.ui.Zcurrent.value()
             st.move(2, -distance*62.5, self.ui.ZSpeed.value()*70)
             self.ui.Zcurrent.setValue(self.ui.Zcurrent.value()+distance)
-            message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
-            print(message)
-            self.log.write(message)
         
         # if axis == 'X':
         #     self.ui.Xcurrent.setValue(self.ui.Xcurrent.value()+distance)
@@ -327,37 +318,46 @@ class AODOThread(QThread):
         # self.log.write(message)
         
     def DirectMove(self, axis):
-        self.Move(axis)
+        if not (SIM or self.SIM):
+            self.Move(axis)
+        message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
+        print(message)
+        self.log.write(message)
         self.StagebackQueue.put(0)
         
     def StepMove(self, axis, Direction):
-        if axis == 'X':
-            distance = self.ui.Xstagestepsize.value() if Direction == 'UP' else -self.ui.Xstagestepsize.value() 
-            self.ui.XPosition.setValue(self.ui.Xcurrent.value()+distance)
-            self.Move(axis)
-        elif axis == 'Y':
-            distance = self.ui.Ystagestepsize.value() if Direction == 'UP' else -self.ui.Ystagestepsize.value() 
-            self.ui.YPosition.setValue(self.ui.Ycurrent.value()+distance)
-            self.Move(axis)
-        elif axis == 'Z':
-            distance = self.ui.Zstagestepsize.value() if Direction == 'UP' else -self.ui.Zstagestepsize.value() 
-            self.ui.ZPosition.setValue(self.ui.Zcurrent.value()+distance)
-            self.Move(axis)
+        if not (SIM or self.SIM):
+            if axis == 'X':
+                distance = self.ui.Xstagestepsize.value() if Direction == 'UP' else -self.ui.Xstagestepsize.value() 
+                self.ui.XPosition.setValue(self.ui.Xcurrent.value()+distance)
+                self.Move(axis)
+            elif axis == 'Y':
+                distance = self.ui.Ystagestepsize.value() if Direction == 'UP' else -self.ui.Ystagestepsize.value() 
+                self.ui.YPosition.setValue(self.ui.Ycurrent.value()+distance)
+                self.Move(axis)
+            elif axis == 'Z':
+                distance = self.ui.Zstagestepsize.value() if Direction == 'UP' else -self.ui.Zstagestepsize.value() 
+                self.ui.ZPosition.setValue(self.ui.Zcurrent.value()+distance)
+                self.Move(axis)
+        message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
+        print(message)
+        self.log.write(message)
         self.StagebackQueue.put(0)
             
     def Home(self, axis):
-        if axis == 'X':
-            st.home(0, self.ui.XSpeed.value())
-            self.ui.XPosition.setValue(0)
-            self.ui.Xcurrent.setValue(0)
-        elif axis == 'Y':
-            st.home(1, self.ui.YSpeed.value())
-            self.ui.YPosition.setValue(0)
-            self.ui.Ycurrent.setValue(0)
-        elif axis == 'Z':
-            st.home(2, self.ui.ZSpeed.value()*70)
-            self.ui.ZPosition.setValue(0)
-            self.ui.Zcurrent.setValue(0)
+        if not (SIM or self.SIM):
+            if axis == 'X':
+                st.home(0, self.ui.XSpeed.value())
+                self.ui.XPosition.setValue(0)
+                self.ui.Xcurrent.setValue(0)
+            elif axis == 'Y':
+                st.home(1, self.ui.YSpeed.value())
+                self.ui.YPosition.setValue(0)
+                self.ui.Ycurrent.setValue(0)
+            elif axis == 'Z':
+                st.home(2, self.ui.ZSpeed.value()*70)
+                self.ui.ZPosition.setValue(0)
+                self.ui.Zcurrent.setValue(0)
             
         message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
         print(message)

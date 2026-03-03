@@ -17,9 +17,10 @@ class AODOAction():
         
 
 class WeaverAction():
-    def __init__(self, action):
+    def __init__(self, action, args=[]):
         super().__init__()
         self.action = action
+        self.args = args
         
 class DnSAction():
     def __init__(self, action, data=[], raw = False, dynamic =[], args = []):

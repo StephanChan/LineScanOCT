@@ -113,6 +113,7 @@ class GPUThread(QThread):
         Pixel_start = self.ui.DepthStart.value()
         Pixel_range = self.ui.DepthRange.value()
         self.data_CPU = np.float32(self.Memory[memoryLoc].copy())
+        # print('GPU data: ', self.data_CPU[0,0,0:5], 'data size: ', self.data_CPU.shape, ' memoryLoc: ', memoryLoc)
         shape = self.data_CPU.shape
 
         if self.background_tile.shape != shape:
@@ -135,7 +136,7 @@ class GPUThread(QThread):
             # plt.show()
             self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=51, axis=2)
             t1=time.time()
-            if round(t1-t0,4) >0.1:
+            if round(t1-t0,4) >0.2:
                 print('background subtraction took ', round(t1-t0,3),'s')
             
             Alines =shape[0]*shape[1]
@@ -156,21 +157,23 @@ class GPUThread(QThread):
             #     data_padded = data_CPU
             # start = time.time()
             # transfer data to GPU
-            
-            x_gpu  = cupy.array(self.intpX)
-            xp_gpu  = cupy.array(self.intpXp)
+            if self.interp:
+                x_gpu  = cupy.array(self.intpX)
+                xp_gpu  = cupy.array(self.intpXp)
+                indice1 = cupy.array(self.indice[0,:])
+                indice2 = cupy.array(self.indice[1,:])
+                dispersion = cupy.array(self.dispersion)
+                
             y_gpu  = cupy.array(self.data_CPU)
-            indice1 = cupy.array(self.indice[0,:])
-            indice2 = cupy.array(self.indice[1,:])
             yp_gpu = cupy.zeros(self.data_CPU.shape, dtype = cupy.float32)
-            dispersion = cupy.array(self.dispersion)
+            
             
             # print(self.dispersion.shape)
             # print('data to gpu takes ', round(time.time()-t1,3))
             # print(self.data_CPU[0:3])
             # interpolation
             t2 = time.time() 
-            if round(t2-t1,4) >0.1:
+            if round(t2-t1,4) >0.2:
                 print('time for data transfer to GPU: ', round(t2-t1,3))
             # yp_gpu = y_gpu
             if self.interp:
@@ -178,7 +181,7 @@ class GPUThread(QThread):
             else:
                 yp_gpu = y_gpu
             t3=time.time()
-            if round(t3-t2,4) >0.1:
+            if round(t3-t2,4) >0.2:
                 print('time for interpolation: ', round(t3-t2,3))
             yp_gpu = cupy.reshape(yp_gpu,[Alines, samples])
             # yp_gpu[:,0] = 0
@@ -202,9 +205,12 @@ class GPUThread(QThread):
             # self.data_CPU = np.abs(np.fft.fft(yp, axis=fftAxis))/samples
             # self.data_CPU = self.data_CPU[:,Pixel_start: Pixel_start+Pixel_range ]*self.AMPLIFICATION
             #######################################
-            data_gpu  = cupy.fft.fft(yp_gpu*dispersion, axis=fftAxis)/samples
+            if self.interp:
+                data_gpu  = cupy.fft.fft(yp_gpu*dispersion, axis=fftAxis)/samples
+            else:
+                data_gpu  = cupy.fft.fft(yp_gpu, axis=fftAxis)/samples
             t4=time.time()
-            if round(t4-t3,4) >0.1:
+            if round(t4-t3,4) >0.5:
                 print('time for FFT: ', round(t4-t3,3))
             # data_gpu  = cupy.fft.fft(yp_gpu, axis=fftAxis)/samples
             # print(data_gpu[0:10,0:5])
@@ -214,7 +220,7 @@ class GPUThread(QThread):
             self.data_CPU = cupy.asnumpy(data_gpu)*self.AMPLIFICATION
             self.data_CPU = self.data_CPU.reshape(shape[0],shape[1],Pixel_range)
             t5=time.time()
-            if round(t5-t4,4) >0.1:
+            if round(t5-t4,4) >0.2:
                 print('time for data to CPU: ', round(t5-t4,3))
             # print('data_CPU shape', self.data_CPU.shape)
             # print('data_CPU:', self.data_CPU[0,0,0:15])
@@ -225,7 +231,7 @@ class GPUThread(QThread):
             else:
                 Dyn = []
             t6=time.time()
-            if round(t6-t5,4) >0.1:
+            if round(t6-t5,4) >0.2:
                 print('time for dynamic calculation: ', round(t6-t5,3))
             # display and save data, data type is float32
             an_action = DnSAction(mode, data = self.data_CPU, raw = False, dynamic = Dyn, args = args) # data in Memory[memoryLoc]
@@ -401,6 +407,7 @@ class GPUThread(QThread):
 
     def display_FFT_actions(self):
         message = str(self.FFT_actions)+ ' FFT actions taken place\n'
+        print(message)
         # self.ui.PrintOut.append(message)
         self.log.write(message)
         self.FFT_actions = 0

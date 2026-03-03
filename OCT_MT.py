@@ -45,6 +45,7 @@ from mainWindow import MainWindow
 from Actions import *
 from Generaic_functions import LOG
 import time
+from SampleLocator import UnifiedSampleScanner
 # init global memory for raw data, make it more than 2 for parallel acquisition and processing
 global memoryCount
 memoryCount = 10
@@ -78,6 +79,7 @@ DQueue = Queue()
 DbackQueue = Queue()
 # Queue for data pointer back
 DatabackQueue = Queue()
+MosaicQueue = Queue()
 
         
 # wrap digitzer thread with global queues and Memory and ui and log function
@@ -114,6 +116,7 @@ class WeaverThread_2(WeaverThread):
         self.GPUQueue = GPUQueue
         self.DQueue = DQueue
         self.GPU2weaverQueue = GPU2weaverQueue
+        self.MosaicQueue = MosaicQueue
         self.log = log
 
 # wrap GPU thread with Queues and Memory
@@ -149,6 +152,7 @@ class DnSThread_2(DnSThread):
         super().__init__()
         self.ui = ui
         self.queue = DnSQueue
+        self.MosaicQueue = MosaicQueue
         self.log = log
         self.use_maya = use_maya
         
@@ -163,7 +167,7 @@ class GUI(MainWindow):
         self.ui.RunButton.clicked.connect(self.run_task)
         self.ui.PauseButton.clicked.connect(self.Pause_task)
         self.ui.CenterGalvo.clicked.connect(self.CenterGalvo)
-
+        self.ui.SampleLocateButton.clicked.connect(self.LocateSample)
         
         # set window length for FFT
         # self.ui.PostSamples.valueChanged.connect(self.update_Dispersion)
@@ -172,14 +176,14 @@ class GUI(MainWindow):
         # self.ui.DelaySamples.valueChanged.connect(self.update_Dispersion)
         # self.ui.TrimSamples.valueChanged.connect(self.update_Dispersion)
         # set stage boundary
-        self.ui.XZmax.valueChanged.connect(self.Update_contrast_Bline)
+        self.ui.XZmax.valueChanged.connect(self.Update_contrast)
         # self.ui.DepthStart.valueChanged.connect(self.Update_contrast_Bline)
         # self.ui.DepthRange.valueChanged.connect(self.Update_contrast_Bline)
-        self.ui.XZmin.valueChanged.connect(self.Update_contrast_Bline)
-        self.ui.Intmax.valueChanged.connect(self.Update_contrast_Mosaic)
-        self.ui.Intmin.valueChanged.connect(self.Update_contrast_Mosaic)
-        self.ui.Dynmax.valueChanged.connect(self.Update_contrast_Dyn)
-        self.ui.Dynmin.valueChanged.connect(self.Update_contrast_Dyn)
+        self.ui.XZmin.valueChanged.connect(self.Update_contrast)
+        self.ui.Intmax.valueChanged.connect(self.Update_contrast)
+        self.ui.Intmin.valueChanged.connect(self.Update_contrast)
+        # self.ui.Dynmax.valueChanged.connect(self.Update_contrast_Dyn)
+        # self.ui.Dynmin.valueChanged.connect(self.Update_contrast_Dyn)
 
         self.ui.redoBG.clicked.connect(self.redo_background)
         self.ui.redoSurf.clicked.connect(self.redo_surface)
@@ -249,20 +253,31 @@ class GUI(MainWindow):
         
         # RptCut is for cutting several slices as per defined in Vibratome panel
         
-        if self.ui.ACQMode.currentText() in ['ContinuousAline', 'ContinuousBline', 'ContinuousCscan', 'Mosaic']:
+        if self.ui.ACQMode.currentText() in ['ContinuousAline', 'ContinuousBline', 'ContinuousCscan', 'Mosaic','LocationCameraLive']:
             if self.ui.RunButton.isChecked():
                 self.ui.RunButton.setText('Stop')
                 an_action = WeaverAction(self.ui.ACQMode.currentText())
                 WeaverQueue.put(an_action)
             else:
                 self.Stop_task()
-        elif self.ui.ACQMode.currentText() in ['FiniteAline','FiniteBline','FiniteCscan']:
+        elif self.ui.ACQMode.currentText() in ['FiniteAline','FiniteBline','FiniteCscan','PlateScan']:
             if self.ui.RunButton.isChecked():
                 self.ui.RunButton.setText('Stop')
                 self.ui.RunButton.setEnabled(False)
                 self.ui.PauseButton.setEnabled(False)
                 an_action = WeaverAction(self.ui.ACQMode.currentText())
                 WeaverQueue.put(an_action)
+        
+    def LocateSample(self):
+        self.XHome()
+        self.YHome()
+        self.scanner = UnifiedSampleScanner(self.ui.DIR.toPlainText(),fov_w_mm = self.ui.XLength.value(),fov_h_mm = self.ui.YLength.value())
+        if self.scanner.exec_(): 
+            self.FOV_locations = self.scanner.generated_locations
+            self.sample_centers = self.scanner.sample_centers
+            # print(self.sample_centers)
+        an_action = WeaverAction('PlateScan', args = [self.FOV_locations, self.sample_centers])
+        WeaverQueue.put(an_action)
         
     def InitStages(self):
         an_action = AODOAction('Init')
@@ -387,9 +402,9 @@ class GUI(MainWindow):
         an_action = GPUAction('update_background')
         GPUQueue.put(an_action)
         
-    def Update_contrast_Bline(self):
+    def Update_contrast(self):
         # if not self.ui.RunButton.isChecked():
-        an_action = DnSAction('UpdateContrastBline')
+        an_action = DnSAction('UpdateContrast')
         DnSQueue.put(an_action)
 
     def Update_contrast_Mosaic(self):

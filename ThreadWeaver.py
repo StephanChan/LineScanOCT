@@ -14,8 +14,11 @@ from Actions import DnSAction, AODOAction, GPUAction, DAction
 import traceback
 import os
 import matplotlib.pyplot as plt
-from scipy.signal import hilbert
+from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtCore import Qt
+# from scipy.signal import hilbert
 import datetime
+import cv2
 # axial pixel size, measure with a microscope glass slide
 global ZPIXELSIZE
 ZPIXELSIZE = 4.4 # unit: um
@@ -47,14 +50,16 @@ class WeaverThread(QThread):
                     self.ui.statusbar.showMessage(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
+                elif self.item.action in ['LocationCameraLive']:
+                    self.live()
 
-                elif self.item.action == 'Mosaic':
+                elif self.item.action == 'PlateScan':
                     # make directories
                     if not os.path.exists(self.ui.DIR.toPlainText()+'/aip'):
                         os.mkdir(self.ui.DIR.toPlainText()+'/aip')
-                    if not os.path.exists(self.ui.DIR.toPlainText()+'/surf'):
-                        os.mkdir(self.ui.DIR.toPlainText()+'/surf')
-
+                    # if not os.path.exists(self.ui.DIR.toPlainText()+'/surf'):
+                    #     os.mkdir(self.ui.DIR.toPlainText()+'/surf')
+                    self.PlateScan(self.item.args)
                     # TODO: take an image, manually find tissue region, generate scan pattern
                     # for each scan region:
                         # do fast scan to identify tissue area
@@ -70,6 +75,7 @@ class WeaverThread(QThread):
                     #     self.InitMemory()
                     #     message = self.Mosaic()
                     # self.ui.PrintOut.append(message)
+                    message = 'PlateScan success'
                     self.log.write(message)
 
                 elif self.item.action == 'ZstageRepeatibility':
@@ -114,6 +120,7 @@ class WeaverThread(QThread):
         # exit weaver thread
         self.ui.statusbar.showMessage(self.exit_message)
             
+    
     def InitMemory(self):
         #################################################################
         # get number samplers per Aline
@@ -133,7 +140,7 @@ class WeaverThread(QThread):
              elif self.ui.ACQMode.currentText() in ['ContinuousCscan']:
                  self.Memory[ii]=np.zeros([self.ui.Ypixels.value()*self.ui.BlineAVG.value(), AlinesPerBline, samples], dtype = data_type)
                  self.NAcq = 1
-             elif self.ui.ACQMode.currentText() in ['FiniteCscan']:
+             elif self.ui.ACQMode.currentText() in ['FiniteCscan', 'PlateScan']:
                  if self.ui.DynCheckBox.isChecked():
                      self.Memory[ii]=np.zeros([self.ui.BlineAVG.value(), AlinesPerBline, samples], dtype = data_type)
                      self.NAcq = self.ui.Ypixels.value()
@@ -143,7 +150,7 @@ class WeaverThread(QThread):
 
         ###########################################################################################
         
-    def SingleScan(self, mode):
+    def SingleScan(self, mode, Args=[]):
         an_action = DnSAction('Clear')
         self.DnSQueue.put(an_action)
         t0=time.time()
@@ -199,12 +206,12 @@ class WeaverThread(QThread):
                         self.log.write('spectral data all zeros!')
                         message = 'spectral data all zeros!'
                     else:
-                        an_action = DnSAction(mode, self.data, raw=True) # data in Memory[memoryLoc]
+                        an_action = DnSAction(mode, self.data, raw=True, args = Args) # data in Memory[memoryLoc]
                         self.DnSQueue.put(an_action)
                         message = mode + " successfully finished..."
                 else:
                     # In other modes, do FFT first
-                    an_action = GPUAction(self.ui.FFTDevice.currentText(), mode, memoryLoc)
+                    an_action = GPUAction(action = self.ui.FFTDevice.currentText(), mode = mode, memoryLoc = memoryLoc, args = Args)
                     self.GPUQueue.put(an_action)
                     message = mode + " successfully finished..."
             else:
@@ -302,13 +309,80 @@ class WeaverThread(QThread):
         print(message)
         an_action = GPUAction('display_FFT_actions')
         self.GPUQueue.put(an_action)
-        an_action = DnSAction('display_counts')
+        an_action = DnSAction('display_counts', args = mode)
         self.DnSQueue.put(an_action)
         return message
   
 
-    
-        
+    def PlateScan(self, args):
+        self.FOV_locations, self.sample_centers = args
+        if self.sample_centers is None:
+            return
+        self.ui.FFTDevice.setCurrentText('GPU')
+        for isample in self.sample_centers:
+            # move to center position of this sample
+            self.ui.XPosition.setValue(isample['x'])
+            an_action = AODOAction('Xmove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            self.ui.YPosition.setValue(isample['y'])
+            an_action = AODOAction('Ymove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            
+            # do continuous scan to display Bline
+            self.ui.ACQMode.setCurrentText('ContinuousBline')
+            self.InitMemory()
+            self.ui.RunButton.setChecked(True)
+            self.RptScan(mode = 'ContinuousBline')
+            # User can move Z stage up and down to put sample at focus
+            
+            # User stopped continuousBline, then we do Mosaic scan for this sample
+            self.iterate_FOVs(isample)
+            
+            while not self.ui.NextSampleButton.isChecked():
+                time.sleep(1)
+                if self.ui.RepeatSampleButton.isChecked():
+                    self.iterate_FOVs(isample)
+                    self.ui.RepeatSampleButton.setChecked(False)
+                
+            # plt.figure()
+            # plt.imshow(SampleMosaic)
+            # plt.show()
+                
+            
+    def iterate_FOVs(self, isample):
+        # User stopped continuousBline, then we do Mosaic scan for this sample
+        locations = [ii for ii in self.FOV_locations if ii['sample_id'] == isample['sample_id']]
+        Xpixels = self.ui.AlinesPerBline.value()//self.ui.AlineAVG.value()
+        Ypixels = self.ui.Ypixels.value()
+        XFOV = self.ui.XLength.value()
+        YFOV = self.ui.YLength.value()
+        an_action = DnSAction('Init_Mosaic', args = [locations, (Xpixels, Ypixels), (XFOV, YFOV)]) 
+        self.DnSQueue.put(an_action)
+        self.ui.ACQMode.setCurrentText('PlateScan')
+        self.InitMemory()
+        for iFOV in locations:
+            # print(iFOV['x'],iFOV['y'])
+            # move to position of this FOV
+            self.ui.XPosition.setValue(iFOV['x'])
+            an_action = AODOAction('Xmove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            self.ui.YPosition.setValue(iFOV['y'])
+            an_action = AODOAction('Ymove2')
+            self.AODOQueue.put(an_action)
+            self.StagebackQueue.get()
+            
+            # do FiniteCscan at this position
+
+            self.ui.RunButton.setChecked(True)
+            self.SingleScan(mode = 'Process_Mosaic', Args = iFOV)
+        # # After finishing this sample, analysis the Mosaic image
+        # an_action = DnSAction('Return_mosaic') 
+        # self.DnSQueue.put(an_action)
+        # SampleMosaic = self.MosaicQueue.get()
+        # # update locations for this sample if button clicked
    
     
     def identify_agar(self, cscan, stripes, cscans):
@@ -641,3 +715,37 @@ class WeaverThread(QThread):
         self.ui.DSing.setChecked(False)
         return 'surface measruement success...'
     
+    def live(self):
+        """Continuously captures and displays video until RunButton is unchecked."""
+        # 1. Initialize Camera
+        cap = cv2.VideoCapture(0, cv2.CAP_MSMF)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
+    
+        while self.ui.RunButton.isChecked():
+            ret, frame = cap.read()
+            if not ret:
+                break
+    
+            # 2. Process Image (Rotate/Flip/Crop to match your previous setup)
+            frame = cv2.rotate(cv2.flip(frame, 1), cv2.ROTATE_90_CLOCKWISE)
+            # Assuming the same crop as your SampleLocator
+            frame = frame[630:3670, 180:2160]
+            
+            # 3. Convert BGR to RGB
+            rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb_image.shape
+            bytes_per_line = ch * w
+            
+            # 4. Convert to QImage then QPixmap
+            qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(qt_image)
+    
+            # 5. Display on Label (scaled to fit the widget)
+            # Note: If this is a separate thread, UI updates should ideally 
+            # use Signals, but for a simple script, this often works:
+            self.ui.XZplane.setPixmap(pixmap.scaled(
+                self.ui.XZplane.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+    
+        # 6. Release resources when button is unchecked
+        cap.release()

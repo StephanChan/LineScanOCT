@@ -91,7 +91,7 @@ def GenAODO(mode='ContinuousBline',obj = '5X',postclocks = 50, YStepSize = 1, YS
         status = 'waveform updated'
         return np.uint32(DOwaveform), AOwaveform, status
     
-    elif mode in ['FiniteCscan','ContinuousCscan', 'Mosaic']:
+    elif mode in ['FiniteCscan','ContinuousCscan', 'PlateScan']:
         # generate AO waveform for Galvo control for one Bline
         AOwaveform, status = GenGalvoWave(YStepSize, YSteps, BVG*2, obj, postclocks, Galvo_bias)
         DOwaveform = np.ones([AOwaveform.shape[0]//2, 2],dtype = np.uint32)
@@ -218,32 +218,30 @@ def ScatterPlot(mosaic):
 
     
 def RGBImagePlot(matrix1 = [], matrix2 = [], m=0, M=1):
-    if len(matrix1)>0:
-        matrix1 = np.array(matrix1)
-        matrix1[matrix1<m] = m
-        matrix1[matrix1>M] = M
-        matrix1 = np.uint8((matrix1-m+0.01)/np.abs(M-m+0.1)*127)
-        height, width = matrix1.shape
     if len(matrix2)>0:
-        matrix2 = np.array(matrix2)
+        scale = 1
+        matrix2 = np.float32(np.array(matrix2))
         matrix2[matrix2<m] = m
         matrix2[matrix2>M] = M
         # adjust image brightness
-        
         matrix2 = np.uint8((matrix2-m+0.01)/np.abs(M-m+0.1)*127)
-   
-        height, width = matrix2.shape
-    
-    if len(matrix1)==0:
-        matrix1 = np.zeros(matrix2.shape)
-    if len(matrix2)==0:
+    else:
+        scale = 2
         matrix2 = np.zeros(matrix1.shape)
+        
+    matrix1 = np.float32(np.array(matrix1))
+    matrix1[matrix1<m] = m
+    matrix1[matrix1>M] = M
+    matrix1 = np.uint8((matrix1-m+0.01)/np.abs(M-m+0.1)*127*scale)
+    
+    height, width = matrix1.shape
+    
     # Create an empty RGB array
     rgb_array = np.zeros((height, width, 3), dtype=np.uint8)
     
-    plt.figure()
-    plt.imshow(matrix1)
-    plt.show()
+    # plt.figure()
+    # plt.imshow(matrix1)
+    # plt.show()
     # Assign each channel
     rgb_array[..., 0] = matrix1 + matrix2   # Red channel
     rgb_array[..., 1] = matrix1 # Green channel

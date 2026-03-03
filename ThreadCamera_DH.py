@@ -12,6 +12,7 @@ import traceback
 from Generaic_functions import *  # 自定义函数集合，可能包含图像处理或转换方法
 import matplotlib.pyplot as plt
 from Actions import DbackAction, DAction
+import matplotlib.pyplot as plt
 global SIM
 # 尝试导入 amcam 模块，如果失败则进入仿真模式（模拟环境）
 try:
@@ -19,17 +20,15 @@ try:
     sys.path.append(r"D:\\Program Files\\Daheng Imaging\\GalaxySDK\\Development\\Samples\\Python\\")
     import gxipy as gx 
     import DahengCamera_test
+    from ctypes import *
+    from gxipy.gxidef import *
+    from gxipy.ImageFormatConvert import *
     SIM = False
 except:
     print('no camera driver, using simulation')
     SIM = True
 
 CONTINUOUS = 0x7FFFFFFF
-
-from ctypes import *
-from gxipy.gxidef import *
-from gxipy.ImageFormatConvert import *
-import matplotlib.pyplot as plt
 
 def get_best_valid_bits(pixel_format):
     valid_bits = DxValidBit.BIT0_7
@@ -184,7 +183,7 @@ class Camera(QThread):
             self.BlinesPerAcq = self.ui.BlineAVG.value() 
         elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousAline','ContinuousCscan']:
             self.BlinesPerAcq = CONTINUOUS
-        elif self.ui.ACQMode.currentText() in ['FiniteCscan']:
+        elif self.ui.ACQMode.currentText() in ['FiniteCscan','PlateScan']:
             self.BlinesPerAcq = self.ui.Ypixels.value() * self.ui.BlineAVG.value()
             
         if self.hcam is not None:
@@ -333,9 +332,9 @@ class Camera(QThread):
             # t0=time.time()
             
             if self.ui.PixelFormat_display_DH.text() in ['Mono8']:
-                Bline = np.uint8(np.random.rand(self.ui.AlinesPerBline.value(), self.NSamples)*255)
+                Bline = np.uint8(np.random.rand(self.ui.AlinesPerBline.value(), self.NSamples)*np.random.randint(255))
             else:
-                Bline = np.uint16(np.random.rand(self.ui.AlinesPerBline.value(), self.NSamples)*65535)
+                Bline = np.uint16(np.random.rand(self.ui.AlinesPerBline.value(), self.NSamples)*np.random.randint(4096))
             # print('camera outputs:', Bline[0,0:20])
             # print(BlinesCount, self.BlinesPerAcq)
             self.Memory[self.MemoryLoc][BlinesCount % NBlines] = Bline

@@ -315,11 +315,11 @@ class MainWindow(QMainWindow):
         # self.ui.YBias.valueChanged.connect(self.update_galvoYwaveform)
         
         
-        self.ui.XStart.valueChanged.connect(self.update_Mosaic)
-        self.ui.XStop.valueChanged.connect(self.update_Mosaic)
-        self.ui.YStart.valueChanged.connect(self.update_Mosaic)
-        self.ui.YStop.valueChanged.connect(self.update_Mosaic)
-        self.ui.Overlap.valueChanged.connect(self.update_Mosaic)
+        # self.ui.XStart.valueChanged.connect(self.update_Mosaic)
+        # self.ui.XStop.valueChanged.connect(self.update_Mosaic)
+        # self.ui.YStart.valueChanged.connect(self.update_Mosaic)
+        # self.ui.YStop.valueChanged.connect(self.update_Mosaic)
+        # self.ui.Overlap.valueChanged.connect(self.update_Mosaic)
         
         # self.ui.ImageZDepth.valueChanged.connect(self.Calculate_ImageDepth)
         # self.ui.ImageZnumber.valueChanged.connect(self.Calculate_ImageDepth)
