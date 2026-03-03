@@ -74,7 +74,7 @@ class AODO(object):
         # terminal_name = get_terminal_name_with_dev_prefix(self.AOtask, "ao/StartTrigger")
 
     
-        self.DOtask.do_channels.add_do_chan(lines='Galvo/port0/line0')
+        self.DOtask.do_channels.add_do_chan(lines='Galvo/port0/line1')
         # self.DOtask.out_stream.regen_mode = RegenerationMode.ALLOW_REGENERATION
         self.DOtask.timing.cfg_samp_clk_timing(rate=200000, \
                                         # source='/AODO/PFI0', \

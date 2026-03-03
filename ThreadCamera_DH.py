@@ -16,15 +16,77 @@ global SIM
 # 尝试导入 amcam 模块，如果失败则进入仿真模式（模拟环境）
 try:
     import sys
-    sys.path.append("")
+    sys.path.append(r"D:\\Program Files\\Daheng Imaging\\GalaxySDK\\Development\\Samples\\Python\\")
     import gxipy as gx 
-    import initAPI
+    import DahengCamera_test
     SIM = False
 except:
     print('no camera driver, using simulation')
     SIM = True
 
 CONTINUOUS = 0x7FFFFFFF
+
+from ctypes import *
+from gxipy.gxidef import *
+from gxipy.ImageFormatConvert import *
+import matplotlib.pyplot as plt
+
+def get_best_valid_bits(pixel_format):
+    valid_bits = DxValidBit.BIT0_7
+    if pixel_format in (GxPixelFormatEntry.MONO8,
+                        GxPixelFormatEntry.BAYER_GR8, GxPixelFormatEntry.BAYER_RG8,
+                        GxPixelFormatEntry.BAYER_GB8, GxPixelFormatEntry.BAYER_BG8,
+                        GxPixelFormatEntry.RGB8, GxPixelFormatEntry.BGR8,
+                        GxPixelFormatEntry.R8, GxPixelFormatEntry.B8, GxPixelFormatEntry.G8):
+        valid_bits = DxValidBit.BIT0_7
+    elif pixel_format in (GxPixelFormatEntry.MONO10, GxPixelFormatEntry.MONO10_PACKED, GxPixelFormatEntry.MONO10_P,
+                          GxPixelFormatEntry.BAYER_GR10, GxPixelFormatEntry.BAYER_RG10,
+                          GxPixelFormatEntry.BAYER_GB10, GxPixelFormatEntry.BAYER_BG10,
+                          GxPixelFormatEntry.BAYER_GR10_P, GxPixelFormatEntry.BAYER_RG10_P,
+                          GxPixelFormatEntry.BAYER_GB10_P, GxPixelFormatEntry.BAYER_BG10_P,
+                          GxPixelFormatEntry.BAYER_GR10_PACKED, GxPixelFormatEntry.BAYER_RG10_PACKED,
+                          GxPixelFormatEntry.BAYER_GB10_PACKED, GxPixelFormatEntry.BAYER_BG10_PACKED):
+        valid_bits = DxValidBit.BIT2_9
+    elif pixel_format in (GxPixelFormatEntry.MONO12, GxPixelFormatEntry.MONO12_PACKED, GxPixelFormatEntry.MONO12_P,
+                          GxPixelFormatEntry.BAYER_GR12, GxPixelFormatEntry.BAYER_RG12,
+                          GxPixelFormatEntry.BAYER_GB12, GxPixelFormatEntry.BAYER_BG12,
+                          GxPixelFormatEntry.BAYER_GR12_P, GxPixelFormatEntry.BAYER_RG12_P,
+                          GxPixelFormatEntry.BAYER_GB12_P, GxPixelFormatEntry.BAYER_BG12_P,
+                          GxPixelFormatEntry.BAYER_GR12_PACKED, GxPixelFormatEntry.BAYER_RG12_PACKED,
+                          GxPixelFormatEntry.BAYER_GB12_PACKED, GxPixelFormatEntry.BAYER_BG12_PACKED):
+        valid_bits = DxValidBit.BIT4_11
+    elif pixel_format in (GxPixelFormatEntry.MONO14, GxPixelFormatEntry.MONO14_P,
+                          GxPixelFormatEntry.BAYER_GR14, GxPixelFormatEntry.BAYER_RG14,
+                          GxPixelFormatEntry.BAYER_GB14, GxPixelFormatEntry.BAYER_BG14,
+                          GxPixelFormatEntry.BAYER_GR14_P, GxPixelFormatEntry.BAYER_RG14_P,
+                          GxPixelFormatEntry.BAYER_GB14_P, GxPixelFormatEntry.BAYER_BG14_P,
+                          ):
+        valid_bits = DxValidBit.BIT6_13
+    elif pixel_format in (GxPixelFormatEntry.MONO16,
+                          GxPixelFormatEntry.BAYER_GR16, GxPixelFormatEntry.BAYER_RG16,
+                          GxPixelFormatEntry.BAYER_GB16, GxPixelFormatEntry.BAYER_BG16):
+        valid_bits = DxValidBit.BIT8_15
+    return valid_bits
+
+def convert_to_special_pixel_format(raw_image, pixel_format):
+    image_convert.set_dest_format(pixel_format)
+    # print('raw_image.get_pixel_format()', raw_image.get_pixel_format())
+    valid_bits = get_best_valid_bits(raw_image.get_pixel_format())
+    # print('valid_bits', valid_bits)
+    image_convert.set_valid_bits(valid_bits)
+
+    # create out put image buffer
+    buffer_out_size = image_convert.get_buffer_size_for_conversion(raw_image)
+    output_image_array = (c_ubyte * buffer_out_size)()
+    output_image = addressof(output_image_array)
+
+    # convert to pixel_format
+    image_convert.convert(raw_image, output_image, buffer_out_size, False)
+    if output_image is None:
+        print('Pixel format conversion failed')
+        return
+
+    return output_image_array, buffer_out_size
 # 主相机线程类，继承自 QThread，用于异步相机操作
 class Camera(QThread):
     def __init__(self):
@@ -91,7 +153,8 @@ class Camera(QThread):
         # 判断是否使用真实相机。如果导入 amcam 成功，camera_sim 为 None，代表使用真实硬件
         if not (SIM or self.SIM):
             device_manager = gx.DeviceManager()  # 打开设备
-    
+            global image_convert
+            image_convert = device_manager.create_image_format_convert()
             if device_manager.update_all_device_list()[0] == 0:
                 # 如果没有找到任何相机设备
                 print("No camera found")
@@ -102,10 +165,11 @@ class Camera(QThread):
                     self.hcam_fr = self.hcam.get_remote_device_feature_control() # 返回设备属性对象
                     self.hcam_fr.get_enum_feature("GainAuto").set("Off")
                     self.hcam_fr.get_enum_feature("ExposureAuto").set("Off")
-                    self.hcam_fr.get_enum_feature("PixelFormat").set(self.ui.PixelFormat_DH.currentText())
-                    self.ui.PixelFormat_display_DH.setText(self.hcam_fr.get_enum_feature("PixelFormat").get())
+                    # self.hcam_fr.get_enum_feature("PixelFormat").set(self.ui.PixelFormat_DH.currentText())
+                    # pixelformat = self.hcam_fr.get_enum_feature("PixelFormat").get()
+                    # self.ui.PixelFormat_display_DH.setText(pixelformat[1])
                     # self.hcam_fr.feature_save("export_config_file.txt")
-                    self.hcam_fr.get_enum_feature("TriggerSource").set(self.ui.TriggerSource_DH.currentText())
+                    # self.hcam_fr.get_enum_feature("TriggerSource").set(self.ui.TriggerSource_DH.currentText())
                     
                     self.hcam_s = self.hcam.get_stream(1).get_feature_control()  # 返回流属性对象
                     self.hcam_s.get_enum_feature("StreamBufferHandlingMode").set("NewestOnly")
@@ -127,9 +191,13 @@ class Camera(QThread):
             self.SetExposure()
             self.SetGain()
             self.SetPixelDepth()
-            self.hcam_fr.get_enum_feature("TriggerMode").set(self.ui.TriggerON.currentText())
-            self.hcam_fr.get_int_feature("Width").set(self.NSamples)
-            self.hcam_fr.get_int_feature("Height").set(self.AlinesPerBline)
+            self.hcam_fr.get_enum_feature("TriggerMode").set(self.ui.TriggerON_DH.currentText())
+            self.hcam_fr.get_enum_feature("TriggerSource").set(self.ui.TriggerSource_DH.currentText())
+            self.hcam_fr.get_enum_feature("TriggerActivation").set(self.ui.TriggerActivation_DH.currentText())
+            # self.hcam_fr.get_enum_feature("TriggerDelay").set(int(self.ui.TriggerDelay_DH.value()*1000.0))
+            
+            self.hcam_fr.get_int_feature("Width").set(self.NSamples )
+            self.hcam_fr.get_int_feature("Height").set(self.AlinesPerBline )
             self.hcam_fr.get_int_feature("OffsetX").set(self.ui.offsetW_DH.value())
             self.hcam_fr.get_int_feature("OffsetY").set(self.ui.offsetH.value())
         self.DbackQueue.put(0)
@@ -142,25 +210,30 @@ class Camera(QThread):
         self.DbackQueue.put(0)
         while BlinesCount < self.BlinesPerAcq and self.ui.RunButton.isChecked():
             t0=time.time()
-            buf = self.hcam.data_stream[0].get_image(timeout=10000)
+            buf = self.hcam.data_stream[0].get_image(timeout=2000)
             t1=time.time()
-            Bline = buf.get_numpy_array()
-            # self.image = np.clip(np.rint(np.mean(all_images, axis = 0)), 0, 65535).astype(np.uint16)
-            # self.img_16bit = Image.fromarray(self.image.astype(np.uint16), mode='I;16')
-            # [w,h] = Bline.shape
+            if buf == None:
+                print("camera time out...")
+                Bline = np.zeros([self.AlinesPerBline, self.NSamples])
+            else:
+                if self.ui.PixelFormat_DH.currentText() in ["Mono12Packed"]:
+                    mono_image_array, buffer_out_size=convert_to_special_pixel_format(buf, GxPixelFormatEntry.MONO12)
+                    Bline = np.frombuffer(mono_image_array, dtype=np.uint16) .reshape(self.AlinesPerBline, self.NSamples)
+                else:
+                    Bline = buf.get_numpy_array()
             # Bline = np.rot90(Bline,1)
                 
-            # print(Bline[0:10,0:5])
+            print(Bline[0,0:5])
 
             t2=time.time()
             self.Memory[self.MemoryLoc][BlinesCount % NBlines] = Bline
             t3=time.time()
             # fig = plt.figure()
-            # plt.imshow(imageData)
+            # plt.imshow(Bline)
             # plt.show()
-            # print('t1-t0: ', round(t1-t0,6))
-            # print('t2-t1: ', round(t2-t1,6))
-            # print('t3-t2: ', round(t3-t2,6))
+            # print('camera fetch data took: ', round(t1-t0,3), 'sec')
+            # print('data conversion took: ', round(t2-t1,3), 'sec')
+            # print('data into memory took: ', round(t3-t2,3), 'sec')
             # print('t4-t3: ', round(t4-t3,6))
             
             
@@ -192,22 +265,24 @@ class Camera(QThread):
     def SetPixelDepth(self):
         if self.hcam is not None:
             self.hcam_fr.get_enum_feature("PixelFormat").set(self.ui.PixelFormat_DH.currentText())
-            self.ui.PixelFormat_display_DH.setText(self.hcam_fr.get_enum_feature("PixelFormat").get())
+            pixelformat = self.hcam_fr.get_enum_feature("PixelFormat").get()
+            self.ui.PixelFormat_display_DH.setText(pixelformat[1])
     
     def GetPixelDepth(self):
         if self.hcam is not None:
-            self.ui.PixelFormat_display_DH.setText(self.hcam_fr.get_enum_feature("PixelFormat").get())
+            pixelformat = self.hcam_fr.get_enum_feature("PixelFormat").get()
+            self.ui.PixelFormat_display_DH.setText(pixelformat[1])
 
     # 设置曝光时间（从界面获取值）
     def SetExposure(self):
         if self.hcam is not None:
             self.hcam_fr.get_float_feature("ExposureTime").set(self.ui.Exposure_DH.value()*1000.0)
-            self.ui.CurrentExpo_DH.setValue(self.hcam_fr.get_float_feature("ExposureTime").get()/1000.0)
+            self.ui.Exposure_display_DH.setValue(self.hcam_fr.get_float_feature("ExposureTime").get()/1000.0)
         
     # 获取曝光时间
     def GetExposure(self):
         if self.hcam is not None:
-            self.ui.CurrentExpo_DH.setValue(self.hcam_fr.get_float_feature("ExposureTime").get()/1000.0)
+            self.ui.Exposure_display_DH.setValue(self.hcam_fr.get_float_feature("ExposureTime").get()/1000.0)
 
     # 控制自动曝光开关
     def AutoExposure(self):
@@ -216,17 +291,17 @@ class Camera(QThread):
                 self.hcam_fr.get_enum_feature("ExposureAuto").set("Continuous")
             else:
                 self.hcam_fr.get_enum_feature("ExposureAuto").set("Off")
-                self.ui.Exposure_DH.setValue(self.ui.CurrentExpo_DH.value())
+                self.ui.Exposure_DH.setValue(self.ui.Exposure_display_DH.value())
                 
     def SetGain(self):
         if self.hcam is not None:
-            self.hcam_fr.get_float_feature("Gain").set(self.ui.Gain_DH.value()*1.0)
-            self.ui.CurrentGain_DH.setValue(self.hcam_fr.get_float_feature("Gain").get()/1.0)
+            self.hcam_fr.get_float_feature("Gain").set(self.ui.DGain_DH.value()*1.0)
+            self.ui.DGain_display_DH.setValue(self.hcam_fr.get_float_feature("Gain").get()/1.0)
         
     # 获取曝光时间
     def GetGain(self):
         if self.hcam is not None:
-           self.ui.CurrentGain_DH.setValue(self.hcam_fr.get_float_feature("Gain").get()/1.0)
+           self.ui.DGain_display_DH.setValue(self.hcam_fr.get_float_feature("Gain").get()/1.0)
 
     # 控制自动曝光开关
     def AutoGain(self):
@@ -235,7 +310,7 @@ class Camera(QThread):
                 self.hcam_fr.get_enum_feature("GainAuto").set("Continuous")
             else:
                 self.hcam_fr.get_enum_feature("GainAuto").set("Off")
-                self.ui.Gain_DH.setValue(self.ui.CurrentGain_DH.value())
+                self.ui.DGain_DH.setValue(self.ui.DGain_display_DH.value())
 
     
     # 关闭相机并释放资源

@@ -1,1 +1,1 @@
-pyuic5 -x D:\LineScanOCT\LineScanOCT-master\GUI.ui -o D:\LineScanOCT\LineScanOCT-master\GUI.py
+pyuic5 -x D:\IOCT\software\LineScanOCT\GUI.ui -o D:\IOCT\software\LineScanOCT\GUI.py

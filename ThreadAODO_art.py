@@ -165,6 +165,22 @@ class AODOThread(QThread):
                                                  YSteps =  self.ui.Ypixels.value(), \
                                                  BVG = self.ui.BlineAVG.value(),\
                                                  Galvo_bias = self.ui.GalvoBias.value())
+        if self.ui.SyncDO.currentText() == 'port0/line0':
+            self.DOwaveform = self.DOwaveform * pow(2,0)
+        elif self.ui.SyncDO.currentText() == 'port0/line1':
+            self.DOwaveform = self.DOwaveform * pow(2,1)
+        elif self.ui.SyncDO.currentText() == 'port0/line2':
+            self.DOwaveform = self.DOwaveform * pow(2,2)
+        elif self.ui.SyncDO.currentText() == 'port0/line3':
+            self.DOwaveform = self.DOwaveform * pow(2,3)
+        elif self.ui.SyncDO.currentText() == 'port0/line4':
+            self.DOwaveform = self.DOwaveform * pow(2,4)
+        elif self.ui.SyncDO.currentText() == 'port0/line5':
+            self.DOwaveform = self.DOwaveform * pow(2,5)
+        elif self.ui.SyncDO.currentText() == 'port0/line6':
+            self.DOwaveform = self.DOwaveform * pow(2,6)
+        elif self.ui.SyncDO.currentText() == 'port0/line7':
+            self.DOwaveform = self.DOwaveform * pow(2,7)
         pixmap = LinePlot(self.AOwaveform,self.DOwaveform, np.min([np.min(self.AOwaveform),0]), np.max([np.max(self.AOwaveform),1]))
         # clear content on the waveformLabel
         self.ui.XwaveformLabel.clear()

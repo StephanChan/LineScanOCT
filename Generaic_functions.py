@@ -241,7 +241,9 @@ def RGBImagePlot(matrix1 = [], matrix2 = [], m=0, M=1):
     # Create an empty RGB array
     rgb_array = np.zeros((height, width, 3), dtype=np.uint8)
     
-    
+    plt.figure()
+    plt.imshow(matrix1)
+    plt.show()
     # Assign each channel
     rgb_array[..., 0] = matrix1 + matrix2   # Red channel
     rgb_array[..., 1] = matrix1 # Green channel

@@ -152,6 +152,7 @@ class DnSThread(QThread):
         else:
             ym=self.ui.XZmin.value()
             yM=self.ui.XZmax.value()
+        print(ym,yM)
         # t0=time.time()
         # pixmap = LinePlot(Ascan, [], ym, yM)
         w = self.ui.XZplane.width()

@@ -203,9 +203,15 @@ class MainWindow(QMainWindow):
         if self.ui.Camera.currentText() == 'PhotonFocus':
             CameraPixelSize = 9.0 # um
             MaxHeight = 1100.0
+            self.ui.AlinesPerBline.setMaximum(int(MaxHeight))
         elif self.ui.Camera.currentText() == 'XingTu':
             CameraPixelSize = 6.5 # um
             MaxHeight = 1024.0
+            self.ui.AlinesPerBline.setMaximum(int(MaxHeight))
+        elif self.ui.Camera.currentText() == 'Daheng':
+            CameraPixelSize = 9.0 # um
+            MaxHeight = 1104.0
+            self.ui.AlinesPerBline.setMaximum(int(MaxHeight))
         else:
             status = 'camera not calibrated, abort FOV calculation'
             self.ui.statusbar.showMessage(status)

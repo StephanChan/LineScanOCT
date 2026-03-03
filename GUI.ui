@@ -270,7 +270,7 @@
                 </size>
                </property>
                <property name="maximum">
-                <number>65535</number>
+                <number>4096</number>
                </property>
                <property name="singleStep">
                 <number>1</number>
@@ -295,7 +295,7 @@
                 </size>
                </property>
                <property name="maximum">
-                <number>65535</number>
+                <number>4096</number>
                </property>
                <property name="singleStep">
                 <number>1</number>
@@ -380,7 +380,7 @@
                 </size>
                </property>
                <property name="maximum">
-                <number>65535</number>
+                <number>4096</number>
                </property>
                <property name="singleStep">
                 <number>2</number>
@@ -405,7 +405,7 @@
                 </size>
                </property>
                <property name="maximum">
-                <number>65535</number>
+                <number>4096</number>
                </property>
                <property name="singleStep">
                 <number>1</number>
@@ -1546,7 +1546,7 @@
              <number>1</number>
             </property>
             <property name="maximum">
-             <number>1100</number>
+             <number>10000</number>
             </property>
             <property name="value">
              <number>1100</number>
@@ -2000,45 +2000,11 @@
                 </property>
                </widget>
               </item>
-              <item row="1" column="1">
-               <widget class="QLabel" name="DGain_display_DH">
-                <property name="enabled">
-                 <bool>false</bool>
-                </property>
-                <property name="text">
-                 <string>Gain1x</string>
-                </property>
-               </widget>
-              </item>
               <item row="1" column="2">
                <widget class="QLabel" name="label_49">
                 <property name="text">
                  <string>Set Gain:</string>
                 </property>
-               </widget>
-              </item>
-              <item row="1" column="3">
-               <widget class="QComboBox" name="DGain_DH">
-                <item>
-                 <property name="text">
-                  <string>Gain1x</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>Gain2x</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>Gain4x</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>Gain8x</string>
-                 </property>
-                </item>
                </widget>
               </item>
               <item row="2" column="0">
@@ -2094,27 +2060,6 @@
                 </item>
                </widget>
               </item>
-              <item row="2" column="4">
-               <widget class="QLabel" name="label_51">
-                <property name="text">
-                 <string>TriggerOnOff</string>
-                </property>
-               </widget>
-              </item>
-              <item row="2" column="5">
-               <widget class="QComboBox" name="TriggerON_DH">
-                <item>
-                 <property name="text">
-                  <string>On</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>Off</string>
-                 </property>
-                </item>
-               </widget>
-              </item>
               <item row="3" column="0">
                <widget class="QLabel" name="label_41">
                 <property name="text">
@@ -2145,7 +2090,7 @@
                  <number>1</number>
                 </property>
                 <property name="maximum">
-                 <number>1600</number>
+                 <number>10000</number>
                 </property>
                 <property name="singleStep">
                  <number>8</number>
@@ -2156,22 +2101,6 @@
                 <property name="displayIntegerBase">
                  <number>10</number>
                 </property>
-               </widget>
-              </item>
-              <item row="3" column="4">
-               <widget class="QLabel" name="label_36">
-                <property name="text">
-                 <string>TriggerSource</string>
-                </property>
-               </widget>
-              </item>
-              <item row="3" column="5">
-               <widget class="QComboBox" name="TriggerSource_DH">
-                <item>
-                 <property name="text">
-                  <string>Line0</string>
-                 </property>
-                </item>
                </widget>
               </item>
               <item row="4" column="0">
@@ -2198,17 +2127,86 @@
                 </property>
                </widget>
               </item>
-              <item row="4" column="4">
+              <item row="4" column="1">
+               <widget class="QSpinBox" name="FrameRate_DH">
+                <property name="maximum">
+                 <number>1000</number>
+                </property>
+                <property name="value">
+                 <number>800</number>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="3">
+               <widget class="QDoubleSpinBox" name="DGain_DH">
+                <property name="decimals">
+                 <number>0</number>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="QDoubleSpinBox" name="DGain_display_DH">
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+                <property name="decimals">
+                 <number>0</number>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="4">
+               <widget class="QLabel" name="label_51">
+                <property name="text">
+                 <string>TriggerOnOff</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="4">
+               <widget class="QLabel" name="label_36">
+                <property name="text">
+                 <string>TriggerSource</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="4">
                <widget class="QLabel" name="label_46">
                 <property name="text">
                  <string>TriggerActivation</string>
                 </property>
                </widget>
               </item>
-              <item row="4" column="5">
+              <item row="0" column="5">
+               <widget class="QComboBox" name="TriggerON_DH">
+                <item>
+                 <property name="text">
+                  <string>On</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Off</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+              <item row="1" column="5">
+               <widget class="QComboBox" name="TriggerSource_DH">
+                <item>
+                 <property name="text">
+                  <string>Line0</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Line2</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+              <item row="2" column="5">
                <widget class="QComboBox" name="TriggerActivation_DH">
                 <property name="enabled">
-                 <bool>false</bool>
+                 <bool>true</bool>
                 </property>
                 <item>
                  <property name="text">
@@ -2227,13 +2225,17 @@
                 </item>
                </widget>
               </item>
-              <item row="4" column="1">
-               <widget class="QSpinBox" name="FrameRate_DH">
-                <property name="maximum">
-                 <number>1000</number>
+              <item row="3" column="4">
+               <widget class="QLabel" name="label_39">
+                <property name="text">
+                 <string>TriggerDelay(ms)</string>
                 </property>
-                <property name="value">
-                 <number>800</number>
+               </widget>
+              </item>
+              <item row="3" column="5">
+               <widget class="QDoubleSpinBox" name="TriggerDelay_DH">
+                <property name="decimals">
+                 <number>3</number>
                 </property>
                </widget>
               </item>
@@ -2995,7 +2997,17 @@
               <widget class="QComboBox" name="SyncDO">
                <item>
                 <property name="text">
-                 <string>port0/line0:7</string>
+                 <string>port0/line0</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>port0/line1</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>port0/line2</string>
                 </property>
                </item>
               </widget>
@@ -3012,8 +3024,8 @@
                 <string>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
 &lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
 p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'SimSun'; font-size:15pt; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;AODO&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'MS Shell Dlg 2'; font-size:15pt; font-weight:400; font-style:normal;&quot;&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'SimSun';&quot;&gt;AODO&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                </property>
               </widget>
              </item>
@@ -3152,7 +3164,7 @@ p, li { white-space: pre-wrap; }
      <x>0</x>
      <y>0</y>
      <width>1658</width>
-     <height>33</height>
+     <height>34</height>
     </rect>
    </property>
    <property name="font">
