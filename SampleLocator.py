@@ -223,8 +223,8 @@ class UnifiedSampleScanner(QDialog):
                         
                         self.generated_locations.append({
                             'sample_id': sample_id,
-                            'x': (px1 + fov_w_px/2) * self.pixel_size_mm, 
-                            'y': (py1 + fov_h_px/2) * self.pixel_size_mm
+                            'x': round((px1 + fov_w_px/2) * self.pixel_size_mm,3), 
+                            'y': round((py1 + fov_h_px/2) * self.pixel_size_mm,3)
                         })
 
         self.result_overlay = fov_img

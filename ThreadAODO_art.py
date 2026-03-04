@@ -183,7 +183,7 @@ class AODOThread(QThread):
             self.DOwaveform = self.DOwaveform * pow(2,7)
         pixmap = LinePlot(self.AOwaveform,self.DOwaveform, np.min([np.min(self.AOwaveform),0]), np.max([np.max(self.AOwaveform),1]))
         # clear content on the waveformLabel
-        self.ui.XwaveformLabel.clear()
+        # self.ui.XwaveformLabel.clear()
         # update iamge on the waveformLabel
         self.ui.XwaveformLabel.setPixmap(pixmap)
         if not (SIM or self.SIM): # if not running simulation mode

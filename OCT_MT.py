@@ -168,7 +168,6 @@ class GUI(MainWindow):
         self.ui.PauseButton.clicked.connect(self.Pause_task)
         self.ui.CenterGalvo.clicked.connect(self.CenterGalvo)
         self.ui.SampleLocateButton.clicked.connect(self.LocateSample)
-        
         # set window length for FFT
         # self.ui.PostSamples.valueChanged.connect(self.update_Dispersion)
         # self.ui.PreSamples.valueChanged.connect(self.update_Dispersion)
@@ -278,7 +277,7 @@ class GUI(MainWindow):
             # print(self.sample_centers)
         an_action = WeaverAction('PlateScan', args = [self.FOV_locations, self.sample_centers])
         WeaverQueue.put(an_action)
-        
+
     def InitStages(self):
         an_action = AODOAction('Init')
         AODOQueue.put(an_action)

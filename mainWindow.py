@@ -15,6 +15,7 @@ import numpy as np
 from Actions import *
 from Generaic_functions import *
 import traceback
+from InteractiveWidget import InteractiveMosaicWidget
 # system magnification with 10X objective
 
 global Magnification10X
@@ -100,7 +101,22 @@ class MainWindow(QMainWindow):
         self.setStageMinMax()
         self.Calculate_CameraWidth_settings()
         self.Calculate_Galvo_settings()
+        ##################### Swap the old label for the new widget in your layout
+        # 1. Initialize the interactive widget 
+        # We attach it directly to the existing self.ui container
+        self.ui.mosaic_viewer = InteractiveMosaicWidget(self.ui.XYplane.parent())
         
+        # 2. Replace the static QLabel in the layout
+        # This ensures the new widget appears exactly where XYplane was designed
+        layout = self.ui.XYplane.parentWidget().layout()
+        layout.replaceWidget(self.ui.XYplane, self.ui.mosaic_viewer)
+        
+        # 3. Clean up the old reference
+        self.ui.XYplane.hide()
+        
+        # 4. (Optional) If you want ThreadDnS to keep using the old name 'XYplane' 
+        # to avoid changing too much code, just reassign it:
+        self.ui.XYplane = self.ui.mosaic_viewer
         #################### load configuration settings
         
         # self.Update_laser()

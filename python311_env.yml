@@ -11,6 +11,7 @@ dependencies:
   - tifffile
   - imagecodecs
   - matplotlib
+  - shapely
   - pip
   - pip:
       # Optional GPU package, adjust CUDA version if needed

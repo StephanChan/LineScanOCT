@@ -16,6 +16,8 @@ import os
 import matplotlib.pyplot as plt
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtCore import Qt
+from matplotlib.path import Path
+from shapely.geometry import Polygon # Shapely is best for intersection math
 # from scipy.signal import hilbert
 import datetime
 import cv2
@@ -59,7 +61,7 @@ class WeaverThread(QThread):
                         os.mkdir(self.ui.DIR.toPlainText()+'/aip')
                     # if not os.path.exists(self.ui.DIR.toPlainText()+'/surf'):
                     #     os.mkdir(self.ui.DIR.toPlainText()+'/surf')
-                    self.PlateScan(self.item.args)
+                    message = self.PlateScan(self.item.args)
                     # TODO: take an image, manually find tissue region, generate scan pattern
                     # for each scan region:
                         # do fast scan to identify tissue area
@@ -75,7 +77,6 @@ class WeaverThread(QThread):
                     #     self.InitMemory()
                     #     message = self.Mosaic()
                     # self.ui.PrintOut.append(message)
-                    message = 'PlateScan success'
                     self.log.write(message)
 
                 elif self.item.action == 'ZstageRepeatibility':
@@ -343,9 +344,26 @@ class WeaverThread(QThread):
             while not self.ui.NextSampleButton.isChecked():
                 time.sleep(1)
                 if self.ui.RepeatSampleButton.isChecked():
+                    self.process_mosaic_correction(isample['sample_id'])
+                    # 1. Remove all old entries matching this sample_id
+                    # We keep everything that DOES NOT match the ID we are updating
+                    lower_id_locations = [loc for loc in self.FOV_locations 
+                                           if loc.get('sample_id') < isample['sample_id']]
+                    
+                    higher_id_locations = [loc for loc in self.FOV_locations 
+                                           if loc.get('sample_id') > isample['sample_id']]
+                
+                    # 2. Combine them back together
+                    self.FOV_locations = lower_id_locations + self.CurrentSampleLocations + higher_id_locations
+                    
+                    # print(self.FOV_locations)
+                    
                     self.iterate_FOVs(isample)
                     self.ui.RepeatSampleButton.setChecked(False)
-                
+            self.ui.NextSampleButton.setChecked(False)
+        
+        message = 'PlateScan successfully finished'
+        return(message)
             # plt.figure()
             # plt.imshow(SampleMosaic)
             # plt.show()
@@ -353,16 +371,17 @@ class WeaverThread(QThread):
             
     def iterate_FOVs(self, isample):
         # User stopped continuousBline, then we do Mosaic scan for this sample
-        locations = [ii for ii in self.FOV_locations if ii['sample_id'] == isample['sample_id']]
+        self.CurrentSampleLocations = [ii for ii in self.FOV_locations if ii['sample_id'] == isample['sample_id']]
+        # print(self.CurrentSampleLocations)
         Xpixels = self.ui.AlinesPerBline.value()//self.ui.AlineAVG.value()
         Ypixels = self.ui.Ypixels.value()
         XFOV = self.ui.XLength.value()
         YFOV = self.ui.YLength.value()
-        an_action = DnSAction('Init_Mosaic', args = [locations, (Xpixels, Ypixels), (XFOV, YFOV)]) 
+        an_action = DnSAction('Init_Mosaic', args = [self.CurrentSampleLocations, (Xpixels, Ypixels), (XFOV, YFOV)]) 
         self.DnSQueue.put(an_action)
         self.ui.ACQMode.setCurrentText('PlateScan')
         self.InitMemory()
-        for iFOV in locations:
+        for iFOV in self.CurrentSampleLocations:
             # print(iFOV['x'],iFOV['y'])
             # move to position of this FOV
             self.ui.XPosition.setValue(iFOV['x'])
@@ -384,6 +403,137 @@ class WeaverThread(QThread):
         # SampleMosaic = self.MosaicQueue.get()
         # # update locations for this sample if button clicked
    
+    def process_mosaic_correction(self, sample_id):
+        # 1. Get drawn polygons from the interactive widget (ensure they are finished)
+        self.ui.mosaic_viewer.finish_region()
+        new_polygons = self.ui.mosaic_viewer.polygons 
+        
+        if not new_polygons:
+            print("No regions drawn on mosaic.")
+            return
+        
+        # 2. Define the anchor (top-left of the first FOV center)
+        xs = [p['x'] for p in self.CurrentSampleLocations]
+        ys = [p['y'] for p in self.CurrentSampleLocations]
+        
+        # The mosaic [0,0] pixel corresponds to the center of the min_x/min_y FOV 
+        # minus half the FOV physical size.
+        XFOV = self.ui.XLength.value()
+        YFOV = self.ui.YLength.value()
+        anchor_x = min(xs) - (XFOV / 2)
+        anchor_y = min(ys) - (YFOV / 2)
+        
+        # 3. Calculate separate pixel sizes for X and Y
+        # Based on your StepSize (resolution)
+        px_w_mm = self.ui.XStepSize.value() / 1000.0
+        px_h_mm = self.ui.YStepSize.value() / 1000.0
+    
+        # 4. Map pixel coordinates to microscope MM coordinates
+        corrected_mm_polys = []
+        for poly in new_polygons:
+            mm_poly = [
+                (anchor_x + p[0] * px_w_mm, anchor_y + p[1] * px_h_mm) 
+                for p in poly
+            ]
+            corrected_mm_polys.append(mm_poly)
+        
+        # 5. Generate and Visualize
+        self.generate_new_scan_grid(sample_id, corrected_mm_polys, new_polygons)
+        print("New corrected regions ready for scanning.")
+    
+    def generate_new_scan_grid(self, sample_id, mm_polygons, pixel_polygons):
+        
+        XFOV = self.ui.XLength.value()
+        YFOV = self.ui.YLength.value()
+        px_w_mm = self.ui.XStepSize.value() / 1000.0
+        px_h_mm = self.ui.YStepSize.value() / 1000.0
+
+        new_fov_locations = []
+        
+        # --- 1. Generate FOVs (Corner-Check Overlap Logic) ---
+        for mm_poly in mm_polygons:
+            poly_path = Path(mm_poly)
+            p_xs, p_ys = zip(*mm_poly)
+            
+            min_x, max_x = min(p_xs), max(p_xs)
+            min_y, max_y = min(p_ys), max(p_ys)
+
+            # Grid of centers
+            x_range = np.arange(min_x + XFOV/2, max_x + XFOV, XFOV)
+            y_range = np.arange(min_y + YFOV/2, max_y + YFOV, YFOV)
+
+            for cx in x_range:
+                for cy in y_range:
+                    # Test Center + 4 Corners to simulate overlap detection
+                    test_points = [
+                        (cx, cy),
+                        (cx - XFOV/2, cy - YFOV/2), (cx + XFOV/2, cy - YFOV/2),
+                        (cx - XFOV/2, cy + YFOV/2), (cx + XFOV/2, cy + YFOV/2)
+                    ]
+                    
+                    if any(poly_path.contains_points(test_points)):
+                        new_fov_locations.append({
+                            'sample_id': sample_id, 
+                            'x': round(cx, 3), 
+                            'y': round(cy, 3)
+                        })
+
+        # --- 2. Setup Visualization Canvas ---
+        mos_h, mos_w = self.ui.mosaic_viewer.adj.shape
+        all_pts = np.concatenate(pixel_polygons)
+        min_p_x, min_p_y = np.min(all_pts, axis=0)
+        max_p_x, max_p_y = np.max(all_pts, axis=0)
+
+        canvas_x1, canvas_y1 = int(min(0, min_p_x)), int(min(0, min_p_y))
+        canvas_x2, canvas_y2 = int(max(mos_w, max_p_x)), int(max(mos_h, max_p_y))
+        canvas_w, canvas_h = canvas_x2 - canvas_x1, canvas_y2 - canvas_y1
+
+        vis_img = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+        offset_x, offset_y = -canvas_x1, -canvas_y1
+        
+        # Background Mosaic
+        vis_img[offset_y:offset_y+mos_h, offset_x:offset_x+mos_w] = \
+            cv2.cvtColor(self.ui.mosaic_viewer.adj, cv2.COLOR_GRAY2BGR)
+
+        # Mapping constants
+        xs_orig = [p['x'] for p in self.CurrentSampleLocations]
+        ys_orig = [p['y'] for p in self.CurrentSampleLocations]
+        v_anchor_x = min(xs_orig) - (XFOV / 2)
+        v_anchor_y = min(ys_orig) - (YFOV / 2)
+
+        # Draw Green FOVs
+        for fov in new_fov_locations:
+            tl_x = int((fov['x'] - XFOV/2 - v_anchor_x) / px_w_mm) + offset_x
+            tl_y = int((fov['y'] - YFOV/2 - v_anchor_y) / px_h_mm) + offset_y
+            br_x = int((fov['x'] + XFOV/2 - v_anchor_x) / px_w_mm) + offset_x
+            br_y = int((fov['y'] + YFOV/2 - v_anchor_y) / px_h_mm) + offset_y
+            cv2.rectangle(vis_img, (tl_x, tl_y), (br_x, br_y), (0, 255, 0), 1)
+
+        # Draw Blue Polygons
+        for p_poly in pixel_polygons:
+            pts = (np.array(p_poly) + [offset_x, offset_y]).astype(np.int32).reshape((-1, 1, 2))
+            cv2.polylines(vis_img, [pts], True, (255, 0, 0), 2)
+
+        # --- 3. DISPLAY ON self.ui.MosaicLabel ---
+        # Convert BGR (OpenCV) to RGB (Qt)
+        rgb_img = cv2.cvtColor(vis_img, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb_img.shape
+        bytes_per_line = ch * w
+        
+        qt_img = QImage(rgb_img.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        
+        # Scale the pixmap to fit the Label size while keeping aspect ratio
+        pixmap = QPixmap.fromImage(qt_img)
+        scaled_pixmap = pixmap.scaled(self.ui.MosaicLabel.width(), 
+                                      self.ui.MosaicLabel.height(), 
+                                      Qt.KeepAspectRatio, 
+                                      Qt.SmoothTransformation)
+        
+        self.ui.MosaicLabel.setPixmap(scaled_pixmap)
+        
+        # Save locations
+        self.CurrentSampleLocations = new_fov_locations
+        print(f"Generated {len(new_fov_locations)} FOVs. Display updated.")
     
     def identify_agar(self, cscan, stripes, cscans):
         value = np.mean(cscan,1)

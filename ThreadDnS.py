@@ -308,7 +308,7 @@ class DnSThread(QThread):
         # 3. Initialize/Overwrite the active mosaic buffer
         mw_px = num_cols * fw_px
         mh_px = num_rows * fh_px
-        self.SampleMosaic = np.zeros((mh_px, mw_px), dtype=np.float32)
+        self.SampleMosaic = np.ones((mh_px, mw_px), dtype=np.float32)*10
         # print(self.SampleMosaic.shape)
         # Store these for use in Process_Mosaic
         self.fw_mm, self.fh_mm = fw_mm, fh_mm
@@ -415,25 +415,24 @@ class DnSThread(QThread):
                     if self.ui.DynCheckBox.isChecked():
                         pixmap = RGBImagePlot(matrix1=self.Bline, matrix2=self.DynBline, m=ym, M=yM)
                         self.ui.XZplane.setPixmap(pixmap)
-                        pixmap = RGBImagePlot(matrix1=self.AIP, matrix2=self.Dyn, m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
-                        self.ui.XYplane.setPixmap(pixmap)
+                        self.ui.mosaic_viewer.set_image(self.AIP, self.ui.Intmin.value(), self.ui.Intmax.value())
+                        # pixmap = RGBImagePlot(matrix1=self.AIP, matrix2=self.Dyn, m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
+                        # self.ui.XYplane.setPixmap(pixmap)
                         
                     else:
                         pixmap = RGBImagePlot(matrix1=self.Bline, m=ym, M=yM)
                         self.ui.XZplane.setPixmap(pixmap)
-                        pixmap = RGBImagePlot(matrix1=self.AIP, m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
-                        self.ui.XYplane.setPixmap(pixmap)
+                        self.ui.mosaic_viewer.set_image(self.AIP, self.ui.Intmin.value(), self.ui.Intmax.value())
+                        # pixmap = RGBImagePlot(matrix1=self.AIP, m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
+                        # self.ui.XYplane.setPixmap(pixmap)
                 except Exception as error:
                     print(error)
             elif self.ui.ACQMode.currentText() in ['PlateScan']:
                 try:
-                    pixmap = RGBImagePlot(matrix1=self.Bline, m=ym, M=yM)
-                    self.ui.XZplane.setPixmap(pixmap)
-                    # print('Bline intensity:', self.Bline[100,100:105])
-                    pixmap = RGBImagePlot(matrix1=self.SampleMosaic, m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
-                    self.ui.XYplane.setPixmap(pixmap)
-                except:
-                    pass
+                    # The thread now talks to the interactive widget instead of a label
+                    self.ui.mosaic_viewer.set_image(self.SampleMosaic, self.ui.Intmin.value(), self.ui.Intmax.value())
+                except Exception as error:
+                    print(f"Interactive Display Error: {error}")
 
             # self.XZmax = self.ui.XZmax.value()
             # self.XZmin = self.ui.XZmin.value()
