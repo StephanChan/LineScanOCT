@@ -164,6 +164,12 @@ class GUI(MainWindow):
         # if use_maya:
         #     self.addMaya()
         self.log = LOG(self.ui)
+        
+        self.FOV_locations = []
+        self.sample_centers = []
+        self.raw_img = []
+        self.pixel_polygons = []
+        
         self.ui.RunButton.clicked.connect(self.run_task)
         self.ui.PauseButton.clicked.connect(self.Pause_task)
         self.ui.CenterGalvo.clicked.connect(self.CenterGalvo)
@@ -259,23 +265,28 @@ class GUI(MainWindow):
                 WeaverQueue.put(an_action)
             else:
                 self.Stop_task()
-        elif self.ui.ACQMode.currentText() in ['FiniteAline','FiniteBline','FiniteCscan','PlateScan']:
+        elif self.ui.ACQMode.currentText() in ['FiniteAline','FiniteBline','FiniteCscan','PlatePreScan', 'PlateScan']:
             if self.ui.RunButton.isChecked():
                 self.ui.RunButton.setText('Stop')
                 self.ui.RunButton.setEnabled(False)
                 self.ui.PauseButton.setEnabled(False)
-                an_action = WeaverAction(self.ui.ACQMode.currentText())
+                if self.ui.ACQMode.currentText() in ['PlatePreScan', 'PlateScan']:
+                    an_action = WeaverAction(self.ui.ACQMode.currentText(), args = [self.FOV_locations, self.sample_centers, self.raw_img, self.pixel_polygons])
+                else:
+                    an_action = WeaverAction(self.ui.ACQMode.currentText(), args = [self.FOV_locations, self.sample_centers, self.raw_img, self.pixel_polygons])
                 WeaverQueue.put(an_action)
         
     def LocateSample(self):
         self.XHome()
         self.YHome()
-        self.scanner = UnifiedSampleScanner(self.ui.DIR.toPlainText(),fov_w_mm = self.ui.XLength.value(),fov_h_mm = self.ui.YLength.value())
+        self.scanner = UnifiedSampleScanner(self.ui.DIR.toPlainText(),fov_w_mm = self.ui.XLength.value(),fov_h_mm = self.ui.YLength.value(), current_zpos = self.ui.ZPosition.value())
         if self.scanner.exec_(): 
             self.FOV_locations = self.scanner.generated_locations
             self.sample_centers = self.scanner.sample_centers
+            self.raw_img = self.scanner.final_raw_img
+            self.pixel_polygons = self.scanner.final_polygons
             # print(self.sample_centers)
-        an_action = WeaverAction('PlateScan', args = [self.FOV_locations, self.sample_centers])
+        an_action = WeaverAction('PlatePreScan', args = [self.FOV_locations, self.sample_centers, self.raw_img, self.pixel_polygons])
         WeaverQueue.put(an_action)
 
     def InitStages(self):

@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>1658</width>
-    <height>907</height>
+    <height>1018</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -16,7 +16,7 @@
   <widget class="QWidget" name="centralwidget">
    <layout class="QGridLayout" name="gridLayout_14">
     <item row="0" column="0">
-     <layout class="QGridLayout" name="gridLayout">
+     <layout class="QGridLayout" name="gridLayout" rowstretch="1,5,2" columnstretch="0,0,0,0,0,0,0,0,0,0,0">
       <property name="verticalSpacing">
        <number>6</number>
       </property>
@@ -133,7 +133,7 @@
        <widget class="QPushButton" name="RunButton">
         <property name="minimumSize">
          <size>
-          <width>200</width>
+          <width>300</width>
           <height>0</height>
          </size>
         </property>
@@ -157,7 +157,7 @@
        </widget>
       </item>
       <item row="1" column="0" colspan="11">
-       <layout class="QHBoxLayout" name="horizontalLayout">
+       <layout class="QHBoxLayout" name="horizontalLayout" stretch="1,1">
         <property name="spacing">
          <number>1</number>
         </property>
@@ -186,6 +186,12 @@
             </item>
             <item>
              <widget class="QLabel" name="XZplane">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
               <property name="minimumSize">
                <size>
                 <width>200</width>
@@ -194,8 +200,8 @@
               </property>
               <property name="maximumSize">
                <size>
-                <width>2000</width>
-                <height>500</height>
+                <width>20000</width>
+                <height>50000</height>
                </size>
               </property>
               <property name="font">
@@ -323,6 +329,12 @@
           </property>
           <item>
            <widget class="QLabel" name="XYplane">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
             <property name="minimumSize">
              <size>
               <width>300</width>
@@ -331,8 +343,8 @@
             </property>
             <property name="maximumSize">
              <size>
-              <width>1000</width>
-              <height>600</height>
+              <width>100000</width>
+              <height>60000</height>
              </size>
             </property>
             <property name="font">
@@ -587,6 +599,12 @@
                <property name="enabled">
                 <bool>true</bool>
                </property>
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
                <property name="maximumSize">
                 <size>
                  <width>400</width>
@@ -746,6 +764,12 @@
              </item>
              <item row="1" column="5">
               <widget class="QDoubleSpinBox" name="Yoffsetlength">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
                <property name="minimum">
                 <double>-10.000000000000000</double>
                </property>
@@ -852,6 +876,11 @@
             <item>
              <property name="text">
               <string>ContinuousCscan</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>PlatePreScan</string>
              </property>
             </item>
             <item>
@@ -1474,16 +1503,22 @@
          <layout class="QHBoxLayout" name="horizontalLayout_3">
           <item>
            <widget class="QLabel" name="MosaicLabel">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
             <property name="minimumSize">
              <size>
-              <width>600</width>
-              <height>200</height>
+              <width>0</width>
+              <height>0</height>
              </size>
             </property>
             <property name="maximumSize">
              <size>
-              <width>2000</width>
-              <height>1000</height>
+              <width>20000</width>
+              <height>20000</height>
              </size>
             </property>
             <property name="text">
@@ -1511,7 +1546,7 @@
            <widget class="QPushButton" name="RepeatSampleButton">
             <property name="minimumSize">
              <size>
-              <width>0</width>
+              <width>150</width>
               <height>50</height>
              </size>
             </property>
@@ -1540,7 +1575,7 @@
            <widget class="QPushButton" name="NextSampleButton">
             <property name="minimumSize">
              <size>
-              <width>0</width>
+              <width>150</width>
               <height>50</height>
              </size>
             </property>

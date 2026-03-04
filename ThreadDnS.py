@@ -25,6 +25,8 @@ class DnSThread(QThread):
         super().__init__()
         self.SampleDynamic= []
         self.SampleMosaic= []
+        self.AIP = []
+        self.Dyn = []
         self.sliceNum = 0
         self.tileNum = 1
         self.AlineNum = 1
@@ -186,6 +188,7 @@ class DnSThread(QThread):
 
             
     def Process_Cscan_Dynamic(self, data, dynamic):
+        print(dynamic.shape)
         Zpixels, Xpixels, Yrpt = self.get_FOV_size()
         if Zpixels != data.shape[2]:
             Zpixels = data.shape[2]
@@ -203,20 +206,21 @@ class DnSThread(QThread):
 
         self.Bline = np.transpose(Bline)
         self.DynBline = np.transpose(dynamic)
+        print('Bline:', self.Bline[Zpixels//2:Zpixels//2+5, Xpixels//2])
+        print('DynBline:', self.DynBline[Zpixels//2:Zpixels//2+5, Xpixels//2])
         
         if len(self.AIP)==0:
             self.AIP = np.zeros([Ypixels, Xpixels])
-        if any(dynamic):
+        if len(dynamic)>0:
             if len(self.Dyn)==0:
                 self.Dyn = np.zeros([Ypixels, Xpixels])
                 
         # print(Bline.shape, self.AIP.shape)
         print('Ypixel: ', self.DynamicBlineIdx)
         self.AIP[self.DynamicBlineIdx, :] = np.mean(Bline,1)
-        if any(dynamic):
+        if len(dynamic)>0:
             self.Dyn[self.DynamicBlineIdx, :] = np.mean(dynamic,1)
         self.DynamicBlineIdx = self.DynamicBlineIdx + 1
-        
         
         if self.ui.Save.isChecked():
             self.Save(Data = data, Dynamic = dynamic)
@@ -241,9 +245,8 @@ class DnSThread(QThread):
             Cscan = np.mean(Cscan,2)
             Xpixels = Xpixels//self.ui.AlineAVG.value()
         # print(data[10,100,50:60])
+        self.Bline = np.transpose(Cscan[Ypixels//2,:,:]).copy()# has to be first index, otherwise the memory space is not continuous
         self.AIP = np.mean(Cscan,2)
-        self.Bline = np.transpose(Cscan[0,:,:]).copy()# has to be first index, otherwise the memory space is not continuous
-
         
         if self.ui.Save.isChecked():
             self.Save(Data = data, Raw = raw)
@@ -385,6 +388,8 @@ class DnSThread(QThread):
     def Update_contrast(self):
             ym=self.ui.XZmin.value()
             yM=self.ui.XZmax.value()
+            XStepSize = self.ui.XStepSize.value()
+            YStepSize = self.ui.YStepSize.value()
         # if self.ui.XZmin.value() != self.XZmin or self.ui.XZmax.value() != self.XZmax:
             if self.ui.ACQMode.currentText() in ['FiniteAline', 'ContinuousAline']:
                 try:
@@ -415,22 +420,26 @@ class DnSThread(QThread):
                     if self.ui.DynCheckBox.isChecked():
                         pixmap = RGBImagePlot(matrix1=self.Bline, matrix2=self.DynBline, m=ym, M=yM)
                         self.ui.XZplane.setPixmap(pixmap)
-                        self.ui.mosaic_viewer.set_image(self.AIP, self.ui.Intmin.value(), self.ui.Intmax.value())
+                        tmp = np.tile(self.AIP[:, :, np.newaxis], (1, 1, 3))
+                        tmp[:,:,0] = tmp[:,:,0] + self.Dyn
+                        self.ui.mosaic_viewer.set_image(tmp, self.ui.Intmin.value(), self.ui.Intmax.value(), XStepSize, YStepSize)
                         # pixmap = RGBImagePlot(matrix1=self.AIP, matrix2=self.Dyn, m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
                         # self.ui.XYplane.setPixmap(pixmap)
                         
                     else:
                         pixmap = RGBImagePlot(matrix1=self.Bline, m=ym, M=yM)
                         self.ui.XZplane.setPixmap(pixmap)
-                        self.ui.mosaic_viewer.set_image(self.AIP, self.ui.Intmin.value(), self.ui.Intmax.value())
+                        self.ui.mosaic_viewer.set_image(self.AIP, self.ui.Intmin.value(), self.ui.Intmax.value(), XStepSize, YStepSize)
                         # pixmap = RGBImagePlot(matrix1=self.AIP, m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
                         # self.ui.XYplane.setPixmap(pixmap)
                 except Exception as error:
                     print(error)
-            elif self.ui.ACQMode.currentText() in ['PlateScan']:
+            elif self.ui.ACQMode.currentText() in ['PlateScan','PlatePreScan']:
                 try:
+                    pixmap = RGBImagePlot(matrix1=self.Bline, m=ym, M=yM)
+                    self.ui.XZplane.setPixmap(pixmap)
                     # The thread now talks to the interactive widget instead of a label
-                    self.ui.mosaic_viewer.set_image(self.SampleMosaic, self.ui.Intmin.value(), self.ui.Intmax.value())
+                    self.ui.mosaic_viewer.set_image(self.SampleMosaic, self.ui.Intmin.value(), self.ui.Intmax.value(), XStepSize, YStepSize)
                 except Exception as error:
                     print(f"Interactive Display Error: {error}")
 

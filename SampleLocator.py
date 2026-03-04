@@ -4,16 +4,18 @@ import numpy as np
 import tifffile as tiff
 from datetime import datetime
 from PyQt5.QtWidgets import QMessageBox, QApplication, QDialog
-from PyQt5.QtGui import QPixmap, QImage, QPainter
-from PyQt5.QtCore import Qt, QTimer, QPoint, QEvent
+from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor
+from PyQt5.QtCore import Qt, QTimer, QPoint, QEvent, QRectF
+from shapely.geometry import Polygon
 
 # Ensure SampleLocatorUI.py is in the same directory
 from SampleLocatorUI import Ui_Form
 
 class UnifiedSampleScanner(QDialog):
-    def __init__(self, save_dir=r'D:\LineScanOCT',fov_w_mm = 2.0,fov_h_mm = 1.0):
+    def __init__(self, save_dir=r'D:\LineScanOCT', fov_w_mm=2.0, fov_h_mm=1.0, current_zpos = 0):
         super().__init__()
         self.save_dir = save_dir
+        self.current_zpos = current_zpos
         os.makedirs(self.save_dir, exist_ok=True)
         
         self.ui = Ui_Form()
@@ -29,19 +31,25 @@ class UnifiedSampleScanner(QDialog):
 
         # State Variables
         self.img_bgr = None
+        self.qpixmap_raw = None 
         self.polygons = []         
         self.current_polygon = []   
         self.display_scale = 1.0    
-        self.generated_locations = [] # List of FOVs: {'x', 'y', 'sample_id'}
-        self.sample_centers = []      # List of Sample Centers: {'x', 'y', 'sample_id'}
-        self.result_overlay = None  
+        self.generated_locations = [] 
+        self.sample_centers = []      
+        self.is_finalized = False
         
+        # Data to be returned to Main GUI
+        self.final_raw_img = None
+        self.final_polygons = []
+
         self.is_dragging = False
         self.last_mouse_pos = QPoint()
         self.pan_x = 0 
         self.pan_y = 0
         
         self.img_bgr = self._capture_and_save_raw()
+        self._prepare_pixmap()
         
         self.ui.pic_window.setMouseTracking(True)
         self.ui.pic_window.installEventFilter(self) 
@@ -50,6 +58,15 @@ class UnifiedSampleScanner(QDialog):
         self.ui.finishplate.clicked.connect(self.process_generate_mosaic)
 
         QTimer.singleShot(100, self.reset_view)
+
+    def _prepare_pixmap(self):
+        """Converts CV2 image to QPixmap once to maintain high resolution and memory safety."""
+        if self.img_bgr is None: return
+        h, w = self.img_bgr.shape[:2]
+        rgb = cv2.cvtColor(self.img_bgr, cv2.COLOR_BGR2RGB)
+        # Using .copy() ensures Qt owns the memory, preventing kernel crashes
+        qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
+        self.qpixmap_raw = QPixmap.fromImage(qimg)
 
     def _get_timestamp(self):
         return datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -63,13 +80,12 @@ class UnifiedSampleScanner(QDialog):
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
                 ret, frame = cap.read()
                 if ret:
+                    # Match hardware orientation
                     frame = cv2.rotate(cv2.flip(frame, 1), cv2.ROTATE_90_CLOCKWISE)
                     frame_to_use = frame[630:3670, 180:2160]
             
             if frame_to_use is None:
                 frame_to_use = np.full((3040, 1980, 3), 40, dtype=np.uint8)
-                for i in range(3):
-                    cv2.circle(frame_to_use, (500 + i*500, 1500), 120, (100, 100, 100), -1)
 
             ts = self._get_timestamp()
             tiff.imwrite(os.path.join(self.save_dir, f"RawCapture_{ts}.tif"), frame_to_use)
@@ -84,24 +100,77 @@ class UnifiedSampleScanner(QDialog):
         self.pan_x, self.pan_y = 0, 0
         self.update_display()
 
+    def update_display(self):
+        """High-quality rendering using QPainter and Antialiasing."""
+        if self.qpixmap_raw is None: return
+        
+        w, h = self.qpixmap_raw.width(), self.qpixmap_raw.height()
+        sw, sh = int(w * self.display_scale), int(h * self.display_scale)
+        
+        final_buffer = QPixmap(self.ui.pic_window.size())
+        final_buffer.fill(Qt.black)
+        
+        painter = QPainter(final_buffer)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+
+        dx = (self.ui.pic_window.width() - sw) / 2 + (self.pan_x * self.display_scale)
+        dy = (self.ui.pic_window.height() - sh) / 2 + (self.pan_y * self.display_scale)
+        
+        # Draw Background
+        painter.drawPixmap(int(dx), int(dy), sw, sh, self.qpixmap_raw)
+
+        def to_ui(pt):
+            return int(dx + pt[0] * self.display_scale), int(dy + pt[1] * self.display_scale)
+
+        # Draw Polygons (Green)
+        pen_poly = QPen(QColor(0, 255, 0), 2)
+        painter.setPen(pen_poly)
+        for poly in self.polygons:
+            if len(poly) > 1:
+                for i in range(len(poly)):
+                    p1 = to_ui(poly[i])
+                    p2 = to_ui(poly[(i+1)%len(poly)])
+                    painter.drawLine(p1[0], p1[1], p2[0], p2[1])
+
+        # Draw Current drawing (Red)
+        painter.setPen(QPen(QColor(255, 0, 0), 2))
+        for i in range(len(self.current_polygon)):
+            p = to_ui(self.current_polygon[i])
+            painter.drawEllipse(QPoint(p[0], p[1]), 3, 3)
+            if i > 0:
+                p_prev = to_ui(self.current_polygon[i-1])
+                painter.drawLine(p_prev[0], p_prev[1], p[0], p[1])
+
+        # Draw FOV Grid if generated (Yellow)
+        if self.is_finalized:
+            painter.setPen(QPen(QColor(255, 255, 0), 1))
+            for loc in self.generated_locations:
+                cx, cy = loc['x'] / self.pixel_size_mm, loc['y'] / self.pixel_size_mm
+                hw, hh = (self.fov_w_mm / 2) / self.pixel_size_mm, (self.fov_h_mm / 2) / self.pixel_size_mm
+                tl = to_ui((cx - hw, cy - hh))
+                br = to_ui((cx + hw, cy + hh))
+                painter.drawRect(QRectF(tl[0], tl[1], br[0]-tl[0], br[1]-tl[1]))
+
+        painter.end()
+        self.ui.pic_window.setPixmap(final_buffer)
+
     def eventFilter(self, source, event):
         if source is self.ui.pic_window and self.img_bgr is not None:
             h, w = self.img_bgr.shape[:2]
-            if event.type() == QEvent.MouseButtonPress:
-                win_w, win_h = self.ui.pic_window.width(), self.ui.pic_window.height()
-                img_display_w = w * self.display_scale
-                img_display_h = h * self.display_scale
-                base_x = (win_w - img_display_w) / 2
-                base_y = (win_h - img_display_h) / 2
-                img_x = (event.pos().x() - base_x) / self.display_scale - self.pan_x
-                img_y = (event.pos().y() - base_y) / self.display_scale - self.pan_y
+            sw, sh = w * self.display_scale, h * self.display_scale
+            dx = (self.ui.pic_window.width() - sw) / 2 + (self.pan_x * self.display_scale)
+            dy = (self.ui.pic_window.height() - sh) / 2 + (self.pan_y * self.display_scale)
 
-                if event.button() == Qt.LeftButton and self.result_overlay is None:
-                    if 0 <= img_x < w and 0 <= img_y < h:
-                        self.current_polygon.append((img_x, img_y))
-                        self.update_display()
+            if event.type() == QEvent.MouseButtonPress:
+                img_x = (event.pos().x() - dx) / self.display_scale
+                img_y = (event.pos().y() - dy) / self.display_scale
+
+                if event.button() == Qt.LeftButton:
+                    self.current_polygon.append((img_x, img_y))
+                    self.update_display()
                     return True
-                elif event.button() == Qt.RightButton and self.result_overlay is None:
+                elif event.button() == Qt.RightButton:
                     if self.current_polygon: self.current_polygon.pop() 
                     elif self.polygons: self.polygons.pop()        
                     self.update_display()
@@ -110,53 +179,23 @@ class UnifiedSampleScanner(QDialog):
                     self.is_dragging = True
                     self.last_mouse_pos = event.pos()
                     return True
-            elif event.type() == QEvent.MouseMove:
-                if self.is_dragging:
-                    delta = event.pos() - self.last_mouse_pos
-                    self.pan_x += delta.x() / self.display_scale
-                    self.pan_y += delta.y() / self.display_scale
-                    self.last_mouse_pos = event.pos()
-                    self.update_display()
-                    return True
-            elif event.type() == QEvent.MouseButtonRelease:
-                if event.button() == Qt.MidButton:
-                    self.is_dragging = False
-                    return True
+            elif event.type() == QEvent.MouseMove and self.is_dragging:
+                delta = event.pos() - self.last_mouse_pos
+                self.pan_x += delta.x() / self.display_scale
+                self.pan_y += delta.y() / self.display_scale
+                self.last_mouse_pos = event.pos()
+                self.update_display()
+                return True
+            elif event.type() == QEvent.MouseButtonRelease and event.button() == Qt.MidButton:
+                self.is_dragging = False
+                return True
             elif event.type() == QEvent.Wheel:
                 self.display_scale *= (1.15 if event.angleDelta().y() > 0 else 0.85)
-                self.display_scale = max(0.01, min(15.0, self.display_scale))
                 self.update_display()
                 return True
         return super().eventFilter(source, event)
 
-    def update_display(self):
-        if self.img_bgr is None: return
-        h, w = self.img_bgr.shape[:2]
-        if self.result_overlay is not None:
-            canvas = cv2.cvtColor(self.result_overlay, cv2.COLOR_BGR2RGB)
-        else:
-            canvas = cv2.cvtColor(self.img_bgr, cv2.COLOR_BGR2RGB)
-            for poly in self.polygons:
-                cv2.polylines(canvas, [np.array(poly, np.int32)], True, (0, 255, 0), 12)
-            for pt in self.current_polygon:
-                cv2.circle(canvas, (int(pt[0]), int(pt[1])), 15, (255, 0, 0), -1)
-            if len(self.current_polygon) > 1:
-                cv2.polylines(canvas, [np.array(self.current_polygon, np.int32)], False, (255, 0, 0), 8)
-
-        qimg = QImage(canvas.data, w, h, 3 * w, QImage.Format_RGB888)
-        full_pixmap = QPixmap.fromImage(qimg)
-        scaled_pixmap = full_pixmap.scaled(int(w * self.display_scale), int(h * self.display_scale), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        final_buffer = QPixmap(self.ui.pic_window.size())
-        final_buffer.fill(Qt.black)
-        painter = QPainter(final_buffer)
-        dx = (self.ui.pic_window.width() - scaled_pixmap.width()) / 2 + (self.pan_x * self.display_scale)
-        dy = (self.ui.pic_window.height() - scaled_pixmap.height()) / 2 + (self.pan_y * self.display_scale)
-        painter.drawPixmap(int(dx), int(dy), scaled_pixmap)
-        painter.end()
-        self.ui.pic_window.setPixmap(final_buffer)
-
     def complete_polygon(self):
-        if self.result_overlay is not None: return 
         if len(self.current_polygon) >= 3:
             self.polygons.append(list(self.current_polygon))
             self.current_polygon = []
@@ -167,97 +206,41 @@ class UnifiedSampleScanner(QDialog):
             QMessageBox.warning(self, "Error", "No regions drawn.")
             return
 
-        ts = self._get_timestamp()
-        h, w = self.img_bgr.shape[:2]
-        mask = np.zeros((h, w), dtype=np.uint8)
-        for poly in self.polygons:
-            cv2.fillPoly(mask, [np.array(poly, np.int32)], 255)
-        
-        fov_img = self.img_bgr.copy()
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Explicitly copy data to return to Main GUI
+        self.final_raw_img = np.copy(self.img_bgr)
+        self.final_polygons = list(self.polygons)
         
         self.generated_locations = []
         self.sample_centers = []
-        
-        fov_w_px = self.fov_w_mm / self.pixel_size_mm
-        fov_h_px = self.fov_h_mm / self.pixel_size_mm
 
-        for idx, cnt in enumerate(contours):
+        for idx, poly_pts in enumerate(self.polygons):
             sample_id = idx + 1 
+            mm_poly_pts = [(p[0] * self.pixel_size_mm, p[1] * self.pixel_size_mm) for p in poly_pts]
+            roi_poly = Polygon(mm_poly_pts)
             
-            # 1. Compute Mass Center (Centroid)
-            M = cv2.moments(cnt)
-            if M["m00"] != 0:
-                cX_px = int(M["m10"] / M["m00"])
-                cY_px = int(M["m01"] / M["m00"])
-            else:
-                x, y, cw, ch = cv2.boundingRect(cnt)
-                cX_px, cY_px = int(x + cw/2), int(y + ch/2)
-            
-            self.sample_centers.append({
-                'sample_id': sample_id,
-                'x': cX_px * self.pixel_size_mm,
-                'y': cY_px * self.pixel_size_mm
-            })
+            centroid = roi_poly.centroid
+            self.sample_centers.append({'sample_id': sample_id, 'x': centroid.x, 'y': centroid.y, 'z': self.current_zpos})
 
-            # 2. Draw Mass Center as a Red Point on the overlay
-            cv2.circle(fov_img, (cX_px, cY_px), 25, (0, 0, 255), -1)
+            min_x, min_y, max_x, max_y = roi_poly.bounds
+            x_centers = np.arange(min_x + self.fov_w_mm/2 - self.fov_w_mm, max_x + self.fov_w_mm, self.fov_w_mm)
+            y_centers = np.arange(min_y + self.fov_h_mm/2 - self.fov_h_mm, max_y + self.fov_h_mm, self.fov_h_mm)
 
-            # 3. Calculate FOVs for this region
-            x, y, cw, ch = cv2.boundingRect(cnt)
-            cols = int(np.ceil((cw * self.pixel_size_mm) / self.fov_w_mm))
-            rows = int(np.ceil((ch * self.pixel_size_mm) / self.fov_h_mm))
-            
-            # Center the grid of FOVs around the sample mass center
-            start_x_px = cX_px - (cols * fov_w_px) / 2
-            start_y_px = cY_px - (rows * fov_h_px) / 2
-            
-            for r in range(rows):
-                for c in range(cols):
-                    px1, py1 = int(start_x_px + c * fov_w_px), int(start_y_px + r * fov_h_px)
-                    px2, py2 = int(px1 + fov_w_px), int(py1 + fov_h_px)
-                    
-                    # Only add FOVs that overlap with the drawn mask
-                    if np.any(mask[max(0,py1):min(h,py2), max(0,px1):min(w,px2)] > 0):
-                        cv2.rectangle(fov_img, (px1, py1), (px2, py2), (255, 255, 0), 5)
-                        
-                        self.generated_locations.append({
-                            'sample_id': sample_id,
-                            'x': round((px1 + fov_w_px/2) * self.pixel_size_mm,3), 
-                            'y': round((py1 + fov_h_px/2) * self.pixel_size_mm,3)
-                        })
+            for cx in x_centers:
+                for cy in y_centers:
+                    tile_coords = [(cx-self.fov_w_mm/2, cy-self.fov_h_mm/2), (cx+self.fov_w_mm/2, cy-self.fov_h_mm/2),
+                                   (cx+self.fov_w_mm/2, cy+self.fov_h_mm/2), (cx-self.fov_w_mm/2, cy+self.fov_h_mm/2)]
+                    if Polygon(tile_coords).intersects(roi_poly):
+                        self.generated_locations.append({'sample_id': sample_id, 'x': round(cx, 3), 'y': round(cy, 3), 'z': self.current_zpos})
 
-        self.result_overlay = fov_img
-        cv2.imwrite(os.path.join(self.save_dir, f"FOVoverlayed_{ts}.png"), fov_img)
-        
-        # Save CSVs
-        with open(os.path.join(self.save_dir, f"Locations_{ts}.csv"), "w") as f:
-            f.write("sample_id,center_x_mm,center_y_mm\n")
-            for p in self.generated_locations:
-                f.write(f"{p['sample_id']},{p['x']:.3f},{p['y']:.3f}\n")
-        
-        with open(os.path.join(self.save_dir, f"SampleCenters_{ts}.csv"), "w") as f:
-            f.write("sample_id,mass_center_x_mm,mass_center_y_mm\n")
-            for c in self.sample_centers:
-                f.write(f"{c['sample_id']},{c['x']:.3f},{c['y']:.3f}\n")
-
+        self.is_finalized = True
         self.update_display()
-        # Message box and processing logic now occur only once
+        
         QMessageBox.information(self, "Success", f"Mosaic Generated.\n{len(self.sample_centers)} samples found.")
-        # This tells the main GUI that the user finished successfully
         self.accept()
 
 if __name__ == "__main__":
     app = QApplication.instance() or QApplication([])
     scanner = UnifiedSampleScanner()
-    scanner.show()
-    app.exec_()
-    fov_locs, centers = scanner.generated_locations, scanner.sample_centers
-    
-    print("\n--- Sample Mass Centers ---")
-    for c in centers:
-        print(f"Sample {c['sample_id']} Center -> x: {c['x']:.3f} mm, y: {c['y']:.3f} mm")
-        
-    print("\n--- FOV Locations ---")
-    for loc in fov_locs:
-        print(f"Sample {loc['sample_id']} FOV -> x: {loc['x']:.3f} mm, y: {loc['y']:.3f} mm")
+    if scanner.exec_() == QDialog.Accepted:
+        # Access results from scanner.generated_locations, scanner.final_raw_img, etc.
+        print(f"Captured {len(scanner.generated_locations)} FOVs.")

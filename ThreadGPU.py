@@ -225,9 +225,9 @@ class GPUThread(QThread):
             # print('data_CPU shape', self.data_CPU.shape)
             # print('data_CPU:', self.data_CPU[0,0,0:15])
             if self.ui.DynCheckBox.isChecked() and mode in [ 'FiniteBline', 'FiniteCscan']:
-                # Dyn = self.Dynamic_Processing()
+                Dyn = self.Dynamic_Processing()
                 # print('dyn:',Dyn[0,0:5])
-                Dyn = []
+                # Dyn = []
             else:
                 Dyn = []
             t6=time.time()

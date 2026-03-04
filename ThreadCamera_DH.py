@@ -183,7 +183,7 @@ class Camera(QThread):
             self.BlinesPerAcq = self.ui.BlineAVG.value() 
         elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousAline','ContinuousCscan']:
             self.BlinesPerAcq = CONTINUOUS
-        elif self.ui.ACQMode.currentText() in ['FiniteCscan','PlateScan']:
+        elif self.ui.ACQMode.currentText() in ['FiniteCscan','PlateScan','PlatePreScan']:
             self.BlinesPerAcq = self.ui.Ypixels.value() * self.ui.BlineAVG.value()
             
         if self.hcam is not None:
