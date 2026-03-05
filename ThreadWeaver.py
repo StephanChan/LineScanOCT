@@ -164,6 +164,7 @@ class WeaverThread(QThread):
             data_type =  np.uint16
             
         for ii in range(self.memoryCount):
+             print('self.ui.ACQMode.currentText()', self.ui.ACQMode.currentText())
              if self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousAline','FiniteBline', 'FiniteAline']:
                  self.Memory[ii]=np.zeros([self.ui.BlineAVG.value(), AlinesPerBline, samples], dtype = data_type)
                  self.NAcq = 1
