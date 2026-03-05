@@ -15,7 +15,15 @@ def test_camera_settings():
     # 1. Initialize Camera (Using MSMF as in your main code)
     # If 0 doesn't work, try 1 or 2
     cap = cv2.VideoCapture(0, cv2.CAP_MSMF)
+    # 2. Disable Auto Exposure (0.25 is manual, 0.75 is auto for many UVC cameras)
+    # Note: For some MSMF drivers, 1 is manual and 3 is auto.
+    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25) 
     
+    # 3. Set Exposure Value
+    # In OpenCV/Windows, exposure is often measured in powers of 2.
+    # -5 means 2^-5 = 1/32 sec (~31ms)
+    # -7 means 2^-7 = 1/128 sec (~8ms)
+    cap.set(cv2.CAP_PROP_EXPOSURE, 1.0)
     # Set high resolution
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
