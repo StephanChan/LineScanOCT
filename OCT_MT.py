@@ -265,7 +265,7 @@ class GUI(MainWindow):
                 WeaverQueue.put(an_action)
             else:
                 self.Stop_task()
-        elif self.ui.ACQMode.currentText() in ['FiniteAline','FiniteBline','FiniteCscan','PlatePreScan', 'PlateScan', 'WellScan']:
+        elif self.ui.ACQMode.currentText() in ['FiniteAline','FiniteBline','FiniteCscan', 'PlateScan', 'WellScan']:
             if self.ui.RunButton.isChecked():
                 self.ui.RunButton.setText('Stop')
                 # self.ui.RunButton.setEnabled(False)

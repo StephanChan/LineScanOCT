@@ -490,9 +490,7 @@ class WeaverThread(QThread):
         YFOV = self.ui.YLength.value()
         an_action = GPUAction('Init_Mosaic', args = [self.CurrentSampleLocations, (Xpixels, Ypixels), (XFOV, YFOV)]) 
         self.GPUQueue.put(an_action)
-        print('self.ui.ACQMode.currentText()', self.ui.ACQMode.currentText(), mode)
         self.ui.ACQMode.setCurrentText(mode)
-        print('self.ui.ACQMode.currentText()', self.ui.ACQMode.currentText())
         self.InitMemory()
         for iFOV in self.CurrentSampleLocations:
             if self.ui.RunButton.isChecked():
