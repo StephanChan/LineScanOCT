@@ -192,7 +192,7 @@ class DnSThread(QThread):
 
         
         if self.ui.Save.isChecked():
-            self.Save(Data = data, Raw = raw)
+            self.Save(Data = data, Dynamic = dynamic, Raw = raw)
 
             
     def Process_Cscan_Dynamic(self, data, dynamic=[]):
@@ -441,12 +441,12 @@ class DnSThread(QThread):
                 TIFF.imwrite(filename, Data[ii], append=True)
                 
         elif self.ui.ACQMode.currentText() in ['FiniteBline', 'ContinuousBline']:
-            filename = self.ui.DIR.toPlainText()+'/'+self.BlineFilename([Yrpt,Xpixels,Zpixels])
-            for ii in range(Yrpt):
-                TIFF.imwrite(filename, Data[ii], append=True)
-
             if self.ui.DynCheckBox.isChecked():
                 filename = self.ui.DIR.toPlainText()+'/'+self.BlineDynFilename([Yrpt,Xpixels,Zpixels])
+                TIFF.imwrite(filename, Dynamic, append=True)
+                
+            filename = self.ui.DIR.toPlainText()+'/'+self.BlineFilename([Yrpt,Xpixels,Zpixels])
+            for ii in range(Yrpt):
                 TIFF.imwrite(filename, Data[ii], append=True)
                 
         elif self.ui.ACQMode.currentText() in ['ContinuousCscan', 'FiniteCscan']:
@@ -510,8 +510,8 @@ class DnSThread(QThread):
         return filename
     
     def CscanDynFilename(self, shape):
-        DynBlinefilename = 'CscanDynBline-'+str(self.CscanNum)+'-Y'+str(self.ui.Ypixels.value())+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
-        BlineFilename = 'CscanBline-'+str(self.CscanNum)+str(self.DynamicBlineIdx)+'-Yrpt'+str(shape[0])+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
+        DynBlinefilename = 'CscanDyn'+str(self.CscanNum)+'-Y'+str(self.ui.Ypixels.value())+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
+        BlineFilename = 'Cscan'+str(self.CscanNum)+'-Bline-'+str(self.DynamicBlineIdx)+'-Yrpt'+str(shape[0])+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
         return BlineFilename, DynBlinefilename
     
     def BlineFilename(self, shape):
@@ -521,7 +521,6 @@ class DnSThread(QThread):
     
     def BlineDynFilename(self, shape):
         filename = 'BlineDyn-'+str(self.BlineNum)+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
-        self.BlineNum = self.BlineNum + 1
         return filename
     
     def AlineFilename(self, shape):

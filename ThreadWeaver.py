@@ -72,8 +72,8 @@ class WeaverThread(QThread):
                     self.log.write(message)
                 elif self.item.action == 'PlateScan':
                     # make directories
-                    if not os.path.exists(self.ui.DIR.toPlainText()+'/aip'):
-                        os.mkdir(self.ui.DIR.toPlainText()+'/aip')
+                    # if not os.path.exists(self.ui.DIR.toPlainText()+'/aip'):
+                    #     os.mkdir(self.ui.DIR.toPlainText()+'/aip')
                     # if not os.path.exists(self.ui.DIR.toPlainText()+'/surf'):
                     #     os.mkdir(self.ui.DIR.toPlainText()+'/surf')
                     self.load_session_data(self.ui.DIR.toPlainText()+'/Mosaic')
@@ -104,9 +104,9 @@ class WeaverThread(QThread):
                     message = self.WellScan(self.item.args)
                     self.ui.statusbar.showMessage(message)
                     self.log.write(message)
-                    if self.ui.Save.isChecked():
-                        an_action = GPUAction('IncrementSampleID')
-                        self.GPUQueue.put(an_action)
+                    # if self.ui.Save.isChecked():
+                    #     an_action = GPUAction('IncrementSampleID')
+                    #     self.GPUQueue.put(an_action)
 
                 elif self.item.action == 'ZstageRepeatibility':
                     message = self.ZstageRepeatibility()
@@ -341,8 +341,8 @@ class WeaverThread(QThread):
         print(message)
         an_action = GPUAction('display_FFT_actions')
         self.GPUQueue.put(an_action)
-        an_action = DnSAction('display_counts', args = mode)
-        self.DnSQueue.put(an_action)
+        an_action = GPUAction('display_counts', args = mode)
+        self.GPUQueue.put(an_action)
         return message
   
 
@@ -487,8 +487,8 @@ class WeaverThread(QThread):
         Ypixels = self.ui.Ypixels.value()
         XFOV = self.ui.XLength.value()
         YFOV = self.ui.YLength.value()
-        an_action = DnSAction('Init_Mosaic', args = [self.CurrentSampleLocations, (Xpixels, Ypixels), (XFOV, YFOV)]) 
-        self.DnSQueue.put(an_action)
+        an_action = GPUAction('Init_Mosaic', args = [self.CurrentSampleLocations, (Xpixels, Ypixels), (XFOV, YFOV)]) 
+        self.GPUQueue.put(an_action)
         self.ui.ACQMode.setCurrentText(mode)
         self.InitMemory()
         for iFOV in self.CurrentSampleLocations:
