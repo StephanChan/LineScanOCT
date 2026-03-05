@@ -320,6 +320,8 @@ class AODOThread(QThread):
     def DirectMove(self, axis):
         if not (SIM or self.SIM):
             self.Move(axis)
+        else:
+            time.sleep(1)
         message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
         print(message)
         self.log.write(message)
@@ -339,6 +341,8 @@ class AODOThread(QThread):
                 distance = self.ui.Zstagestepsize.value() if Direction == 'UP' else -self.ui.Zstagestepsize.value() 
                 self.ui.ZPosition.setValue(self.ui.Zcurrent.value()+distance)
                 self.Move(axis)
+        else:
+            time.sleep(1)
         message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
         print(message)
         self.log.write(message)
@@ -359,6 +363,8 @@ class AODOThread(QThread):
                 self.ui.ZPosition.setValue(0)
                 self.ui.Zcurrent.setValue(0)
             
+        else:
+            time.sleep(2)
         message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
         print(message)
         self.log.write(message)

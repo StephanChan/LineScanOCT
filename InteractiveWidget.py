@@ -71,7 +71,7 @@ class InteractiveMosaicWidget(QWidget):
         # We stretch the image physically so that pixels appear square in the UI
         if self.pixel_aspect_ratio != 1.0:
             new_h = int(h * self.pixel_aspect_ratio)
-            self.image = QPixmap.fromImage(qt_image).scaled(w, new_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            self.image = QPixmap.fromImage(qt_image).scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
         else:
             self.image = QPixmap.fromImage(qt_image)
 
@@ -180,7 +180,7 @@ class InteractiveMosaicWidget(QWidget):
 
     def finalize_polygon(self):
         """Call this from a button in the GUI to close the current shape."""
-        if len(self.current_polygon) > 2:
+        if len(self.current_polygon) > 3:
             self.polygons.append(list(self.current_polygon))
             self.current_polygon = []
             self.regions_updated.emit(self.polygons)

@@ -23,23 +23,23 @@ import time
 class DnSThread(QThread):
     def __init__(self):
         super().__init__()
-        self.SampleDynamic= []
+        # self.SampleDynamic= []
         self.SampleMosaic= []
         self.AIP = []
         self.Dyn = []
         self.sliceNum = 0
+        self.sampleID = 1
         self.tileNum = 1
+        self.CscanNum = 1
         self.AlineNum = 1
         self.BlineNum = 1
-        self.BlineDynNum = 1
+        
         self.DynamicBlineIdx = 0
-        self.CscanNum = 1
-        self.CscanDynNum = 1
-        self.totalTiles = 0
+        # self.totalTiles = 0
         self.display_actions = 0
         
     def run(self):
-        self.sliceNum = self.ui.SliceN.value()-1
+        self.sliceNum = self.ui.SliceN.value()
         self.XZmax = self.ui.XZmax.value()
         self.XZmin = self.ui.XZmin.value()
         self.Intmax = self.ui.Intmax.value()
@@ -74,6 +74,7 @@ class DnSThread(QThread):
                     
                 elif self.item.action == 'Process_Mosaic':
                     self.Process_Mosaic(self.item.data, self.item.raw, self.item.args)
+                    # if self.DynamicBlineIdx == 0:
                     self.Update_contrast()
                 elif self.item.action == 'Return_mosaic':
                     self.Return_mosaic()
@@ -92,7 +93,7 @@ class DnSThread(QThread):
                 elif self.item.action == 'restart_tilenum':
                     self.restart_tilenum()
                 elif self.item.action == 'change_slice_number':
-                    self.sliceNum = self.ui.SliceN.value()-1
+                    self.sliceNum = self.ui.SliceN.value()
                     self.ui.CuSlice.setValue(self.sliceNum)
                 elif self.item.action == 'agarTile':
                     self.SurfFilename()
@@ -102,7 +103,14 @@ class DnSThread(QThread):
                     self.Init_Mosaic(self.item.args)
                 elif self.item.action == 'Save_mosaic':
                     self.Save_mosaic()
-                    
+                elif self.item.action == 'IncrementSampleID':
+                    self.IncrementSampleID()
+                elif self.item.action == 'IncrementCscanNum':
+                    self.IncrementCscanNum()
+                elif self.item.action == 'IncrementTileNum':
+                    self.IncrementTileNum()
+                elif self.item.action == 'IncrementTime':
+                    self.IncrementTime()
                 else:
                     message = 'Display and save thread is doing something invalid' + self.item.action
                     self.ui.statusbar.showMessage(message)
@@ -187,8 +195,8 @@ class DnSThread(QThread):
             self.Save(Data = data, Raw = raw)
 
             
-    def Process_Cscan_Dynamic(self, data, dynamic):
-        print(dynamic.shape)
+    def Process_Cscan_Dynamic(self, data, dynamic=[]):
+        # print(dynamic.shape)
         Zpixels, Xpixels, Yrpt = self.get_FOV_size()
         if Zpixels != data.shape[2]:
             Zpixels = data.shape[2]
@@ -205,14 +213,16 @@ class DnSThread(QThread):
             Xpixels = Xpixels//self.ui.AlineAVG.value()
 
         self.Bline = np.transpose(Bline)
-        self.DynBline = np.transpose(dynamic)
-        print('Bline:', self.Bline[Zpixels//2:Zpixels//2+5, Xpixels//2])
-        print('DynBline:', self.DynBline[Zpixels//2:Zpixels//2+5, Xpixels//2])
         
-        if len(self.AIP)==0:
+        print('Bline:', self.Bline[Zpixels//2:Zpixels//2+5, Xpixels//2])
+        if len(dynamic)>0:
+            self.DynBline = np.transpose(dynamic)
+            print('DynBline:', self.DynBline[Zpixels//2:Zpixels//2+5, Xpixels//2])
+        
+        if self.DynamicBlineIdx==0:
             self.AIP = np.zeros([Ypixels, Xpixels])
         if len(dynamic)>0:
-            if len(self.Dyn)==0:
+            if self.DynamicBlineIdx==0:
                 self.Dyn = np.zeros([Ypixels, Xpixels])
                 
         # print(Bline.shape, self.AIP.shape)
@@ -222,6 +232,8 @@ class DnSThread(QThread):
             self.Dyn[self.DynamicBlineIdx, :] = np.mean(dynamic,1)
         self.DynamicBlineIdx = self.DynamicBlineIdx + 1
         
+        if self.DynamicBlineIdx == Ypixels:
+            self.DynamicBlineIdx = 0
         if self.ui.Save.isChecked():
             self.Save(Data = data, Dynamic = dynamic)
         
@@ -251,39 +263,6 @@ class DnSThread(QThread):
         if self.ui.Save.isChecked():
             self.Save(Data = data, Raw = raw)
             
-    def Save(self, Data=[], Dynamic=[], Raw=False):
-        Zpixels, Xpixels, Yrpt = self.get_FOV_size(Raw)
-        if Zpixels != Data.shape[2]:
-            Zpixels = Data.shape[2]
-        Ypixels = self.ui.Ypixels.value() * Yrpt
-        
-        if self.ui.ACQMode.currentText() in ['FiniteAline', 'ContinuousAline']:
-            filename = self.ui.DIR.toPlainText()+'/'+self.AlineFilename([Yrpt,Xpixels,Zpixels])
-            for ii in range(Yrpt):
-                TIFF.imwrite(filename, Data[ii], append=True)
-                
-        elif self.ui.ACQMode.currentText() in ['FiniteBline', 'ContinuousBline']:
-            filename = self.ui.DIR.toPlainText()+'/'+self.BlineFilename([Yrpt,Xpixels,Zpixels])
-            for ii in range(Yrpt):
-                TIFF.imwrite(filename, Data[ii], append=True)
-
-            if self.ui.DynCheckBox.isChecked():
-                filename = self.ui.DIR.toPlainText()+'/'+self.BlineDynFilename([Yrpt,Xpixels,Zpixels])
-                TIFF.imwrite(filename, Data[ii], append=True)
-                
-        elif self.ui.ACQMode.currentText() in ['ContinuousCscan', 'FiniteCscan']:
-            if self.ui.DynCheckBox.isChecked():
-                CscanBlineFileName, CscanDynBlineFileName = self.CscanDynFilename([Yrpt,Xpixels,Zpixels])
-                filename = self.ui.DIR.toPlainText()+'/'+CscanBlineFileName
-                for ii in range(Yrpt):
-                    TIFF.imwrite(filename, Data[ii], append=True)
-                
-                filename = self.ui.DIR.toPlainText()+'/'+CscanDynBlineFileName
-                TIFF.imwrite(filename, Dynamic, append=True)
-            else:
-                filename = self.ui.DIR.toPlainText()+'/'+self.CscanFilename([Ypixels,Xpixels,Zpixels])
-                for ii in range(Ypixels):
-                    TIFF.imwrite(filename, Data[ii], append=True)
    
     def Init_Mosaic(self, args):
         """
@@ -298,15 +277,15 @@ class DnSThread(QThread):
         fw_mm, fh_mm = fov_size_mm
         
         # 1. Find the bounding box of the FOV centers
+        # print(fov_locs)
         xs = [p['x'] for p in fov_locs]
         ys = [p['y'] for p in fov_locs]
-        self.min_x, max_x = min(xs), max(xs)
-        self.min_y, max_y = min(ys), max(ys)
-        
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
         # 2. Calculate how many tiles are needed in each dimension
         # We use round() to handle tiny stage step errors
-        num_cols = int(round((max_x - self.min_x) / fw_mm)) + 1
-        num_rows = int(round((max_y - self.min_y) / fh_mm)) + 1
+        num_cols = int(round((max_x - min_x) / fw_mm)) + 1
+        num_rows = int(round((max_y - min_y) / fh_mm)) + 1
         
         # 3. Initialize/Overwrite the active mosaic buffer
         mw_px = num_cols * fw_px
@@ -339,15 +318,21 @@ class DnSThread(QThread):
         Stitches the FOV into the mosaic by calculating its grid index from the anchor.
         args: [fov_x, fov_y]
         """
-        fov_x, fov_y = args['x'], args['y']
-        
+        fov_locs, loc = args
+        fov_x, fov_y = loc['x'], loc['y']
+        xs = [p['x'] for p in fov_locs]
+        ys = [p['y'] for p in fov_locs]
+        min_x = min(xs)
+        min_y = min(ys)
         # 1. Generate AIP projection from raw data (Y, X, Z)
-        self.Process_Cscan(data, raw)
+        if self.ui.DynCheckBox.isChecked():
+            self.Process_Cscan_Dynamic(data)
+        else:
+            self.Process_Cscan(data, raw)
         # 2. Calculate the Grid Index (Column and Row)
         # We determine how many FOV-widths away from the minimum X/Y we are
-        col_idx = int(round((fov_x - self.min_x) / self.fw_mm))
-        row_idx = int(round((fov_y - self.min_y) / self.fh_mm))
-
+        col_idx = int(round((fov_x - min_x) / self.fw_mm))
+        row_idx = int(round((fov_y - min_y) / self.fh_mm))
         # 3. Calculate pixel offsets
         off_x = col_idx * self.fw_px
         off_y = row_idx * self.fh_px
@@ -361,6 +346,7 @@ class DnSThread(QThread):
         # print(x1,x2,y1,y2)
         
         if y2 <= mh and x2 <= mw:
+            # print(y1,y2,x1,x2, off_y, off_x, mh, mw)
             self.SampleMosaic[y1:y2, x1:x2] = self.AIP
         else:
             print(f"Warning: Tile at ({col_idx}, {row_idx}) is out of mosaic bounds.")
@@ -434,7 +420,7 @@ class DnSThread(QThread):
                         # self.ui.XYplane.setPixmap(pixmap)
                 except Exception as error:
                     print(error)
-            elif self.ui.ACQMode.currentText() in ['PlateScan','PlatePreScan']:
+            elif self.ui.ACQMode.currentText() in ['PlateScan','PlatePreScan','WellScan']:
                 try:
                     pixmap = RGBImagePlot(matrix1=self.Bline, m=ym, M=yM)
                     self.ui.XZplane.setPixmap(pixmap)
@@ -442,69 +428,90 @@ class DnSThread(QThread):
                     self.ui.mosaic_viewer.set_image(self.SampleMosaic, self.ui.Intmin.value(), self.ui.Intmax.value(), XStepSize, YStepSize)
                 except Exception as error:
                     print(f"Interactive Display Error: {error}")
-
-            # self.XZmax = self.ui.XZmax.value()
-            # self.XZmin = self.ui.XZmin.value()
-
-    # def Update_contrast_Mosaic(self):
-    #     # if self.ui.Intmin.value() != self.Intmin or self.ui.Intmax.value() != self.Intmax:
-    #         try:
-    #             ym=self.ui.XZmin.value()
-    #             yM=self.ui.XZmax.value()
-    #             pixmap = RGBImagePlot(matrix1=self.Bline, m=ym, M=yM)
-    #             self.ui.XZplane.setPixmap(pixmap)
-    #             pixmap = RGBImagePlot(matrix1=self.SampleMosaic, m=self.ui.Intmin.value(), M=self.ui.Intmax.value())
-    #             self.ui.XYplane.setPixmap(pixmap)
-    #         except:
-    #             pass
-    #         # self.Intmax = self.ui.Intmax.value()
-    #         # self.Intmin = self.ui.Intmin.value()
-            
-    def Update_contrast_Dyn(self):
-        if self.ui.Dynmin.value() != self.Dynmin or self.ui.Dynmax.value() != self.Dynmax:
-            try:
-                pixmap = RGBImagePlot(matrix2=self.SampleDynamic, m=self.ui.Dynmin.value(), M=self.ui.Dynmax.value())
-                # clear content on the waveformLabel
-                # self.ui.SampleDynamic.clear()
-                # update iamge on the waveformLabel
-                self.ui.SampleDynamic.setPixmap(pixmap)
-            except:
-                pass
-            self.Dynmax = self.ui.Dynmax.value()
-            self.Dynmin = self.ui.Dynmin.value()
     
-    def restart_tilenum(self):
+    def Save(self, Data=[], Dynamic=[], Raw=False):
+        Zpixels, Xpixels, Yrpt = self.get_FOV_size(Raw)
+        if Zpixels != Data.shape[2]:
+            Zpixels = Data.shape[2]
+        Ypixels = self.ui.Ypixels.value() * Yrpt
+        
+        if self.ui.ACQMode.currentText() in ['FiniteAline', 'ContinuousAline']:
+            filename = self.ui.DIR.toPlainText()+'/'+self.AlineFilename([Yrpt,Xpixels,Zpixels])
+            for ii in range(Yrpt):
+                TIFF.imwrite(filename, Data[ii], append=True)
+                
+        elif self.ui.ACQMode.currentText() in ['FiniteBline', 'ContinuousBline']:
+            filename = self.ui.DIR.toPlainText()+'/'+self.BlineFilename([Yrpt,Xpixels,Zpixels])
+            for ii in range(Yrpt):
+                TIFF.imwrite(filename, Data[ii], append=True)
+
+            if self.ui.DynCheckBox.isChecked():
+                filename = self.ui.DIR.toPlainText()+'/'+self.BlineDynFilename([Yrpt,Xpixels,Zpixels])
+                TIFF.imwrite(filename, Data[ii], append=True)
+                
+        elif self.ui.ACQMode.currentText() in ['ContinuousCscan', 'FiniteCscan']:
+            if self.ui.DynCheckBox.isChecked():
+                CscanBlineFileName, CscanDynBlineFileName = self.CscanDynFilename([Yrpt,Xpixels,Zpixels])
+                filename = self.ui.DIR.toPlainText()+'/'+CscanBlineFileName
+                for ii in range(Yrpt):
+                    TIFF.imwrite(filename, Data[ii], append=True)
+                
+                filename = self.ui.DIR.toPlainText()+'/'+CscanDynBlineFileName
+                TIFF.imwrite(filename, Dynamic, append=True)
+            else:
+                filename = self.ui.DIR.toPlainText()+'/'+self.CscanFilename([Ypixels,Xpixels,Zpixels])
+                for ii in range(Ypixels):
+                    TIFF.imwrite(filename, Data[ii], append=True)
+        elif self.ui.ACQMode.currentText() in ['PlatePreScan', 'PlateScan', 'WellScan']:
+            if self.ui.DynCheckBox.isChecked():
+                BlineFileName = self.SampleDynFilename([Yrpt,Xpixels,Zpixels])
+                filename = self.ui.DIR.toPlainText()+'/'+BlineFileName
+                for ii in range(Yrpt):
+                    TIFF.imwrite(filename, Data[ii], append=True)
+                
+            else:
+                filename = self.ui.DIR.toPlainText()+'/'+self.SampleFilename([Ypixels,Xpixels,Zpixels])
+                for ii in range(Ypixels):
+                    TIFF.imwrite(filename, Data[ii], append=True)
+        
+    def IncrementCscanNum(self):
+        self.CscanNum = self.CscanNum + 1
+        
+    def IncrementTileNum(self):
+        self.tileNum = self.tileNum + 1
+        
+    def IncrementSampleID(self):
+        self.sampleID = self.sampleID +1
         self.tileNum = 1
+        # if not os.path.exists(self.ui.DIR.toPlainText()+'/aip/vol'+str(self.sliceNum)):
+        #     os.mkdir(self.ui.DIR.toPlainText()+'/aip/vol'+str(self.sliceNum))
+        # if not os.path.exists(self.ui.DIR.toPlainText()+'/surf/vol'+str(self.sliceNum)):
+        #     os.mkdir(self.ui.DIR.toPlainText()+'/surf/vol'+str(self.sliceNum))
+        # if not os.path.exists(self.ui.DIR.toPlainText()+'/fitting/vol'+str(self.sliceNum)):
+        #     os.mkdir(self.ui.DIR.toPlainText()+'/fitting/vol'+str(self.sliceNum))
+    def IncrementTime(self):
         self.sliceNum = self.sliceNum+1
         self.ui.CuSlice.setValue(self.sliceNum)
-        if not os.path.exists(self.ui.DIR.toPlainText()+'/aip/vol'+str(self.sliceNum)):
-            os.mkdir(self.ui.DIR.toPlainText()+'/aip/vol'+str(self.sliceNum))
-        if not os.path.exists(self.ui.DIR.toPlainText()+'/surf/vol'+str(self.sliceNum)):
-            os.mkdir(self.ui.DIR.toPlainText()+'/surf/vol'+str(self.sliceNum))
-        if not os.path.exists(self.ui.DIR.toPlainText()+'/fitting/vol'+str(self.sliceNum)):
-            os.mkdir(self.ui.DIR.toPlainText()+'/fitting/vol'+str(self.sliceNum))
-        
-    def SurfFilename(self, shape = [0,0,0]):
-        filename = 'slice-'+str(self.sliceNum)+'-tile-'+str(self.tileNum)+'-Y'+str(shape[0])+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.bin'
-        self.tileNum = self.tileNum + 1
-    
+        self.tileNum = 1
+        self.sampleID = 1
+            
+    def SampleFilename(self, shape = [0,0,0]):
+        filename = 'Time-'+str(self.sliceNum)+'-sampleID-'+str(self.sampleID)+'-tile-'+str(self.tileNum)+'-Y'+str(shape[0])+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
         print(filename)
-        # self.ui.PrintOut.append(filename)
         self.log.write(filename)
         return filename
     
+    def SampleDynFilename(self, shape):
+        BlineFilename = 'Time-'+str(self.sliceNum)+'-sampleID-'+str(self.sampleID)+'-tile-'+str(self.tileNum)+'-Bline-'+str(self.DynamicBlineIdx)+'-Yrpt'+str(shape[0])+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
+        return BlineFilename
+    
     def CscanFilename(self, shape):
         filename = 'Cscan-'+str(self.CscanNum)+'-Y'+str(shape[0])+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
-        self.CscanNum = self.CscanNum + 1
         return filename
     
     def CscanDynFilename(self, shape):
-        DynBlinefilename = 'CscanDynBline-'+str(self.CscanDynNum)+'-Y'+str(self.ui.Ypixels.value())+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
-        BlineFilename = 'CscanBline-'+str(self.CscanDynNum)+str(self.DynamicBlineIdx)+'-Yrpt'+str(shape[0])+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
-        # self.DynamicBlineIdx = self.DynamicBlineIdx + 1
-        if self.DynamicBlineIdx == self.ui.Ypixels.value():
-            self.CscanDynNum = self.CscanDynNum + 1
-            # self.DynamicBlineIdx = 0
+        DynBlinefilename = 'CscanDynBline-'+str(self.CscanNum)+'-Y'+str(self.ui.Ypixels.value())+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
+        BlineFilename = 'CscanBline-'+str(self.CscanNum)+str(self.DynamicBlineIdx)+'-Yrpt'+str(shape[0])+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
         return BlineFilename, DynBlinefilename
     
     def BlineFilename(self, shape):
@@ -514,7 +521,7 @@ class DnSThread(QThread):
     
     def BlineDynFilename(self, shape):
         filename = 'BlineDyn-'+str(self.BlineNum)+'-X'+str(shape[1])+'-Z'+str(shape[2])+'.tif'
-        self.BlineDynNum = self.BlineDynNum + 1
+        self.BlineNum = self.BlineNum + 1
         return filename
     
     def AlineFilename(self, shape):

@@ -90,8 +90,11 @@ class GPUThread(QThread):
                     self.update_background()
                 elif self.item.action == 'display_FFT_actions':
                     self.display_FFT_actions()
+                    
                 else:
-                    self.ui.statusbar.showMessage('GPU thread is doing something invalid '+self.item.action)
+                    # self.ui.statusbar.showMessage('GPU thread is doing something invalid '+self.item.action)
+                    an_action = DnSAction(self.item.action)
+                    self.DnSQueue.put(an_action)
                 if time.time()-start > 1:
                     message = '\n an FFT action took '+str(round(time.time()-start,3))+' s\n'
                     print(message)

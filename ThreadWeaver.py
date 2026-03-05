@@ -20,6 +20,7 @@ from PyQt5.QtCore import Qt, QRectF, QPointF
 from shapely.geometry import Polygon # Shapely is best for intersection math
 # from scipy.signal import hilbert
 import datetime
+import pickle
 import cv2
 # axial pixel size, measure with a microscope glass slide
 global ZPIXELSIZE
@@ -29,6 +30,8 @@ class WeaverThread(QThread):
     def __init__(self):
         super().__init__()
         self.mosaic = None
+        self.overlay_images = {}
+        self.FOV_locations = {}
         self.exit_message = 'ACQ thread successfully exited'
         
     def run(self):
@@ -49,6 +52,9 @@ class WeaverThread(QThread):
                 elif self.item.action in ['FiniteBline', 'FiniteAline', 'FiniteCscan']:
                     self.InitMemory()
                     message = self.SingleScan(self.item.action)
+                    if self.item.action in ['FiniteCscan'] and self.ui.Save.isChecked():
+                        an_action = GPUAction('IncrementCscanNum')
+                        self.GPUQueue.put(an_action)
                     self.ui.statusbar.showMessage(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
@@ -57,8 +63,8 @@ class WeaverThread(QThread):
 
                 elif self.item.action == 'PlatePreScan':
                     # make directories
-                    if not os.path.exists(self.ui.DIR.toPlainText()+'/aip'):
-                        os.mkdir(self.ui.DIR.toPlainText()+'/aip')
+                    if not os.path.exists(self.ui.DIR.toPlainText()+'/Mosaic'):
+                        os.mkdir(self.ui.DIR.toPlainText()+'/Mosaic')
                     # if not os.path.exists(self.ui.DIR.toPlainText()+'/surf'):
                     #     os.mkdir(self.ui.DIR.toPlainText()+'/surf')
                     message = self.PlatePreScan(self.item.args)
@@ -70,9 +76,37 @@ class WeaverThread(QThread):
                         os.mkdir(self.ui.DIR.toPlainText()+'/aip')
                     # if not os.path.exists(self.ui.DIR.toPlainText()+'/surf'):
                     #     os.mkdir(self.ui.DIR.toPlainText()+'/surf')
+                    self.load_session_data(self.ui.DIR.toPlainText()+'/Mosaic')
+                    """Updates the combo box content on the main thread."""
+                    self.ui.sampleSelector.clear()
+                    if len(self.sample_centers) == 0:
+                        self.ui.sampleSelector.addItem("No Samples Found")
+                    else:
+                        for i in range(len(self.sample_centers)):
+                            self.ui.sampleSelector.addItem(f"Sample {i+1}")
                     message = self.PlateScan(self.item.args)
                     self.ui.statusbar.showMessage(message)
                     self.log.write(message)
+                    if self.ui.Save.isChecked():
+                        an_action = GPUAction('IncrementTime')
+                        self.GPUQueue.put(an_action)
+                elif self.item.action == 'WellScan':
+                    if self.FOV_locations == {}:
+                        self.load_session_data(self.ui.DIR.toPlainText()+'/Mosaic')
+                        """Updates the combo box content on the main thread."""
+                        self.ui.sampleSelector.clear()
+                        if len(self.sample_centers) == 0:
+                            self.ui.sampleSelector.addItem("No Samples Found")
+                        else:
+                            for i in range(len(self.sample_centers)):
+                                self.ui.sampleSelector.addItem(f"Sample {i+1}")
+                        self.ui.sampleSelector.setCurrentIndex(0)
+                    message = self.WellScan(self.item.args)
+                    self.ui.statusbar.showMessage(message)
+                    self.log.write(message)
+                    if self.ui.Save.isChecked():
+                        an_action = GPUAction('IncrementSampleID')
+                        self.GPUQueue.put(an_action)
 
                 elif self.item.action == 'ZstageRepeatibility':
                     message = self.ZstageRepeatibility()
@@ -136,7 +170,7 @@ class WeaverThread(QThread):
              elif self.ui.ACQMode.currentText() in ['ContinuousCscan']:
                  self.Memory[ii]=np.zeros([self.ui.Ypixels.value()*self.ui.BlineAVG.value(), AlinesPerBline, samples], dtype = data_type)
                  self.NAcq = 1
-             elif self.ui.ACQMode.currentText() in ['FiniteCscan', 'PlateScan', 'PlatePreScan']:
+             elif self.ui.ACQMode.currentText() in ['FiniteCscan', 'PlateScan', 'PlatePreScan','WellScan']:
                  if self.ui.DynCheckBox.isChecked():
                      self.Memory[ii]=np.zeros([self.ui.BlineAVG.value(), AlinesPerBline, samples], dtype = data_type)
                      self.NAcq = self.ui.Ypixels.value()
@@ -147,8 +181,8 @@ class WeaverThread(QThread):
         ###########################################################################################
         
     def SingleScan(self, mode, Args=[]):
-        an_action = DnSAction('Clear')
-        self.DnSQueue.put(an_action)
+        # an_action = DnSAction('Clear')
+        # self.DnSQueue.put(an_action)
         t0=time.time()
         # print(self.DbackQueue.qsize())
         an_action = DAction('ConfigureBoard')
@@ -180,38 +214,40 @@ class WeaverThread(QThread):
         print('Galvo board start took: ',round(t4-t3,3),'sec')
         # print('current dbackqueue size:', self.DbackQueue.qsize())
         print('\n')
-
+        message = 'User stopped SingleScan'
         for iAcq in range(self.NAcq):
             start = time.time()
             ######################################### collect data
             # collect data from digitizer, data format: [Y pixels, Xpixels, Z pixels]
             print('waiting for camera data...')
-            an_action = self.DatabackQueue.get() # never time out
-            if an_action != 0:
-                print('time to fetch data: '+str(round(time.time()-start,3)))
-                memoryLoc = an_action.action
-                # print(memoryLoc)
-                ############################################### display and save data
-                if self.ui.FFTDevice.currentText() in ['None']:
-                    # put raw spectrum data into memory for dipersion compensation and background subtraction usage
-                    self.data = self.Memory[memoryLoc].copy()
-                    # In None mode, directly do display and save
-                    if np.sum(self.data)<10:
-                        print('spectral data all zeros!')
-                        # self.ui.PrintOut.append('spectral data all zeros!')
-                        self.log.write('spectral data all zeros!')
-                        message = 'spectral data all zeros!'
+            while self.ui.RunButton.isChecked():
+                try:
+                    an_action = self.DatabackQueue.get(timeout = 5)
+                    print('time to fetch data: '+str(round(time.time()-start,3)))
+                    memoryLoc = an_action.action
+                    # print(memoryLoc)
+                    ############################################### display and save data
+                    if self.ui.FFTDevice.currentText() in ['None']:
+                        # put raw spectrum data into memory for dipersion compensation and background subtraction usage
+                        self.data = self.Memory[memoryLoc].copy()
+                        # In None mode, directly do display and save
+                        if np.sum(self.data)<10:
+                            print('spectral data all zeros!')
+                            # self.ui.PrintOut.append('spectral data all zeros!')
+                            self.log.write('spectral data all zeros!')
+                            message = 'spectral data all zeros!'
+                        else:
+                            an_action = DnSAction(mode, self.data, raw=True, args = Args) # data in Memory[memoryLoc]
+                            self.DnSQueue.put(an_action)
+                            message = mode + " successfully finished..."
                     else:
-                        an_action = DnSAction(mode, self.data, raw=True, args = Args) # data in Memory[memoryLoc]
-                        self.DnSQueue.put(an_action)
+                        # In other modes, do FFT first
+                        an_action = GPUAction(action = self.ui.FFTDevice.currentText(), mode = mode, memoryLoc = memoryLoc, args = Args)
+                        self.GPUQueue.put(an_action)
                         message = mode + " successfully finished..."
-                else:
-                    # In other modes, do FFT first
-                    an_action = GPUAction(action = self.ui.FFTDevice.currentText(), mode = mode, memoryLoc = memoryLoc, args = Args)
-                    self.GPUQueue.put(an_action)
-                    message = mode + " successfully finished..."
-            else:
-                message = 'an_action is 0'
+                    break
+                except:
+                    print('waiting for camera data...')
                     
         an_action = AODOAction('tryStopTask')
         self.AODOQueue.put(an_action)
@@ -223,8 +259,8 @@ class WeaverThread(QThread):
     
             
     def RptScan(self, mode):
-        an_action = DnSAction('Clear')
-        self.DnSQueue.put(an_action)
+        # an_action = DnSAction('Clear')
+        # self.DnSQueue.put(an_action)
         an_action = DAction('ConfigureBoard')
         self.DQueue.put(an_action)
         self.DbackQueue.get()
@@ -248,7 +284,7 @@ class WeaverThread(QThread):
         while self.ui.RunButton.isChecked():
             ######################################### collect data
             try: # use try-except in cases where Stop button clicked and camera stopped prior to while loop
-                an_action = self.DatabackQueue.get(timeout=1) # never time out
+                an_action = self.DatabackQueue.get(timeout=3) # never time out
                 memoryLoc = an_action.action
                 # print(memoryLoc)
                 data_backs += 1
@@ -311,90 +347,141 @@ class WeaverThread(QThread):
   
 
     def PlatePreScan(self, args):
+        self.overlay_images = {}
         self.FOV_locations, self.sample_centers, self.raw_img, self.pixel_polygons= args
         if self.sample_centers is None:
             return
         self.ui.FFTDevice.setCurrentText('GPU')
+        BlineAVG = self.ui.BlineAVG.value()
+        self.ui.BlineAVG.setValue(1)
+        self.ui.RunButton.setChecked(True)
         for isample in self.sample_centers:
-            # move to center position of this sample
-            self.ui.XPosition.setValue(isample['x'])
-            an_action = AODOAction('Xmove2')
-            self.AODOQueue.put(an_action)
-            self.StagebackQueue.get()
-            self.ui.YPosition.setValue(isample['y'])
-            an_action = AODOAction('Ymove2')
-            self.AODOQueue.put(an_action)
-            self.StagebackQueue.get()
-            self.ui.ZPosition.setValue(isample['z'])
-            an_action = AODOAction('Zmove2')
-            self.AODOQueue.put(an_action)
-            self.StagebackQueue.get()
-            
-            self.CurrentSampleLocations = [ii for ii in self.FOV_locations if ii['sample_id'] == isample['sample_id']]
-            self.display_initial_scan_overlay(isample['sample_id'], self.raw_img, self.pixel_polygons)
+            if self.ui.RunButton.isChecked():
+                self.ui.NextSampleButton.setText('扫描中，请等待')
+                self.ui.RepeatSampleButton.setText('扫描中，请等待')
+                self.CurrentSampleLocations = [ii for ii in self.FOV_locations if ii['sample_id'] == isample['sample_id']]
+                self.display_initial_scan_overlay(isample['sample_id'], self.raw_img, self.pixel_polygons)
                 
+                # User stopped continuousBline, then we do Mosaic scan for this sample
+                self.AdjustZstage(isample['sample_id'])
+    
+                message = self.iterate_FOVs('PlatePreScan')
+                self.ui.NextSampleButton.setText('下一个样品')
+                self.ui.RepeatSampleButton.setText('重新扫描')
+                while (not self.ui.NextSampleButton.isChecked()) and self.ui.RunButton.isChecked():
+                    if self.ui.RepeatSampleButton.isChecked():
+                        self.ui.NextSampleButton.setText('扫描中，请等待')
+                        self.ui.RepeatSampleButton.setText('扫描中，请等待')
+                        self.process_mosaic_correction()
+                        self.AdjustZstage(isample['sample_id'])
+                        message = self.iterate_FOVs('PlatePreScan')
+                        self.ui.NextSampleButton.setText('下一个样品')
+                        self.ui.RepeatSampleButton.setText('重新扫描')
+                        self.ui.RepeatSampleButton.setChecked(False)
+                    time.sleep(1)
+                        
+                self.ui.NextSampleButton.setChecked(False)
+                self.ui.sampleSelector.setCurrentIndex(self.ui.sampleSelector.currentIndex() + 1)
+                # 1. Remove all old entries matching this sample_id
+                # We keep everything that DOES NOT match the ID we are updating
+                lower_id_locations = [loc for loc in self.FOV_locations 
+                                       if loc.get('sample_id') < isample['sample_id']]
+                
+                higher_id_locations = [loc for loc in self.FOV_locations 
+                                       if loc.get('sample_id') > isample['sample_id']]
             
-            # User stopped continuousBline, then we do Mosaic scan for this sample
-            self.AdjustZstage()
-            self.iterate_FOVs(isample,'PlatePreScan')
-            
-            while not self.ui.NextSampleButton.isChecked():
-                time.sleep(1)
-                if self.ui.RepeatSampleButton.isChecked():
-                    self.process_mosaic_correction(isample['sample_id'])
-                    self.AdjustZstage()
-                    self.iterate_FOVs(isample,'PlatePreScan')
-                    self.ui.RepeatSampleButton.setChecked(False)
-                    
-            self.ui.NextSampleButton.setChecked(False)
-            # 1. Remove all old entries matching this sample_id
-            # We keep everything that DOES NOT match the ID we are updating
-            lower_id_locations = [loc for loc in self.FOV_locations 
-                                   if loc.get('sample_id') < isample['sample_id']]
-            
-            higher_id_locations = [loc for loc in self.FOV_locations 
-                                   if loc.get('sample_id') > isample['sample_id']]
+                # 2. Combine them back together
+                self.FOV_locations = lower_id_locations + self.CurrentSampleLocations + higher_id_locations
+                
         
-            # 2. Combine them back together
-            self.FOV_locations = lower_id_locations + self.CurrentSampleLocations + higher_id_locations
-            
-            # print(self.CurrentSampleLocations)
-
-        
-        message = 'PlatePreScan successfully finished'
+        # save self.FOV_locations, self.sample_centers, self.overlay_images
+        self.save_session_data(self.ui.DIR.toPlainText()+'/Mosaic')
+        self.ui.NextSampleButton.setText('扫描结束')
+        self.ui.RepeatSampleButton.setText('扫描结束')
+        self.ui.BlineAVG.setValue(BlineAVG)
         return(message)
             
     def PlateScan(self, args):
         self.ui.MosaicLabel.clear()
-        self.FOV_locations, self.sample_centers, self.raw_img, self.pixel_polygons= args
+        # self.FOV_locations, self.sample_centers, self.raw_img, self.pixel_polygons= args
         if self.sample_centers is None:
             return
         self.ui.FFTDevice.setCurrentText('GPU')
+        # print(self.sample_centers)
+        # print(self.FOV_locations)
         for isample in self.sample_centers:
-            self.CurrentSampleLocations = [ii for ii in self.FOV_locations if ii['sample_id'] == isample['sample_id']]
-                
-            self.iterate_FOVs(isample, 'PlateScan')
-        
-        message = 'PlateScanDyn successfully finished'
-        return(message)     
+            if self.ui.RunButton.isChecked():
+                self.ui.sampleSelector.setCurrentIndex(isample['sample_id']-1)
+                self.CurrentSampleLocations = [ii for ii in self.FOV_locations if ii['sample_id'] == isample['sample_id']]
+                # print('self.CurrentSampleLocations', self.CurrentSampleLocations)
+                self.ui.MosaicLabel.setPixmap(self.overlay_images[isample['sample_id']])
+                self.iterate_FOVs('PlateScan')
+                if self.ui.Save.isChecked():
+                    an_action = GPUAction('IncrementSampleID')
+                    self.GPUQueue.put(an_action)
+                message = 'PlateScan successfully finished'
+            else:
+                message = 'User stopped PlateScan'
+        return(message)   
+    
+    
+    def WellScan(self, args):
+        self.ui.MosaicLabel.clear()
+        # self.FOV_locations, self.sample_centers, self.raw_img, self.pixel_polygons= args
+        if self.sample_centers is None:
+            return
+        self.ui.FFTDevice.setCurrentText('GPU')
+        sample_id = self.ui.sampleSelector.currentIndex()+1
+        self.CurrentSampleLocations = [ii for ii in self.FOV_locations if ii['sample_id'] == sample_id]
+        self.ui.MosaicLabel.setPixmap(self.overlay_images[sample_id])
+        message = self.iterate_FOVs('WellScan')
+        return(message) 
     
             
-    def AdjustZstage(self):
+    def AdjustZstage(self, sample_id):
+        isample = self.sample_centers[sample_id-1]
+        # move to center position of this sample
+        self.ui.XPosition.setValue(isample['x'])
+        an_action = AODOAction('Xmove2')
+        self.AODOQueue.put(an_action)
+        self.StagebackQueue.get()
+        self.ui.YPosition.setValue(isample['y'])
+        an_action = AODOAction('Ymove2')
+        self.AODOQueue.put(an_action)
+        self.StagebackQueue.get()
+        self.ui.ZPosition.setValue(isample['z'])
+        an_action = AODOAction('Zmove2')
+        self.AODOQueue.put(an_action)
+        self.StagebackQueue.get()
         # do continuous scan to display Bline
         self.ui.ACQMode.setCurrentText('ContinuousBline')
         self.InitMemory()
         self.ui.RunButton.setChecked(True)
-        self.ui.RunButton.setText('Stop to scan sample')
+        self.ui.RunButton.setText('点击开始扫描')
         self.RptScan(mode = 'ContinuousBline')
         # User can move Z stage up and down to put sample at focus
         for ii, item in enumerate(self.CurrentSampleLocations):
             self.CurrentSampleLocations[ii]['z'] = self.ui.ZPosition.value()
         
         self.ui.RunButton.setText('Stop')
+        self.ui.RunButton.setChecked(True)
         
-    def iterate_FOVs(self, isample, mode):
+    def iterate_FOVs(self, mode):
         # print(self.CurrentSampleLocations)
-        
+        # move to position of this FOV
+        iFOV = self.CurrentSampleLocations[0]
+        self.ui.XPosition.setValue(iFOV['x'])
+        an_action = AODOAction('Xmove2')
+        self.AODOQueue.put(an_action)
+        self.StagebackQueue.get()
+        self.ui.YPosition.setValue(iFOV['y'])
+        an_action = AODOAction('Ymove2')
+        self.AODOQueue.put(an_action)
+        self.StagebackQueue.get()
+        self.ui.ZPosition.setValue(iFOV['z'])
+        an_action = AODOAction('Zmove2')
+        self.AODOQueue.put(an_action)
+        self.StagebackQueue.get()
         
         Xpixels = self.ui.AlinesPerBline.value()//self.ui.AlineAVG.value()
         Ypixels = self.ui.Ypixels.value()
@@ -405,50 +492,55 @@ class WeaverThread(QThread):
         self.ui.ACQMode.setCurrentText(mode)
         self.InitMemory()
         for iFOV in self.CurrentSampleLocations:
-            # print(iFOV['x'],iFOV['y'])
-            # move to position of this FOV
-            self.ui.XPosition.setValue(iFOV['x'])
-            an_action = AODOAction('Xmove2')
-            self.AODOQueue.put(an_action)
-            self.StagebackQueue.get()
-            self.ui.YPosition.setValue(iFOV['y'])
-            an_action = AODOAction('Ymove2')
-            self.AODOQueue.put(an_action)
-            self.StagebackQueue.get()
-            self.ui.ZPosition.setValue(iFOV['z'])
-            an_action = AODOAction('Zmove2')
-            self.AODOQueue.put(an_action)
-            self.StagebackQueue.get()
-            
-            # do FiniteCscan at this position
+            if self.ui.RunButton.isChecked():
+                # print(iFOV['x'],iFOV['y'])
+                # move to position of this FOV
+                self.ui.XPosition.setValue(iFOV['x'])
+                an_action = AODOAction('Xmove2')
+                self.AODOQueue.put(an_action)
+                self.StagebackQueue.get()
+                self.ui.YPosition.setValue(iFOV['y'])
+                an_action = AODOAction('Ymove2')
+                self.AODOQueue.put(an_action)
+                self.StagebackQueue.get()
+                self.ui.ZPosition.setValue(iFOV['z'])
+                an_action = AODOAction('Zmove2')
+                self.AODOQueue.put(an_action)
+                self.StagebackQueue.get()
+                
+                # do FiniteCscan at this position
+                self.SingleScan(mode = 'Process_Mosaic', Args = [self.CurrentSampleLocations, iFOV])
+                if self.ui.Save.isChecked():
+                    an_action = GPUAction('IncrementTileNum')
+                    self.GPUQueue.put(an_action)
+                # handle pause action
+                if self.ui.PauseButton.isChecked():
+                    # wait until stop button or pause button is clicked
+                    while self.ui.PauseButton.isChecked() and self.ui.RunButton.isChecked():
+                        time.sleep(1)
+                        print('waiting')
+                message = 'iterate FOV successfully finished'
+            else:
+                message = 'User stopped'
+        return(message)
 
-            self.ui.RunButton.setChecked(True)
-            self.SingleScan(mode = 'Process_Mosaic', Args = iFOV)
-        # # After finishing this sample, analysis the Mosaic image
-        # an_action = DnSAction('Return_mosaic') 
-        # self.DnSQueue.put(an_action)
-        # SampleMosaic = self.MosaicQueue.get()
-        # # update locations for this sample if button clicked
    
     def display_initial_scan_overlay(self, sample_id, raw_img, pixel_polygons):
-        # 1. Get the specific polygon for this sample
+        """Displays initial USB scan crop and saves to self.overlay_images."""
         poly_pts = pixel_polygons[sample_id - 1]
         poly_np = np.array(poly_pts, dtype=np.int32)
         x, y, w, h = cv2.boundingRect(poly_np)
         
-        # 2. Crop the raw USB image with padding
         pad = 150
         x1, y1 = max(0, x - pad), max(0, y - pad)
         x2, y2 = min(raw_img.shape[1], x + w + pad), min(raw_img.shape[0], y + h + pad)
         crop_img = raw_img[y1:y2, x1:x2].copy()
         
-        # 3. Convert to QPixmap for high-quality rendering
         rgb_img = cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB)
         h_v, w_v, ch = rgb_img.shape
-        qt_img = QImage(rgb_img.data, w_v, h_v, ch * w_v, QImage.Format_RGB888)
+        qt_img = QImage(rgb_img.data, w_v, h_v, ch * w_v, QImage.Format_RGB888).copy()
         base_pixmap = QPixmap.fromImage(qt_img)
 
-        # 4. Create a High-Quality Buffer for MosaicLabel
         label_w = self.ui.MosaicLabel.width()
         label_h = self.ui.MosaicLabel.height()
         final_buffer = QPixmap(label_w, label_h)
@@ -458,26 +550,22 @@ class WeaverThread(QThread):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
-        # Calculate scaling to fit label
         scale = min(label_w / w_v, label_h / h_v)
         sw, sh = int(w_v * scale), int(h_v * scale)
         dx, dy = (label_w - sw) // 2, (label_h - sh) // 2
-
-        # Draw the background image
         painter.drawPixmap(dx, dy, sw, sh, base_pixmap)
 
-        # Helper to transform crop pixels to Label coordinates
         def to_ui(px, py):
             return dx + (px - x1) * scale, dy + (py - y1) * scale
 
-        # 5. Draw the Polygon (Blue)
+        # Draw Sample Polygon
         painter.setPen(QPen(QColor(0, 120, 255), 3))
         for i in range(len(poly_pts)):
             p1 = to_ui(*poly_pts[i])
             p2 = to_ui(*poly_pts[(i + 1) % len(poly_pts)])
             painter.drawLine(int(p1[0]), int(p1[1]), int(p2[0]), int(p2[1]))
 
-        # 6. Draw FOV Grid (Green)
+        # Draw FOV Grid
         usb_pixel_size = 0.02 
         fov_w_px = self.ui.XLength.value() / usb_pixel_size
         fov_h_px = self.ui.YLength.value() / usb_pixel_size
@@ -491,60 +579,96 @@ class WeaverThread(QThread):
                 painter.drawRect(QRectF(tl[0], tl[1], br[0]-tl[0], br[1]-tl[1]))
 
         painter.end()
+        
+        # Save to global storage and display
+        self.overlay_images[sample_id] = final_buffer
         self.ui.MosaicLabel.setPixmap(final_buffer)
-            
+
+    def process_mosaic_correction(self ):
+        """Called when user finishes drawing in XYPlane/InteractiveWidget."""
+        # Assume this is triggered for the currently active sample_id
+        current_id = self.ui.sampleSelector.currentIndex() + 1 
+        self.ui.mosaic_viewer.finalize_polygon()
+        # Get new regions from the interactive widget
+        new_polygons = self.ui.mosaic_viewer.polygons
+        if not new_polygons:
+            print('No regions draw, please re-draw interested region')
+            return
+
+        # Convert the interactive widget polygons back to mm coordinates
+        mm_polygons = []
+        px_w_mm = self.ui.XStepSize.value() / 1000.0
+        px_h_mm = self.ui.YStepSize.value() / 1000.0
+        
+        # Find the anchor used by the mosaic viewer to convert back to mm
+        xs_orig = [p['x'] for p in self.CurrentSampleLocations]
+        ys_orig = [p['y'] for p in self.CurrentSampleLocations]
+        v_anchor_x = min(xs_orig) - (self.ui.XLength.value() / 2)
+        v_anchor_y = min(ys_orig) - (self.ui.YLength.value() / 2)
+
+        for poly in new_polygons:
+            mm_poly = [(p[0] * px_w_mm + v_anchor_x, p[1] * px_h_mm + v_anchor_y) for p in poly]
+            mm_polygons.append(mm_poly)
+
+        # Re-generate the scan grid and the new overlay
+        self.generate_new_scan_grid(current_id, mm_polygons, new_polygons)
+
     def generate_new_scan_grid(self, sample_id, mm_polygons, pixel_polygons):
-        # 1. Math logic for FOV generation
+        """Generates FOVs and creates a new overlay encompassing both mosaic and new polygon."""
         XFOV = self.ui.XLength.value()
         YFOV = self.ui.YLength.value()
-        px_w_mm = self.ui.XStepSize.value() / 1000.0  # e.g., 0.005 mm
-        px_h_mm = self.ui.YStepSize.value() / 1000.0  # e.g., 0.010 mm
+        px_w_mm = self.ui.XStepSize.value() / 1000.0
+        px_h_mm = self.ui.YStepSize.value() / 1000.0
         new_fov_locations = []
-        zpos = self.CurrentSampleLocations[0]['z']
-        # ... [Keep your existing Shapely intersection logic here] ...
+        
+        # 1. Math logic for FOV generation (Shapely)
         for mm_poly_pts in mm_polygons:
             roi_poly = Polygon(mm_poly_pts)
             p_xs, p_ys = zip(*mm_poly_pts)
-            x_range = np.arange(min(p_xs) + XFOV/2 - XFOV, max(p_xs) + XFOV, XFOV)
-            y_range = np.arange(min(p_ys) + YFOV/2 - YFOV, max(p_ys) + YFOV, YFOV)
+            x_range = np.arange(min(p_xs), max(p_xs)+XFOV/2, XFOV)
+            y_range = np.arange(min(p_ys), max(p_ys)+YFOV/2, YFOV)
+
+            centroid = roi_poly.centroid
+            self.sample_centers[sample_id-1]['x'] = centroid.x
+            self.sample_centers[sample_id-1]['y'] = centroid.y
+
             for cx in x_range:
                 for cy in y_range:
                     tile_poly = Polygon([
-                        (cx - XFOV/2, cy - YFOV/2), (cx + XFOV/2, cy - YFOV/2),
-                        (cx + XFOV/2, cy + YFOV/2), (cx - XFOV/2, cy + YFOV/2)
+                        (cx-XFOV/2, cy-YFOV/2), (cx+XFOV/2, cy-YFOV/2),
+                        (cx+XFOV/2, cy+YFOV/2), (cx-XFOV/2, cy+YFOV/2)
                     ])
                     if tile_poly.intersects(roi_poly):
-                        new_fov_locations.append({'sample_id': sample_id, 'x': round(cx, 3), 'y': round(cy, 3), 'z': zpos})
+                        new_fov_locations.append({'sample_id': sample_id, 'x': round(cx, 3), 'y': round(cy, 3)})
 
-        # 2. Setup High Quality Visualization with PIXEL SIZE STRETCHING
+        # 2. Setup Coordinate System and Bounding Box
         mos_img = self.ui.mosaic_viewer.adj 
+        orig_h, orig_w = mos_img.shape
         
-        # --- Brightness Stretching (Keep this so you can see the image) ---
-        # m, M = self.ui.mosaic_viewer.m_min, self.ui.mosaic_viewer.m_max
-        # stretched = np.clip(mos_img, m, M)
-        # stretched = ((stretched - m) / (M - m + 1e-5) * 255).astype(np.uint8)
-        stretched = mos_img
-        orig_h, orig_w = stretched.shape
-        
-        # --- Physical Pixel Size Stretching ---
-        # Calculate the "Real World" dimensions in mm
-        real_width_mm = orig_w * px_w_mm
-        real_height_mm = orig_h * px_h_mm
-        
-        # We define a 'virtual' pixel size to map mm back to a corrected pixel grid
-        # We'll use px_w_mm as the base and stretch the height to match
-        corrected_w = orig_w
-        corrected_h = int(real_height_mm / px_w_mm) 
-        
-        # Stretch the physical dimensions of the image to correct aspect ratio
-        # cv2.INTER_CUBIC provides the highest quality for upscaling/stretching
-        corrected_img = cv2.resize(stretched, (corrected_w, corrected_h), interpolation=cv2.INTER_CUBIC)
-        
-        # Create QImage and Pixmap from the ASPECT-CORRECTED image
-        qt_mos = QImage(corrected_img.data, corrected_w, corrected_h, corrected_w, QImage.Format_Grayscale8).copy()
-        mos_pixmap = QPixmap.fromImage(qt_mos)
+        # Current Mosaic physical boundaries
+        xs_orig = [p['x'] for p in self.CurrentSampleLocations]
+        ys_orig = [p['y'] for p in self.CurrentSampleLocations]
+        mos_min_x = min(xs_orig) - (XFOV / 2)
+        mos_min_y = min(ys_orig) - (YFOV / 2)
+        mos_max_x = mos_min_x + (orig_w * px_w_mm)
+        mos_max_y = mos_min_y + (orig_h * px_h_mm)
 
-        # 3. Handle Scaling for the UI Label
+        # Polygon physical boundaries
+        all_poly_pts = [pt for poly in mm_polygons for pt in poly]
+        poly_min_x, poly_min_y = min(p[0] for p in all_poly_pts), min(p[1] for p in all_poly_pts)
+        poly_max_x, poly_max_y = max(p[0] for p in all_poly_pts), max(p[1] for p in all_poly_pts)
+
+        # Global Bounding Box (Encompasses both)
+        global_min_x = min(mos_min_x, poly_min_x) - 1.0 # 1mm margin
+        global_min_y = min(mos_min_y, poly_min_y) - 1.0
+        global_max_x = max(mos_max_x, poly_max_x) + 1.0
+        global_max_y = max(mos_max_y, poly_max_y) + 1.0
+
+        # Create the canvas size based on global mm dimensions
+        canvas_w_px = int((global_max_x - global_min_x) / px_w_mm)
+        canvas_h_px = int((global_max_y - global_min_y) / px_h_mm)
+
+        # 3. Render the Overlay
         label_w, label_h = self.ui.MosaicLabel.width(), self.ui.MosaicLabel.height()
         final_buffer = QPixmap(label_w, label_h)
         final_buffer.fill(Qt.black)
@@ -553,73 +677,50 @@ class WeaverThread(QThread):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
-        # Final scale to fit the window while maintaining the NEW corrected aspect ratio
-        scale = min(label_w / corrected_w, label_h / corrected_h)
-        sw, sh = int(corrected_w * scale), int(corrected_h * scale)
+        # Scale to fit UI Label
+        scale_w = label_w / canvas_w_px
+        scale_h = label_h / canvas_h_px
+        sw, sh = int(canvas_w_px * scale_w), int(canvas_h_px * scale_h)
         dx, dy = (label_w - sw) // 2, (label_h - sh) // 2
+
+        # Draw stretched Mosaic at its relative position
         
-        painter.drawPixmap(dx, dy, sw, sh, mos_pixmap)
+        qt_mos = QImage(mos_img.data, orig_w, orig_h, orig_w, QImage.Format_Grayscale8).copy()
+        mos_pixmap = QPixmap.fromImage(qt_mos)
 
-        # 4. Map Coordinates and Draw Overlays
-        # Determine anchor for coordinate mapping
-        xs_orig = [p['x'] for p in self.CurrentSampleLocations]
-        ys_orig = [p['y'] for p in self.CurrentSampleLocations]
-        v_anchor_x = min(xs_orig) - (XFOV / 2)
-        v_anchor_y = min(ys_orig) - (YFOV / 2)
+        mos_offset_x = (mos_min_x - global_min_x) / px_w_mm
+        mos_offset_y = (mos_min_y - global_min_y) / px_h_mm
+        painter.drawPixmap(int(dx + mos_offset_x * scale_w), int(dy + mos_offset_y * scale_h), 
+                           int(orig_w * scale_w), int(orig_h * scale_h), mos_pixmap)
 
+        # Draw New FOV Overlays
         painter.setPen(QPen(QColor(0, 255, 0), 1))
         for fov in new_fov_locations:
-            # Note: We now divide by the same 'base' pixel size (px_w_mm) 
-            # because the image has been stretched to be isotropic.
-            tl_x_ui = dx + ((fov['x'] - XFOV/2 - v_anchor_x) / px_w_mm) * scale
-            tl_y_ui = dy + ((fov['y'] - YFOV/2 - v_anchor_y) / px_w_mm) * scale
-            br_x_ui = dx + ((fov['x'] + XFOV/2 - v_anchor_x) / px_w_mm) * scale
-            br_y_ui = dy + ((fov['y'] + YFOV/2 - v_anchor_y) / px_w_mm) * scale
-            
-            painter.drawRect(QRectF(tl_x_ui, tl_y_ui, br_x_ui - tl_x_ui, br_y_ui - tl_y_ui))
+            tl_x = (fov['x'] - XFOV/2 - global_min_x) / px_w_mm
+            tl_y = (fov['y'] - YFOV/2 - global_min_y) / px_h_mm
+            br_x = (fov['x'] + XFOV/2 - global_min_x) / px_w_mm
+            br_y = (fov['y'] + YFOV/2 - global_min_y) / px_h_mm
+            painter.drawRect(QRectF(dx + tl_x * scale_w, dy + tl_y * scale_h, (br_x-tl_x)*scale_w, (br_y-tl_y)*scale_h))
+
+        # Draw New Polygons
+        painter.setPen(QPen(QColor(255, 0, 0), 2))
+        for mm_poly in mm_polygons:
+            for i in range(len(mm_poly)):
+                p1_mm, p2_mm = mm_poly[i], mm_poly[(i+1)%len(mm_poly)]
+                x1_ui = dx + ((p1_mm[0] - global_min_x) / px_w_mm) * scale_w
+                y1_ui = dy + ((p1_mm[1] - global_min_y) / px_h_mm) * scale_h
+                x2_ui = dx + ((p2_mm[0] - global_min_x) / px_w_mm) * scale_w
+                y2_ui = dy + ((p2_mm[1] - global_min_y) / px_h_mm) * scale_h
+                painter.drawLine(int(x1_ui), int(y1_ui), int(x2_ui), int(y2_ui))
 
         painter.end()
+        
+        # Update global storage and UI
+        self.overlay_images[sample_id] = final_buffer
         self.ui.MosaicLabel.setPixmap(final_buffer)
-        self.CurrentSampleLocations = new_fov_locations
+        self.CurrentSampleLocations = new_fov_locations        
     
-    def process_mosaic_correction(self, sample_id):
-        # 1. Get drawn polygons from the interactive widget (ensure they are finished)
-        self.ui.mosaic_viewer.finalize_polygon()
-        new_polygons = self.ui.mosaic_viewer.polygons 
-        
-        if not new_polygons:
-            print("No regions drawn on mosaic.")
-            return
-        
-        # 2. Define the anchor (top-left of the first FOV center)
-        xs = [p['x'] for p in self.CurrentSampleLocations]
-        ys = [p['y'] for p in self.CurrentSampleLocations]
-        
-        # The mosaic [0,0] pixel corresponds to the center of the min_x/min_y FOV 
-        # minus half the FOV physical size.
-        XFOV = self.ui.XLength.value()
-        YFOV = self.ui.YLength.value()
-        anchor_x = min(xs) - (XFOV / 2)
-        anchor_y = min(ys) - (YFOV / 2)
-        
-        # 3. Calculate separate pixel sizes for X and Y
-        # Based on your StepSize (resolution)
-        px_w_mm = self.ui.XStepSize.value() / 1000.0
-        px_h_mm = self.ui.YStepSize.value() / 1000.0
     
-        # 4. Map pixel coordinates to microscope MM coordinates
-        corrected_mm_polys = []
-        for poly in new_polygons:
-            mm_poly = [
-                (anchor_x + p[0] * px_w_mm, anchor_y + p[1] * px_h_mm) 
-                for p in poly
-            ]
-            corrected_mm_polys.append(mm_poly)
-        
-        # 5. Generate and Visualize
-        self.generate_new_scan_grid(sample_id, corrected_mm_polys, new_polygons)
-        print("New corrected regions ready for scanning.")
-        
     def identify_agar(self, cscan, stripes, cscans):
         value = np.mean(cscan,1)
         # reshape into Ypixels x Xpixels matrix
@@ -984,3 +1085,63 @@ class WeaverThread(QThread):
     
         # 6. Release resources when button is unchecked
         cap.release()
+        
+    
+    def save_session_data(self, folder_path):
+        """
+        Saves FOV locations, sample centers, and overlay images to the specified folder.
+        """
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+    
+        # 1. Save Numerical/Text Data (FOV locations and Sample Centers)
+        data_to_save = {
+            'FOV_locations': self.FOV_locations, #
+            'sample_centers': self.sample_centers
+        }
+        
+        with open(os.path.join(folder_path, 'scan_metadata.pkl'), 'wb') as f:
+            pickle.dump(data_to_save, f)
+    
+        # 2. Save Overlay Images
+        # QPixmap must be saved as individual files (PNG/JPG)
+        image_dir = os.path.join(folder_path, 'overlays')
+        if not os.path.exists(image_dir):
+            os.makedirs(image_dir)
+    
+        for sample_id, pixmap in self.overlay_images.items():
+            file_path = os.path.join(image_dir, f'sample_{sample_id}_overlay.png')
+            pixmap.save(file_path, "PNG")
+        
+        print(f"Session data saved to {folder_path}")
+    
+    def load_session_data(self, folder_path):
+        """
+        Loads FOV locations, sample centers, and overlay images from the specified folder.
+        """
+        # 1. Load Numerical/Text Data
+        metadata_path = os.path.join(folder_path, 'scan_metadata.pkl')
+        if os.path.exists(metadata_path):
+            with open(metadata_path, 'rb') as f:
+                data = pickle.load(f)
+                self.FOV_locations = data.get('FOV_locations', []) #
+                self.sample_centers = data.get('sample_centers', [])
+        else:
+            print("Metadata file not found.")
+    
+        # 2. Load Overlay Images
+        self.overlay_images = {}
+        image_dir = os.path.join(folder_path, 'overlays')
+        if os.path.exists(image_dir):
+            for filename in os.listdir(image_dir):
+                if filename.startswith('sample_') and filename.endswith('.png'):
+                    # Extract sample_id from filename (e.g., 'sample_1_overlay.png' -> 1)
+                    try:
+                        sample_id = int(filename.split('_')[1])
+                        pixmap = QPixmap()
+                        pixmap.load(os.path.join(image_dir, filename))
+                        self.overlay_images[sample_id] = pixmap
+                    except ValueError:
+                        continue
+        
+        print(f"Session data loaded from {folder_path}")

@@ -222,8 +222,10 @@ class UnifiedSampleScanner(QDialog):
             self.sample_centers.append({'sample_id': sample_id, 'x': centroid.x, 'y': centroid.y, 'z': self.current_zpos})
 
             min_x, min_y, max_x, max_y = roi_poly.bounds
-            x_centers = np.arange(min_x + self.fov_w_mm/2 - self.fov_w_mm, max_x + self.fov_w_mm, self.fov_w_mm)
-            y_centers = np.arange(min_y + self.fov_h_mm/2 - self.fov_h_mm, max_y + self.fov_h_mm, self.fov_h_mm)
+            # x_centers = np.arange(min_x + self.fov_w_mm/2 - self.fov_w_mm, max_x + self.fov_w_mm, self.fov_w_mm)
+            # y_centers = np.arange(min_y + self.fov_h_mm/2 - self.fov_h_mm, max_y + self.fov_h_mm, self.fov_h_mm)
+            x_centers = np.arange(min_x, max_x + self.fov_w_mm/2, self.fov_w_mm)
+            y_centers = np.arange(min_y, max_y + self.fov_w_mm/2, self.fov_h_mm)
 
             for cx in x_centers:
                 for cy in y_centers:

@@ -265,15 +265,12 @@ class GUI(MainWindow):
                 WeaverQueue.put(an_action)
             else:
                 self.Stop_task()
-        elif self.ui.ACQMode.currentText() in ['FiniteAline','FiniteBline','FiniteCscan','PlatePreScan', 'PlateScan']:
+        elif self.ui.ACQMode.currentText() in ['FiniteAline','FiniteBline','FiniteCscan','PlatePreScan', 'PlateScan', 'WellScan']:
             if self.ui.RunButton.isChecked():
                 self.ui.RunButton.setText('Stop')
-                self.ui.RunButton.setEnabled(False)
-                self.ui.PauseButton.setEnabled(False)
-                if self.ui.ACQMode.currentText() in ['PlatePreScan', 'PlateScan']:
-                    an_action = WeaverAction(self.ui.ACQMode.currentText(), args = [self.FOV_locations, self.sample_centers, self.raw_img, self.pixel_polygons])
-                else:
-                    an_action = WeaverAction(self.ui.ACQMode.currentText(), args = [self.FOV_locations, self.sample_centers, self.raw_img, self.pixel_polygons])
+                # self.ui.RunButton.setEnabled(False)
+                # self.ui.PauseButton.setEnabled(False)
+                an_action = WeaverAction(self.ui.ACQMode.currentText())
                 WeaverQueue.put(an_action)
         
     def LocateSample(self):
@@ -281,12 +278,19 @@ class GUI(MainWindow):
         self.YHome()
         self.scanner = UnifiedSampleScanner(self.ui.DIR.toPlainText(),fov_w_mm = self.ui.XLength.value(),fov_h_mm = self.ui.YLength.value(), current_zpos = self.ui.ZPosition.value())
         if self.scanner.exec_(): 
-            self.FOV_locations = self.scanner.generated_locations
-            self.sample_centers = self.scanner.sample_centers
-            self.raw_img = self.scanner.final_raw_img
-            self.pixel_polygons = self.scanner.final_polygons
+            FOV_locations = self.scanner.generated_locations
+            sample_centers = self.scanner.sample_centers
+            raw_img = self.scanner.final_raw_img
+            pixel_polygons = self.scanner.final_polygons
+            """Updates the combo box content on the main thread."""
+            self.ui.sampleSelector.clear()
+            if len(sample_centers) == 0:
+                self.ui.sampleSelector.addItem("No Samples Found")
+            else:
+                for i in range(len(sample_centers)):
+                    self.ui.sampleSelector.addItem(f"Sample {i+1}")
             # print(self.sample_centers)
-        an_action = WeaverAction('PlatePreScan', args = [self.FOV_locations, self.sample_centers, self.raw_img, self.pixel_polygons])
+        an_action = WeaverAction('PlatePreScan', args = [FOV_locations, sample_centers, raw_img, pixel_polygons])
         WeaverQueue.put(an_action)
 
     def InitStages(self):

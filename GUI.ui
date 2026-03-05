@@ -16,43 +16,11 @@
   <widget class="QWidget" name="centralwidget">
    <layout class="QGridLayout" name="gridLayout_14">
     <item row="0" column="0">
-     <layout class="QGridLayout" name="gridLayout" rowstretch="1,5,2" columnstretch="0,0,0,0,0,0,0,0,0,0,0">
+     <layout class="QGridLayout" name="gridLayout" rowstretch="1,5,2" columnstretch="0,0,0,0,0,0,0,0,0,0,0,0">
       <property name="verticalSpacing">
        <number>6</number>
       </property>
-      <item row="0" column="5">
-       <widget class="QDoubleSpinBox" name="ThresholdValue">
-        <property name="minimumSize">
-         <size>
-          <width>100</width>
-          <height>0</height>
-         </size>
-        </property>
-        <property name="decimals">
-         <number>1</number>
-        </property>
-        <property name="minimum">
-         <double>-1.000000000000000</double>
-        </property>
-        <property name="maximum">
-         <double>1000.000000000000000</double>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="8">
-       <spacer name="horizontalSpacer_3">
-        <property name="orientation">
-         <enum>Qt::Horizontal</enum>
-        </property>
-        <property name="sizeHint" stdset="0">
-         <size>
-          <width>40</width>
-          <height>20</height>
-         </size>
-        </property>
-       </spacer>
-      </item>
-      <item row="0" column="9">
+      <item row="0" column="10">
        <widget class="QPushButton" name="PauseButton">
         <property name="minimumSize">
          <size>
@@ -79,68 +47,31 @@
         </property>
        </widget>
       </item>
-      <item row="0" column="3">
-       <widget class="QDoubleSpinBox" name="tileMean">
-        <property name="enabled">
-         <bool>false</bool>
+      <item row="0" column="9">
+       <spacer name="horizontalSpacer_3">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
         </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item row="0" column="4">
+       <widget class="QComboBox" name="ACQMode">
         <property name="minimumSize">
          <size>
-          <width>100</width>
-          <height>0</height>
-         </size>
-        </property>
-        <property name="maximumSize">
-         <size>
-          <width>100</width>
-          <height>16777215</height>
-         </size>
-        </property>
-        <property name="decimals">
-         <number>1</number>
-        </property>
-        <property name="maximum">
-         <double>1000.000000000000000</double>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="2">
-       <widget class="QLabel" name="label_26">
-        <property name="maximumSize">
-         <size>
-          <width>16777215</width>
+          <width>0</width>
           <height>40</height>
          </size>
         </property>
-        <property name="font">
-         <font>
-          <pointsize>10</pointsize>
-         </font>
-        </property>
-        <property name="text">
-         <string>信号强度</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="7">
-       <widget class="QCheckBox" name="TissueRadio">
-        <property name="text">
-         <string/>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="QPushButton" name="RunButton">
-        <property name="minimumSize">
-         <size>
-          <width>300</width>
-          <height>0</height>
-         </size>
-        </property>
         <property name="maximumSize">
          <size>
-          <width>100</width>
-          <height>100</height>
+          <width>1000</width>
+          <height>16777215</height>
          </size>
         </property>
         <property name="font">
@@ -148,15 +79,112 @@
           <pointsize>20</pointsize>
          </font>
         </property>
-        <property name="text">
-         <string>Go</string>
+        <property name="iconSize">
+         <size>
+          <width>16</width>
+          <height>30</height>
+         </size>
         </property>
-        <property name="checkable">
-         <bool>true</bool>
+        <item>
+         <property name="text">
+          <string>FiniteBline</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>ContinuousBline</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>FiniteAline</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>ContinuousAline</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>FiniteCscan</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>ContinuousCscan</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>PlateScan</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>WellScan</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>LocationCameraLive</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+      <item row="0" column="8">
+       <widget class="QComboBox" name="sampleSelector">
+        <property name="minimumSize">
+         <size>
+          <width>150</width>
+          <height>40</height>
+         </size>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>15</pointsize>
+         </font>
         </property>
        </widget>
       </item>
-      <item row="1" column="0" colspan="11">
+      <item row="0" column="2">
+       <spacer name="horizontalSpacer_11">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item row="0" column="11">
+       <widget class="QPushButton" name="ConfigButton">
+        <property name="minimumSize">
+         <size>
+          <width>100</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>200</width>
+          <height>16777215</height>
+         </size>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>11</pointsize>
+         </font>
+        </property>
+        <property name="text">
+         <string>导入预设参数</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0" colspan="12">
        <layout class="QHBoxLayout" name="horizontalLayout" stretch="1,1">
         <property name="spacing">
          <number>1</number>
@@ -440,64 +468,91 @@
         </item>
        </layout>
       </item>
-      <item row="0" column="10">
-       <widget class="QPushButton" name="ConfigButton">
-        <property name="minimumSize">
-         <size>
-          <width>100</width>
-          <height>50</height>
-         </size>
-        </property>
+      <item row="0" column="3">
+       <widget class="QLabel" name="label_59">
         <property name="maximumSize">
          <size>
           <width>200</width>
           <height>16777215</height>
          </size>
         </property>
-        <property name="font">
-         <font>
-          <pointsize>11</pointsize>
-         </font>
-        </property>
         <property name="text">
-         <string>导入预设参数</string>
+         <string>拍摄模式：</string>
         </property>
        </widget>
       </item>
-      <item row="0" column="6">
-       <widget class="QLabel" name="label_27">
-        <property name="enabled">
-         <bool>false</bool>
+      <item row="0" column="1">
+       <widget class="QPushButton" name="RunButton">
+        <property name="minimumSize">
+         <size>
+          <width>300</width>
+          <height>0</height>
+         </size>
         </property>
         <property name="maximumSize">
          <size>
-          <width>16777215</width>
-          <height>40</height>
+          <width>100</width>
+          <height>100</height>
          </size>
         </property>
         <property name="font">
          <font>
-          <pointsize>10</pointsize>
+          <pointsize>20</pointsize>
          </font>
         </property>
         <property name="text">
-         <string>存在tissue？</string>
+         <string>Go</string>
+        </property>
+        <property name="checkable">
+         <bool>true</bool>
         </property>
        </widget>
       </item>
-      <item row="0" column="4">
-       <widget class="QLabel" name="label_25">
+      <item row="0" column="5">
+       <spacer name="horizontalSpacer_12">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item row="0" column="6">
+       <widget class="QPushButton" name="SampleLocateButton">
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>50</height>
+         </size>
+        </property>
         <property name="font">
          <font>
-          <pointsize>10</pointsize>
+          <pointsize>15</pointsize>
          </font>
         </property>
         <property name="text">
-         <string>强度阈值</string>
+         <string>LocateSample</string>
         </property>
        </widget>
       </item>
-      <item row="2" column="0" colspan="11">
+      <item row="0" column="7">
+       <spacer name="horizontalSpacer_13">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item row="2" column="0" colspan="12">
        <widget class="QTabWidget" name="Tabs">
         <property name="enabled">
          <bool>true</bool>
@@ -521,46 +576,14 @@
           <string>FOV</string>
          </attribute>
          <layout class="QGridLayout" name="gridLayout_13">
-          <item row="2" column="2">
-           <widget class="QComboBox" name="FFTDevice">
-            <item>
-             <property name="text">
-              <string>GPU</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>CPU</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>None</string>
-             </property>
-            </item>
-           </widget>
-          </item>
-          <item row="1" column="1" colspan="2">
-           <widget class="QCheckBox" name="DynCheckBox">
+          <item row="1" column="0">
+           <widget class="QLabel" name="FFTDeviceLabel">
             <property name="text">
-             <string>Calculate Dynamic?</string>
+             <string>FFT设备</string>
             </property>
            </widget>
           </item>
-          <item row="0" column="0">
-           <widget class="QLabel" name="label_59">
-            <property name="maximumSize">
-             <size>
-              <width>200</width>
-              <height>16777215</height>
-             </size>
-            </property>
-            <property name="text">
-             <string>拍摄模式：</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="4" rowspan="3">
+          <item row="0" column="4" rowspan="4">
            <widget class="QGroupBox" name="groupBox_10">
             <property name="title">
              <string/>
@@ -658,7 +681,20 @@
             </layout>
            </widget>
           </item>
-          <item row="0" column="3" rowspan="3">
+          <item row="0" column="7">
+           <spacer name="horizontalSpacer_6">
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item row="0" column="3" rowspan="4">
            <widget class="QGroupBox" name="groupBox">
             <property name="maximumSize">
              <size>
@@ -814,98 +850,30 @@
             </layout>
            </widget>
           </item>
-          <item row="2" column="0" colspan="2">
-           <widget class="QLabel" name="FFTDeviceLabel">
+          <item row="0" column="0">
+           <widget class="QCheckBox" name="DynCheckBox">
             <property name="text">
-             <string>FFT设备</string>
+             <string>Dynamic OCT</string>
             </property>
            </widget>
           </item>
-          <item row="0" column="6">
-           <spacer name="horizontalSpacer_6">
-            <property name="orientation">
-             <enum>Qt::Horizontal</enum>
-            </property>
-            <property name="sizeHint" stdset="0">
-             <size>
-              <width>40</width>
-              <height>20</height>
-             </size>
-            </property>
-           </spacer>
-          </item>
-          <item row="0" column="2">
-           <widget class="QComboBox" name="ACQMode">
-            <property name="minimumSize">
-             <size>
-              <width>0</width>
-              <height>40</height>
-             </size>
-            </property>
-            <property name="maximumSize">
-             <size>
-              <width>200</width>
-              <height>16777215</height>
-             </size>
-            </property>
+          <item row="2" column="0">
+           <widget class="QComboBox" name="FFTDevice">
             <item>
              <property name="text">
-              <string>FiniteBline</string>
+              <string>GPU</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>ContinuousBline</string>
+              <string>CPU</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>FiniteAline</string>
+              <string>None</string>
              </property>
             </item>
-            <item>
-             <property name="text">
-              <string>ContinuousAline</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>FiniteCscan</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>ContinuousCscan</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>PlatePreScan</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>PlateScan</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>LocationCameraLive</string>
-             </property>
-            </item>
-           </widget>
-          </item>
-          <item row="0" column="5">
-           <widget class="QPushButton" name="SampleLocateButton">
-            <property name="minimumSize">
-             <size>
-              <width>0</width>
-              <height>50</height>
-             </size>
-            </property>
-            <property name="text">
-             <string>LocateSample</string>
-            </property>
            </widget>
           </item>
          </layout>
@@ -1601,6 +1569,9 @@
             <layout class="QVBoxLayout" name="verticalLayout_23">
              <item>
               <widget class="QLabel" name="label_24">
+               <property name="enabled">
+                <bool>false</bool>
+               </property>
                <property name="maximumSize">
                 <size>
                  <width>200</width>
@@ -1614,6 +1585,9 @@
              </item>
              <item>
               <widget class="QSpinBox" name="scale">
+               <property name="enabled">
+                <bool>false</bool>
+               </property>
                <property name="maximumSize">
                 <size>
                  <width>100</width>
