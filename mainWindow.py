@@ -194,6 +194,7 @@ class MainWindow(QMainWindow):
                 except:
                     print(ii, ' setting missing, using default...')
             elif type(self.ui.__getattribute__(ii)) == QW.QSlider:
+                print(ii, int(settings.value(ii)))
                 try:
                     self.ui.__getattribute__(ii).setValue(int(settings.value(ii)))
                 except:
