@@ -17,7 +17,7 @@ global SIM
 # 尝试导入 amcam 模块，如果失败则进入仿真模式（模拟环境）
 try:
     import sys
-    sys.path.append(r"D:\\Program Files\\Daheng Imaging\\GalaxySDK\\Development\\Samples\\Python\\")
+    sys.path.append(r"D:\\GalaxySDK\\Development\\Samples\\Python\\")
     import gxipy as gx 
     import DahengCamera_test
     from ctypes import *

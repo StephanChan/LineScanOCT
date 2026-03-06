@@ -25,21 +25,23 @@ SIM = False
 ###########################################
 from PyQt5.QtCore import  QThread
 
-
 try:
-    from Zolix_control import Stepper
-    st = Stepper()
     import sys
     sys.path.append(r"C:\\Program Files (x86)\\ART Technology\\ART-DAQ\\Samples\\Python\\LIB\\")
     
     if "ni" not in sys.modules:
         import artdaq as ni
         from artdaq.constants import AcquisitionType as Atype
-        from artdaq.constants import Edge, ProductCategory, RegenerationMode, Signal 
+        from artdaq.constants import Edge, ProductCategory, RegenerationMode, Signal     
     else:
         # Module already loaded – you can safely use it
         pass
+except:
+    print('ART digitizer init failed, using simulation')
     
+try:
+    from Zolix_control import Stepper
+    st = Stepper()
 except:
     print('stage init failed, using simulation')
     SIM = True
@@ -188,9 +190,9 @@ class AODOThread(QThread):
         self.ui.XwaveformLabel.setPixmap(pixmap)
         if not (SIM or self.SIM): # if not running simulation mode
             if self.ui.Camera.currentText() == 'Daheng':
-                frameRate = self.ui.FrameRate_DH.value()#np.floor(self.ui.FrameRate.value()-30)*2
+                frameRate = self.ui.FrameRate_DH.value()*2#np.floor(self.ui.FrameRate.value()-30)*2
             elif self.ui.Camera.currentText() == 'PhotonFocus':
-                frameRate = self.ui.FrameRate.value()
+                frameRate = self.ui.FrameRate.value()*2
             else:
                 frameRate = 400
             ######################################################################################
