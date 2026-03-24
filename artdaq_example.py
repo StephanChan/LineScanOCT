@@ -56,15 +56,15 @@ class AODO(object):
     def config(self):
         self.AOtask = ni.Task('AOtask') 
         self.DOtask = ni.Task('DOtask')
-        AOwaveform1 = np.arange(0,0.1,0.000001)
-        AOwaveform2 = np.arange(0.1,0,-0.000001)
+        AOwaveform1 = np.linspace(0,0.1,400)
+        AOwaveform2 = np.linspace(0.1,0,400)
         self.AOwaveform = np.append(AOwaveform1,AOwaveform2)
         # print(self.AOwaveform.shape, AOwaveform1.shape, AOwaveform2.shape)
         self.AOtask.ao_channels.add_ao_voltage_chan(physical_channel='Galvo/ao1', \
                                               min_val=- 10.0, max_val=10.0, \
                                               units=ni.constants.VoltageUnits.VOLTS)
         # self.AOtask.out_stream.regen_mode = RegenerationMode.ALLOW_REGENERATION
-        self.AOtask.timing.cfg_samp_clk_timing(rate=200000, \
+        self.AOtask.timing.cfg_samp_clk_timing(rate=900, \
                                         # source='/AODO/PFI0', \
                                             # active_edge= Edge.FALLING,\
                                           sample_mode=Atype.FINITE,samps_per_chan=len(self.AOwaveform))
@@ -76,7 +76,7 @@ class AODO(object):
     
         self.DOtask.do_channels.add_do_chan(lines='Galvo/port0/line1')
         # self.DOtask.out_stream.regen_mode = RegenerationMode.ALLOW_REGENERATION
-        self.DOtask.timing.cfg_samp_clk_timing(rate=200000, \
+        self.DOtask.timing.cfg_samp_clk_timing(rate=900, \
                                         # source='/AODO/PFI0', \
                                             # active_edge= Edge.FALLING,\
                                           sample_mode=Atype.FINITE,samps_per_chan=len(self.AOwaveform))
@@ -86,8 +86,10 @@ class AODO(object):
         # DOtask.triggers.sync_type.SLAVE = True
         # self.DOtask.triggers.start_trigger.cfg_dig_edge_start_trig("/AODO/PFI1")
         # DOwaveform = np.uint32(np.append(np.zeros(np.int32(len(AOwaveform)/2)),8*np.ones(np.int32(len(AOwaveform)/2))))
-        self.DOwaveform = np.zeros(len(self.AOwaveform), dtype = np.uint32)
-        
+        # self.DOwaveform = np.zeros(len(self.AOwaveform), dtype = np.uint32)
+        self.DOwaveform = np.ones([self.AOwaveform.shape[0]//2, 2],dtype = np.uint32)
+        self.DOwaveform[:,1] = 0
+        self.DOwaveform=self.DOwaveform.flatten()*pow(2,1)
         # self.DOtask.out_stream.regen_mode = RegenerationMode.ALLOW_REGENERATION
         # self.AOtask.out_stream.regen_mode = RegenerationMode.ALLOW_REGENERATION
         # actual_sampling_rate = self.AOtask.timing.samp_clk_rate
@@ -121,7 +123,7 @@ if __name__ == '__main__':
     t=time.time()
     func.config()
     print('config took ',time.time()-t,'sec')
-    for ii in range(10):
+    for ii in range(1):
         s = time.time()
         
         func.start()

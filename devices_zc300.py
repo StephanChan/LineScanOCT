@@ -4,7 +4,7 @@ import ctypes
 class ZC300:
     def __init__(self) -> None:
         # 初始化
-        self.zc300 = ctypes.cdll.LoadLibrary(r"D:\IOCT\software\LineScanOCT\zolix\zolix_zc_300.dll")
+        self.zc300 = ctypes.cdll.LoadLibrary(r"D:\LineScanOCT\LineScanOCT\zolix\zolix_zc_300.dll")
 
     def zc300_enum_count(self):
         """获取设备数量"""

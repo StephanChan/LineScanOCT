@@ -19,7 +19,7 @@ try:
     import sys
     sys.path.append(r"D:\\GalaxySDK\\Development\\Samples\\Python\\")
     import gxipy as gx 
-    import DahengCamera_test
+    import DahengCamera_init
     from ctypes import *
     from gxipy.gxidef import *
     from gxipy.ImageFormatConvert import *
@@ -172,6 +172,7 @@ class Camera(QThread):
                     
                     self.hcam_s = self.hcam.get_stream(1).get_feature_control()  # 返回流属性对象
                     self.hcam_s.get_enum_feature("StreamBufferHandlingMode").set("NewestOnly")
+                    self.hcam.data_stream[0].set_acquisition_buffer_number(1000)
                 except Exception as ex:
                     # 打开失败，打印错误
                     print(ex)
@@ -208,13 +209,15 @@ class Camera(QThread):
         # print('start dbackqueue size:', self.DbackQueue.qsize())
         self.DbackQueue.put(0)
         while BlinesCount < self.BlinesPerAcq and self.ui.RunButton.isChecked():
-            t0=time.time()
-            buf = self.hcam.data_stream[0].get_image(timeout=2000)
-            t1=time.time()
+            # t0=time.time()
+            buf = self.hcam.data_stream[0].get_image(timeout=200)
+            # buf = self.hcam.data_stream[0].dq_buf()
+            # t1=time.time()
             if buf == None:
                 print("camera time out...")
                 Bline = np.zeros([self.AlinesPerBline, self.NSamples])
             else:
+                # self.hcam.data_stream[0].q_buf(buf)
                 if self.ui.PixelFormat_DH.currentText() in ["Mono12Packed"]:
                     mono_image_array, buffer_out_size=convert_to_special_pixel_format(buf, GxPixelFormatEntry.MONO12)
                     Bline = np.frombuffer(mono_image_array, dtype=np.uint16) .reshape(self.AlinesPerBline, self.NSamples)
@@ -222,17 +225,17 @@ class Camera(QThread):
                     Bline = buf.get_numpy_array()
             # Bline = np.rot90(Bline,1)
                 
-            print(Bline[0,0:5])
+            # print(Bline[0,0:5])
 
-            t2=time.time()
+            # t2=time.time()
             self.Memory[self.MemoryLoc][BlinesCount % NBlines] = Bline
-            t3=time.time()
+            # t3=time.time()
             # fig = plt.figure()
             # plt.imshow(Bline)
             # plt.show()
-            # print('camera fetch data took: ', round(t1-t0,3), 'sec')
-            # print('data conversion took: ', round(t2-t1,3), 'sec')
-            # print('data into memory took: ', round(t3-t2,3), 'sec')
+            # print('camera fetch data took: ', round((t1-t0)*1000,3), 'msec')
+            # print('data conversion took: ', round((t2-t1)*1000,3), 'msec')
+            # print('data into memory took: ', round((t3-t2)*1000,3), 'msec')
             # print('t4-t3: ', round(t4-t3,6))
             
             

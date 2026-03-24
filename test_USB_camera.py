@@ -23,7 +23,7 @@ def test_camera_settings():
     # In OpenCV/Windows, exposure is often measured in powers of 2.
     # -5 means 2^-5 = 1/32 sec (~31ms)
     # -7 means 2^-7 = 1/128 sec (~8ms)
-    cap.set(cv2.CAP_PROP_EXPOSURE, 1.0)
+    cap.set(cv2.CAP_PROP_EXPOSURE, -5.0)
     # Set high resolution
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)

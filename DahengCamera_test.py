@@ -11,18 +11,19 @@ Created on Mon Jul  7 18:17:06 2025
 @author: admin
 """
 import sys
-sys.path.append(r"D:\\Program Files\\Daheng Imaging\\GalaxySDK\\Development\\Samples\\Python\\")
-import gxipy as gx
+sys.path.append(r"D:\\GalaxySDK\\Development\\Samples\\Python\\")
+import gxipy as gx 
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
-sys.path.append(r"C:\\Program Files (x86)\\ART Technology\\ART-DAQ\\Samples\\Python\\LIB\\")
-import artdaq
-from artdaq.constants import LineGrouping
+# sys.path.append(r"C:\\Program Files (x86)\\ART Technology\\ART-DAQ\\Samples\\Python\\LIB\\")
+# import artdaq
+# from artdaq.constants import LineGrouping
 from ctypes import *
 from gxipy.gxidef import *
 from gxipy.ImageFormatConvert import *
 import matplotlib.pyplot as plt
+import time
 
 def get_best_valid_bits(pixel_format):
     valid_bits = DxValidBit.BIT0_7
@@ -114,7 +115,7 @@ remote.feature_save("export_config_file.txt")
 # trigger_soft_ware_feature =  remote.get_register_feature( "TriggerSoftware")
 remote.get_enum_feature("TriggerMode").set('Off')
 
-remote.get_enum_feature("TriggerMode").set('On')
+# remote.get_enum_feature("TriggerMode").set('On')
 remote.get_enum_feature("TriggerSource").set('Line2')
 remote.get_enum_feature("TriggerActivation").set('RisingEdge')
 # === 自动曝光与增益控制 ===
@@ -124,6 +125,7 @@ remote.get_int_feature("Width").set(width)
 remote.get_int_feature("Height").set(height)
 remote.get_int_feature("OffsetX").set(0)
 remote.get_int_feature("OffsetY").set(0)
+cam.data_stream[0].set_acquisition_buffer_number(1000)
 # print("[INFO] ExposureAuto and GainAuto set to Off")
 
 # if exposure_time == -1:
@@ -153,15 +155,25 @@ remote.get_enum_feature("PixelFormat").set(pixel_format)
 # 图像采集
 cam.stream_on()
 all_images = []
-
+# print("StreamAnnouncedBufferCount", cam.data_stream[0].get_feature_control().get_int_feature("StreamAnnouncedBufferCount").__feature_name)
 # for i in range(num_images):
-#     raw_image = cam.data_stream[0].get_image(10000)
-#     if pixel_format == "Mono12Packed":
-#         mono_image_array, buffer_out_size=convert_to_special_pixel_format(raw_image, GxPixelFormatEntry.MONO12)
-#         img = np.frombuffer(mono_image_array, dtype=np.uint16) .reshape(height,width)
+#     t0=time.time()
+#     raw_image = cam.data_stream[0].get_image(200)
+#     # raw_image = cam.data_stream[0].dq_buf()
+#     # cam.data_stream[0].q_buf(raw_image)
+#     t1=time.time()
+#     if raw_image == None:
+#         print("camera time out...")
+#         # Bline = np.zeros([self.AlinesPerBline, self.NSamples])
 #     else:
-#         img = raw_image.get_numpy_array()
+#         if pixel_format == "Mono12Packed":
+#             mono_image_array, buffer_out_size=convert_to_special_pixel_format(raw_image, GxPixelFormatEntry.MONO12)
+#             img = np.frombuffer(mono_image_array, dtype=np.uint16) .reshape(height,width)
+#         else:
+#             img = raw_image.get_numpy_array()
+#         t2=time.time()
 #     print(img[0,0:4])
+
 # plt.figure()
 # plt.imshow(img)
 # plt.show()
@@ -171,7 +183,9 @@ all_images = []
     # 保存每张图
     # Image.fromarray(img.astype(np.uint16)).save(os.path.join(save_dir, f"{i+1}.tiff"), format="TIFF", compression=None)
     # print(f"Success Save Image {i+1}")
-
+    # print('camera fetch data took: ', round((t1-t0)*1000,3), 'msec')
+    # print('data conversion took: ', round((t2-t1)*1000,3), 'msec')
+# print('data into memory took: ', round((t3-t2)*1000,3), 'msec')
 cam.stream_off()
 
 # # 关灯

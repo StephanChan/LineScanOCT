@@ -44,7 +44,7 @@ try:
     st = Stepper()
 except:
     print('stage init failed, using simulation')
-    SIM = True
+    # SIM = True
     
 from Generaic_functions import GenAODO, LinePlot
 import time
