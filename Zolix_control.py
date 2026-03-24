@@ -54,9 +54,10 @@ if __name__ == "__main__":
     st = Stepper()
     st.enable(0,True)
 
-    st.move(0,10,5)
+    st.move(0,-10,5)
+    st.move(0,5,5)
     st.home(0,200)
     # 断开连接
     zc.zc300_close()
     
-    print("X轴操作完成！")
+    print("Y轴操作完成！")

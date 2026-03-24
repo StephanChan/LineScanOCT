@@ -285,7 +285,9 @@ class WeaverThread(QThread):
         while self.ui.RunButton.isChecked():
             ######################################### collect data
             try: # use try-except in cases where Stop button clicked and camera stopped prior to while loop
+                start = time.time()
                 an_action = self.DatabackQueue.get(timeout=3) # never time out
+                print('time to fetch data: '+str(round(time.time()-start,3)))
                 memoryLoc = an_action.action
                 # print(memoryLoc)
                 data_backs += 1
@@ -1056,6 +1058,14 @@ class WeaverThread(QThread):
         """Continuously captures and displays video until RunButton is unchecked."""
         # 1. Initialize Camera
         cap = cv2.VideoCapture(0, cv2.CAP_MSMF)
+        # 2. Disable Auto Exposure (0.25 is manual, 0.75 is auto for many UVC cameras)
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25) 
+        
+        # 3. Set Exposure Value
+        # In OpenCV/Windows, exposure is often measured in powers of 2.
+        # -5 means 2^-5 = 1/32 sec (~31ms)
+        # -7 means 2^-7 = 1/128 sec (~8ms)
+        cap.set(cv2.CAP_PROP_EXPOSURE, -5.0)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
     
