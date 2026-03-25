@@ -6,6 +6,8 @@ and mosaic image stitching.
 """
 
 import time
+import threading
+import queue
 from PyQt5.QtCore import QThread
 import numpy as np
 import traceback
@@ -67,25 +69,49 @@ def get_best_valid_bits(pixel_format):
         valid_bits = DxValidBit.BIT8_15
     return valid_bits
 
-def convert_to_special_pixel_format(raw_image, pixel_format):
-    image_convert.set_dest_format(pixel_format)
-    # print('raw_image.get_pixel_format()', raw_image.get_pixel_format())
-    valid_bits = get_best_valid_bits(raw_image.get_pixel_format())
-    # print('valid_bits', valid_bits)
-    image_convert.set_valid_bits(valid_bits)
 
-    # create out put image buffer
-    buffer_out_size = image_convert.get_buffer_size_for_conversion(raw_image)
-    output_image_array = (c_ubyte * buffer_out_size)()
-    output_image = addressof(output_image_array)
+class PackedPixelFormatConverter(object):
+    """
+    Reuses ImageFormatConvert destination/valid-bits settings and a single output buffer
+    while width/height/source pixel format (and dest) stay the same — avoids per-frame alloc
+    and redundant SDK configuration.
+    """
+    def __init__(self):
+        self._cache_key = None
+        self._dest_pf = None
+        self._valid_bits = None
+        self._out_buf = None
+        self._buf_size = 0
 
-    # convert to pixel_format
-    image_convert.convert(raw_image, output_image, buffer_out_size, False)
-    if output_image is None:
-        print('Pixel format conversion failed')
-        return
+    @staticmethod
+    def _geometry_key(raw_image):
+        fd = raw_image.frame_data
+        return (fd.width, fd.height, fd.pixel_format)
 
-    return output_image_array, buffer_out_size
+    def convert(self, raw_image, dest_pixel_format):
+        global image_convert
+        key = self._geometry_key(raw_image)
+        src_pf = raw_image.get_pixel_format()
+        valid_bits = get_best_valid_bits(src_pf)
+        if (
+            key != self._cache_key
+            or dest_pixel_format != self._dest_pf
+            or valid_bits != self._valid_bits
+        ):
+            image_convert.set_dest_format(dest_pixel_format)
+            image_convert.set_valid_bits(valid_bits)
+            buf_size = image_convert.get_buffer_size_for_conversion(raw_image)
+            if self._out_buf is None or buf_size != self._buf_size:
+                self._out_buf = (c_ubyte * buf_size)()
+                self._buf_size = buf_size
+            self._cache_key = key
+            self._dest_pf = dest_pixel_format
+            self._valid_bits = valid_bits
+
+        image_convert.convert(raw_image, addressof(self._out_buf), self._buf_size, False)
+        return self._out_buf, self._buf_size
+
+
 # 主相机线程类，继承自 QThread，用于异步相机操作
 class Camera(QThread):
     def __init__(self):
@@ -95,6 +121,7 @@ class Camera(QThread):
         self.exit_message = 'Camera thread successfully exited'
         self.hcam = None       # 相机句柄
         self.hcam_fr = None    # 相机外部特征句柄
+        self._packed_converter = None
 
     def run(self):
         if not (SIM or self.SIM):
@@ -154,6 +181,7 @@ class Camera(QThread):
             device_manager = gx.DeviceManager()  # 打开设备
             global image_convert
             image_convert = device_manager.create_image_format_convert()
+            self._packed_converter = PackedPixelFormatConverter()
             if device_manager.update_all_device_list()[0] == 0:
                 # 如果没有找到任何相机设备
                 print("No camera found")
@@ -203,58 +231,74 @@ class Camera(QThread):
         self.DbackQueue.put(0)
             
     def Acquire(self):
-        #开始采集任务
+        # 开始采集任务：producer 使用 dq_buf；consumer 转换并写入 Memory，处理后必须 q_buf 归还缓冲
         NBlines = self.Memory[0].shape[0]
-        BlinesCount = 0
-        # print('start dbackqueue size:', self.DbackQueue.qsize())
-        self.DbackQueue.put(0)
-        while BlinesCount < self.BlinesPerAcq and self.ui.RunButton.isChecked():
-            # t0=time.time()
-            buf = self.hcam.data_stream[0].get_image(timeout=200)
-            # buf = self.hcam.data_stream[0].dq_buf()
-            # t1=time.time()
-            if buf == None:
-                print("camera time out...")
-                Bline = np.zeros([self.AlinesPerBline, self.NSamples])
-            else:
-                # self.hcam.data_stream[0].q_buf(buf)
-                if self.ui.PixelFormat_DH.currentText() in ["Mono12Packed"]:
-                    mono_image_array, buffer_out_size=convert_to_special_pixel_format(buf, GxPixelFormatEntry.MONO12)
-                    Bline = np.frombuffer(mono_image_array, dtype=np.uint16) .reshape(self.AlinesPerBline, self.NSamples)
-                else:
-                    Bline = buf.get_numpy_array()
-            # Bline = np.rot90(Bline,1)
-                
-            # print(Bline[0,0:5])
+        grab_q = queue.Queue(maxsize=4)
+        grab_stop = object()
+        use_packed = self.ui.PixelFormat_DH.currentText() in ["Mono12Packed"]
+        consumer_error = []
+        ds = self.hcam.data_stream[0]
 
-            # t2=time.time()
-            self.Memory[self.MemoryLoc][BlinesCount % NBlines] = Bline
-            # t3=time.time()
-            # fig = plt.figure()
-            # plt.imshow(Bline)
-            # plt.show()
-            # print('camera fetch data took: ', round((t1-t0)*1000,3), 'msec')
-            # print('data conversion took: ', round((t2-t1)*1000,3), 'msec')
-            # print('data into memory took: ', round((t3-t2)*1000,3), 'msec')
-            # print('t4-t3: ', round(t4-t3,6))
-            
-            
-            BlinesCount += 1
-            # print(BlinesCount)
-            if BlinesCount % NBlines == 0:
-                an_action = DbackAction(self.MemoryLoc)
-                self.DatabackQueue.put(an_action)
-                self.MemoryLoc = (self.MemoryLoc+1) % self.memoryCount
-                # print('MemoryLoc:', self.MemoryLoc)
-                
-                # handle pause action
-                if self.ui.PauseButton.isChecked():
-                    self.hcam.stream_off() 
-                    while self.ui.PauseButton.isChecked() and self.ui.RunButton.isChecked():
-                        time.sleep(0.5)
-                    self.hcam.stream_on() 
-            
+        def consumer():
+            try:
+                BlinesCount = 0
+                while True:
+                    item = grab_q.get()
+                    if item is grab_stop:
+                        break
+                    buf, grab_ms = item
+                    conv_ms = 0.0
+                    try:
+                        if buf is None:
+                            print("camera time out...")
+                            Bline = np.zeros([self.AlinesPerBline, self.NSamples])
+                        else:
+                            t_conv = time.perf_counter()
+                            if use_packed:
+                                mono_image_array, _ = self._packed_converter.convert(
+                                    buf, GxPixelFormatEntry.MONO12)
+                                Bline = np.frombuffer(
+                                    mono_image_array, dtype=np.uint16).reshape(
+                                    self.AlinesPerBline, self.NSamples)
+                            else:
+                                Bline = buf.get_numpy_array()
+                            conv_ms = (time.perf_counter() - t_conv) * 1000.0
 
+                        self.Memory[self.MemoryLoc][BlinesCount % NBlines] = Bline
+                        BlinesCount += 1
+                        print("grab_ms={:.3f}  conv_ms={:.3f}".format(grab_ms, conv_ms))
+                        if BlinesCount % NBlines == 0:
+                            an_action = DbackAction(self.MemoryLoc)
+                            self.DatabackQueue.put(an_action)
+                            self.MemoryLoc = (self.MemoryLoc + 1) % self.memoryCount
+                            if self.ui.PauseButton.isChecked():
+                                self.hcam.stream_off()
+                                while self.ui.PauseButton.isChecked() and self.ui.RunButton.isChecked():
+                                    time.sleep(0.5)
+                                self.hcam.stream_on()
+                    finally:
+                        if buf is not None:
+                            ds.q_buf(buf)
+            except Exception:
+                consumer_error.append(traceback.format_exc())
+                print(traceback.format_exc())
+
+        worker = threading.Thread(target=consumer, name="DHGrabConvert", daemon=True)
+        worker.start()
+        try:
+            self.DbackQueue.put(0)
+            BlinesCount = 0
+            while BlinesCount < self.BlinesPerAcq and self.ui.RunButton.isChecked():
+                t_grab = time.perf_counter()
+                buf = ds.dq_buf(timeout=200)
+                grab_ms = (time.perf_counter() - t_grab) * 1000.0
+                grab_q.put((buf, grab_ms))
+                BlinesCount += 1
+        finally:
+            grab_q.put(grab_stop)
+        worker.join()
+        if consumer_error:
+            raise RuntimeError("Acquire consumer failed:\n" + consumer_error[0])
 
     def Stream_on(self):
         if self.hcam is not None:
