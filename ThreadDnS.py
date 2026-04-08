@@ -143,7 +143,7 @@ class DnSThread(QThread):
         if not raw:
             Zpixels = self.ui.DepthRange.value()
         else:
-            Zpixels = self.ui.NSamples.value()#-self.ui.DelaySamples.value()-self.ui.TrimSamples.value()
+            Zpixels = self.ui.NSamples_DH.value()#-self.ui.DelaySamples.value()-self.ui.TrimSamples.value()
         # get number of X pixels
         Xpixels = self.ui.AlinesPerBline.value()
             
@@ -186,7 +186,6 @@ class DnSThread(QThread):
             Bline = Bline.reshape([Xpixels//self.ui.AlineAVG.value(), self.ui.AlineAVG.value(), Zpixels])
             Bline = np.mean(Bline,1)
             Xpixels = Xpixels//self.ui.AlineAVG.value()
-
         self.Bline = np.transpose(Bline)
         self.DynBline = np.transpose(dynamic)
 

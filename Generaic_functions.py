@@ -42,12 +42,14 @@ class LOG():
 def GenGalvoWave(StepSize = 1, Steps = 1000, AVG = 1, obj = '5X', postclocks = 50, Galvo_bias = 0):
     # total number of steps is the product of steps and aline average number
     # use different angle to mm ratio for different objective
-    if obj == '5X':
-        angle2mmratio = 2.094/1.19/3.35
+    if obj == '4X':
+        angle2mmratio = 2.094/1.19*1.25
+    elif obj == '5X':
+        angle2mmratio = 2.094/1.19
     elif obj == '10X':
-        angle2mmratio = 2.094/2/1.19/1.6
+        angle2mmratio = 2.094/2/1.19
     elif obj == '20X':
-        angle2mmratio = 2.094/1.19/4/3.35
+        angle2mmratio = 2.094/1.19/4
         
     else:
         status = 'objective not calibrated, abort generating Galvo waveform'

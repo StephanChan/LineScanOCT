@@ -154,11 +154,11 @@ class WeaverThread(QThread):
     def InitMemory(self):
         #################################################################
         # get number samplers per Aline
-        samples = self.ui.NSamples.value()
+        samples = self.ui.NSamples_DH.value()
             
         AlinesPerBline = self.ui.AlinesPerBline.value()
         # print(self.ui.PixelFormat_display.text())
-        if self.ui.PixelFormat_display.text() in ['Mono8']:
+        if self.ui.PixelFormat_display_DH.text() in ['Mono8']:
             data_type =  np.uint8
         else:
             data_type =  np.uint16
@@ -287,7 +287,7 @@ class WeaverThread(QThread):
             try: # use try-except in cases where Stop button clicked and camera stopped prior to while loop
                 start = time.time()
                 an_action = self.DatabackQueue.get(timeout=3) # never time out
-                print('time to fetch data: '+str(round(time.time()-start,3)))
+                # print('time to fetch data: '+str(round(time.time()-start,3)))
                 memoryLoc = an_action.action
                 # print(memoryLoc)
                 data_backs += 1
@@ -724,57 +724,57 @@ class WeaverThread(QThread):
         self.CurrentSampleLocations = new_fov_locations        
     
     
-    def identify_agar(self, cscan, stripes, cscans):
-        value = np.mean(cscan,1)
-        # reshape into Ypixels x Xpixels matrix
-        value = value.reshape([self.ui.AlinesPerBline.value()*self.ui.BlineAVG.value(),\
-                               self.ui.NSamples.value()*self.ui.AlineAVG.value()+ \
-                               self.ui.PreClock.value()*2 + self.ui.PostClock.value()])
-        # trim galvo fly-back data
-        value = value[:,self.ui.PreClock.value():self.ui.PreClock.value()+\
-                      self.ui.NSamples.value()*self.ui.AlineAVG.value()]
-        # # downsample X dimension
-        # value = value.reshape([self.ui.AlinesPerBline.value()*self.ui.BlineAVG.value(),\
-        #                        self.ui.NSamples.value()*self.ui.AlineAVG.value()//self.Yds,self.Yds]).mean(-1)
-        self.ui.tileMean.setValue(np.mean(value))
-        if np.sum(value > self.ui.ThresholdValue.value())>value.shape[1]*value.shape[0]*0.05: 
-            self.tile_flag[stripes - 1][cscans] = 1
-            self.ui.TissueRadio.setChecked(True)
-            self.tmp_cscan = self.tmp_cscan + cscan/100.0
-        else:
-            self.ui.TissueRadio.setChecked(False)
+    # def identify_agar(self, cscan, stripes, cscans):
+    #     value = np.mean(cscan,1)
+    #     # reshape into Ypixels x Xpixels matrix
+    #     value = value.reshape([self.ui.AlinesPerBline.value()*self.ui.BlineAVG.value(),\
+    #                            self.ui.NSamples.value()*self.ui.AlineAVG.value()+ \
+    #                            self.ui.PreClock.value()*2 + self.ui.PostClock.value()])
+    #     # trim galvo fly-back data
+    #     value = value[:,self.ui.PreClock.value():self.ui.PreClock.value()+\
+    #                   self.ui.NSamples.value()*self.ui.AlineAVG.value()]
+    #     # # downsample X dimension
+    #     # value = value.reshape([self.ui.AlinesPerBline.value()*self.ui.BlineAVG.value(),\
+    #     #                        self.ui.NSamples.value()*self.ui.AlineAVG.value()//self.Yds,self.Yds]).mean(-1)
+    #     self.ui.tileMean.setValue(np.mean(value))
+    #     if np.sum(value > self.ui.ThresholdValue.value())>value.shape[1]*value.shape[0]*0.05: 
+    #         self.tile_flag[stripes - 1][cscans] = 1
+    #         self.ui.TissueRadio.setChecked(True)
+    #         self.tmp_cscan = self.tmp_cscan + cscan/100.0
+    #     else:
+    #         self.ui.TissueRadio.setChecked(False)
             
-    def Focusing(self, cscan):
-        ######################################################### find average slice surface
-        cscan = cscan.reshape([self.ui.AlinesPerBline.value()*self.ui.BlineAVG.value(),\
-                               self.ui.NSamples.value()*self.ui.AlineAVG.value()+ self.ui.PreClock.value()*2 + self.ui.PostClock.value(),\
-                               self.ui.DepthRange.value()])
-        bscan = cscan.mean(0)
-        # remove galvo flayback data
-        bscan = bscan[self.ui.PreClock.value():self.ui.PreClock.value()+self.ui.NSamples.value()*self.ui.AlineAVG.value(),:]
-        # flatten surface
-        if np.any(self.surfCurve):
-            bscan_flatten = np.zeros(bscan.shape, dtype = np.float32)
-            for xx in range(bscan_flatten.shape[0]):
-                bscan_flatten[xx,0:bscan.shape[1]-self.surfCurve[xx]] = bscan[xx,self.surfCurve[xx]:]
-            plt.figure()
-            plt.imshow(bscan_flatten)
-            plt.savefig('slice'+str(self.ui.CuSlice.value())+'surface.jpg')
-            plt.close()
-        else:
-            bscan_flatten = bscan
-        # find tile surface
-        ascan = bscan_flatten.mean(0)
+    # def Focusing(self, cscan):
+    #     ######################################################### find average slice surface
+    #     cscan = cscan.reshape([self.ui.AlinesPerBline.value()*self.ui.BlineAVG.value(),\
+    #                            self.ui.NSamples.value()*self.ui.AlineAVG.value()+ self.ui.PreClock.value()*2 + self.ui.PostClock.value(),\
+    #                            self.ui.DepthRange.value()])
+    #     bscan = cscan.mean(0)
+    #     # remove galvo flayback data
+    #     bscan = bscan[self.ui.PreClock.value():self.ui.PreClock.value()+self.ui.NSamples.value()*self.ui.AlineAVG.value(),:]
+    #     # flatten surface
+    #     if np.any(self.surfCurve):
+    #         bscan_flatten = np.zeros(bscan.shape, dtype = np.float32)
+    #         for xx in range(bscan_flatten.shape[0]):
+    #             bscan_flatten[xx,0:bscan.shape[1]-self.surfCurve[xx]] = bscan[xx,self.surfCurve[xx]:]
+    #         plt.figure()
+    #         plt.imshow(bscan_flatten)
+    #         plt.savefig('slice'+str(self.ui.CuSlice.value())+'surface.jpg')
+    #         plt.close()
+    #     else:
+    #         bscan_flatten = bscan
+    #     # find tile surface
+    #     ascan = bscan_flatten.mean(0)
         
-        surfAlinesPerBline = findchangept(ascan,1)
+    #     surfAlinesPerBline = findchangept(ascan,1)
 
-        ##########################################################
-        self.ui.SurfAlinesPerBline.setValue(surfAlinesPerBline)
-        message = 'tile surf is:'+str(surfAlinesPerBline)
-        print(message)
-        self.log.write(message)
-        delta_z = (self.ui.SurfAlinesPerBline.value()-self.ui.SurfSet.value())*ZPIXELSIZE/1000.0
-        self.ui.ZIncrease.setValue(delta_z)
+    #     ##########################################################
+    #     self.ui.SurfAlinesPerBline.setValue(surfAlinesPerBline)
+    #     message = 'tile surf is:'+str(surfAlinesPerBline)
+    #     print(message)
+    #     self.log.write(message)
+    #     delta_z = (self.ui.SurfAlinesPerBline.value()-self.ui.SurfSet.value())*ZPIXELSIZE/1000.0
+    #     self.ui.ZIncrease.setValue(delta_z)
         
     def ZstageRepeatibility(self):
         mode = self.ui.ACQMode.currentText()
@@ -971,7 +971,7 @@ class WeaverThread(QThread):
         #######################################################################
         Xpixels = self.ui.AlinesPerBline.value()
         Yrpt = self.ui.BlineAVG.value()
-        BLINE = self.data.reshape([Yrpt, Xpixels, self.ui.NSamples.value()])
+        BLINE = self.data.reshape([Yrpt, Xpixels, self.ui.NSamples_DH.value()])
         
         background = np.float32(np.mean(BLINE,0))
         plt.figure()

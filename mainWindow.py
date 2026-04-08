@@ -18,8 +18,8 @@ import traceback
 from InteractiveWidget import InteractiveMosaicWidget
 # system magnification with 10X objective
 
-global Magnification10X
-Magnification10X = 5.0
+global Magnification4X
+Magnification4X = 2.5
 # try:
 #     from traits.api import HasTraits, Instance, on_trait_change
 #     from traitsui.api import View, Item
@@ -122,9 +122,9 @@ class MainWindow(QMainWindow):
         # self.Update_laser()
         # self.update_galvoXwaveform()
         # self.update_Mosaic()
-        self.ui.DepthStartBar.setMaximum(self.ui.NSamples.value())
-        # self.ui.DepthStartBar.setValue(self.ui.NSamples.value())
-        self.ui.DepthEndBar.setMaximum(self.ui.NSamples.value())
+        self.ui.DepthStartBar.setMaximum(self.ui.NSamples_DH.value())
+        # self.ui.DepthStartBar.setValue(self.ui.NSamples_DH.value())
+        self.ui.DepthEndBar.setMaximum(self.ui.NSamples_DH.value())
         # self.ui.DepthEndBar.setValue(0)
         self.Adjust_Bline_Height()
         self.connectActions()
@@ -227,7 +227,7 @@ class MainWindow(QMainWindow):
             self.ui.AlinesPerBline.setMaximum(int(MaxHeight))
         elif self.ui.Camera.currentText() == 'Daheng':
             CameraPixelSize = 9.0 # um
-            MaxHeight = 1104.0
+            MaxHeight = 1600.0
             self.ui.AlinesPerBline.setMaximum(int(MaxHeight))
         else:
             status = 'camera not calibrated, abort FOV calculation'
@@ -235,13 +235,16 @@ class MainWindow(QMainWindow):
             return None, status
         # select objective magnification
         if self.ui.Objective.currentText() == '5X':
-            cameraStepSize =  CameraPixelSize/Magnification10X*2 # um
+            cameraStepSize =  CameraPixelSize/Magnification4X/1.25 # um
+            MaxXLength = cameraStepSize/1000.0*MaxHeight
+        elif self.ui.Objective.currentText() == '4X':
+            cameraStepSize =  CameraPixelSize/Magnification4X # um
             MaxXLength = cameraStepSize/1000.0*MaxHeight
         elif self.ui.Objective.currentText() == '10X':
-            cameraStepSize = CameraPixelSize/Magnification10X # um
+            cameraStepSize = CameraPixelSize/Magnification4X/2.5 # um
             MaxXLength = cameraStepSize/1000.0*MaxHeight
         elif self.ui.Objective.currentText() == '20X':
-            cameraStepSize =  CameraPixelSize/Magnification10X/2 # um
+            cameraStepSize =  CameraPixelSize/Magnification4X/5 # um
             MaxXLength = cameraStepSize/1000.0*MaxHeight
         else:
             status = 'objective not calibrated, abort generating Galvo waveform'
@@ -253,7 +256,7 @@ class MainWindow(QMainWindow):
         self.ui.XLength.setMaximum(MaxXLength)
         
         # Calculate AlinesPerBline pixel numbers based on user set FOV size
-        AlinesPerBline = np.uint16(np.round(self.ui.XLength.value()*1000/cameraStepSize))
+        AlinesPerBline = np.uint16(self.ui.XLength.value()*1000/cameraStepSize//8*8)
         self.ui.AlinesPerBline.setValue(AlinesPerBline)
         # set offsetH limit
         # self.ui.offsetH.setMaximum((MaxHeight - Height)//2)
@@ -261,11 +264,14 @@ class MainWindow(QMainWindow):
         self.ui.Xoffsetlength.setMinimum(-(MaxHeight - AlinesPerBline)//2*cameraStepSize/1000)
         # Calculate offsetH pixel numbers based on corrected user set offsetLength
         offsetH = np.int16(MaxHeight - AlinesPerBline)//2+np.int16(np.round(self.ui.Xoffsetlength.value()*1000/cameraStepSize))
+        offsetH = offsetH//8*8
         self.ui.offsetH.setValue(offsetH)
         
     def Calculate_Galvo_settings(self):
         # select objective magnification
-        if self.ui.Objective.currentText() == '5X':
+        if self.ui.Objective.currentText() == '4X':
+            angle2mmratio = 2.094/1.19*1.25
+        elif self.ui.Objective.currentText() == '5X':
             angle2mmratio = 2.094/1.19
         elif self.ui.Objective.currentText() == '10X':
             angle2mmratio = 2.094/2/1.19
@@ -284,7 +290,7 @@ class MainWindow(QMainWindow):
         self.ui.GalvoBias.setValue(self.ui.Yoffsetlength.value()/angle2mmratio)
         
     def Adjust_Bline_Height(self):
-        self.ui.DepthStart.setValue(self.ui.NSamples.value() - self.ui.DepthStartBar.value())
+        self.ui.DepthStart.setValue(self.ui.NSamples_DH.value() - self.ui.DepthStartBar.value())
         self.ui.DepthRange.setValue(np.max([self.ui.DepthStartBar.value() - self.ui.DepthEndBar.value(),1]))
         
     def SaveSettings(self):

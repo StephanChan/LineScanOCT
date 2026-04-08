@@ -207,7 +207,7 @@ class Camera(QThread):
     
     def ConfigureBoard(self):
         self.AlinesPerBline = self.ui.AlinesPerBline.value()
-        self.NSamples = self.ui.NSamples_DH.value()
+        self.NSamples_DH = self.ui.NSamples_DH.value()
         if self.ui.ACQMode.currentText() in ['FiniteBline', 'FiniteAline']:
             self.BlinesPerAcq = self.ui.BlineAVG.value() 
         elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousAline','ContinuousCscan']:
@@ -224,10 +224,10 @@ class Camera(QThread):
             self.hcam_fr.get_enum_feature("TriggerActivation").set(self.ui.TriggerActivation_DH.currentText())
             # self.hcam_fr.get_enum_feature("TriggerDelay").set(int(self.ui.TriggerDelay_DH.value()*1000.0))
             
-            self.hcam_fr.get_int_feature("Width").set(self.NSamples )
-            self.hcam_fr.get_int_feature("Height").set(self.AlinesPerBline )
-            self.hcam_fr.get_int_feature("OffsetX").set(self.ui.offsetW_DH.value())
-            self.hcam_fr.get_int_feature("OffsetY").set(self.ui.offsetH.value())
+            self.hcam_fr.get_int_feature("Height").set(self.NSamples_DH )
+            self.hcam_fr.get_int_feature("Width").set(self.AlinesPerBline )
+            self.hcam_fr.get_int_feature("OffsetY").set(self.ui.offsetW_DH.value())
+            self.hcam_fr.get_int_feature("OffsetX").set(self.ui.offsetH.value())
         self.DbackQueue.put(0)
             
     def Acquire(self):
@@ -251,22 +251,23 @@ class Camera(QThread):
                     try:
                         if buf is None:
                             print("camera time out...")
-                            Bline = np.zeros([self.AlinesPerBline, self.NSamples])
+                            Bline = np.zeros([self.NSamples_DH, self.AlinesPerBline])
                         else:
-                            t_conv = time.perf_counter()
+                            # t_conv = time.perf_counter()
                             if use_packed:
                                 mono_image_array, _ = self._packed_converter.convert(
                                     buf, GxPixelFormatEntry.MONO12)
                                 Bline = np.frombuffer(
                                     mono_image_array, dtype=np.uint16).reshape(
-                                    self.AlinesPerBline, self.NSamples)
+                                   self.NSamples_DH, self.AlinesPerBline)
+                                # print(Bline.shape)
                             else:
                                 Bline = buf.get_numpy_array()
-                            conv_ms = (time.perf_counter() - t_conv) * 1000.0
+                            # conv_ms = (time.perf_counter() - t_conv) * 1000.0
 
-                        self.Memory[self.MemoryLoc][BlinesCount % NBlines] = Bline
+                        self.Memory[self.MemoryLoc][BlinesCount % NBlines] = np.transpose(Bline)
                         BlinesCount += 1
-                        print("grab_ms={:.3f}  conv_ms={:.3f}".format(grab_ms, conv_ms))
+                        # print("grab_ms={:.3f}  conv_ms={:.3f}".format(grab_ms, conv_ms))
                         if BlinesCount % NBlines == 0:
                             an_action = DbackAction(self.MemoryLoc)
                             self.DatabackQueue.put(an_action)
@@ -289,11 +290,12 @@ class Camera(QThread):
             self.DbackQueue.put(0)
             BlinesCount = 0
             while BlinesCount < self.BlinesPerAcq and self.ui.RunButton.isChecked():
-                t_grab = time.perf_counter()
+                # t_grab = time.perf_counter()
                 buf = ds.dq_buf(timeout=200)
-                grab_ms = (time.perf_counter() - t_grab) * 1000.0
-                grab_q.put((buf, grab_ms))
+                # grab_ms = (time.perf_counter() - t_grab) * 1000.0
+                grab_q.put((buf, 0))#grab_ms))
                 BlinesCount += 1
+                # print(BlinesCount)
         finally:
             grab_q.put(grab_stop)
         worker.join()
@@ -379,9 +381,9 @@ class Camera(QThread):
             # t0=time.time()
             
             if self.ui.PixelFormat_display_DH.text() in ['Mono8']:
-                Bline = np.uint8(np.random.rand(self.ui.AlinesPerBline.value(), self.NSamples)*np.random.randint(255))
+                Bline = np.uint8(np.random.rand(self.ui.AlinesPerBline.value(), self.NSamples_DH)*np.random.randint(255))
             else:
-                Bline = np.uint16(np.random.rand(self.ui.AlinesPerBline.value(), self.NSamples)*np.random.randint(4096))
+                Bline = np.uint16(np.random.rand(self.ui.AlinesPerBline.value(), self.NSamples_DH)*np.random.randint(4096))
             # print('camera outputs:', Bline[0,0:20])
             # print(BlinesCount, self.BlinesPerAcq)
             self.Memory[self.MemoryLoc][BlinesCount % NBlines] = Bline

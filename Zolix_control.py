@@ -11,6 +11,8 @@ zc = de.ZC300()
 # 假设 ZC300 类已经定义好了
 class Stepper:
     def __init__(self):
+        self.idy = 1000/3.1395
+        self.idz = 1000/3.1395
         self.idx = 1000/3.1395
         self.unit = 0
         dev_info=b"COM3" 

@@ -111,17 +111,16 @@ class GPUThread(QThread):
 
     def cudaFFT(self, mode, memoryLoc, args):
         # get samples per Aline
-        samples = self.ui.NSamples.value()
+        samples = self.ui.NSamples_DH.value()
         # get depth pixels after FFT
         Pixel_start = self.ui.DepthStart.value()
         Pixel_range = self.ui.DepthRange.value()
         self.data_CPU = np.float32(self.Memory[memoryLoc].copy())
         # print('GPU data: ', self.data_CPU[0,0,0:5], 'data size: ', self.data_CPU.shape, ' memoryLoc: ', memoryLoc)
         shape = self.data_CPU.shape
-
         if self.background_tile.shape != shape:
             self.background_tile = np.tile(self.background,[shape[0],1,1])
-
+        # print('backgournd shape:', self.background_tile.shape)
         # print('data shape', shape)
         # print('GPU receives:',self.data_CPU[0,0,0:10])
         if not (SIM or self.SIM):
@@ -130,18 +129,19 @@ class GPUThread(QThread):
             # plt.figure()
             # plt.imshow(self.data_CPU[0,:,:])
             # plt.show()
-            self.data_CPU = self.data_CPU - self.background_tile
+            # self.data_CPU = self.data_CPU - self.background_tile
             # plt.figure()
             # plt.imshow(self.data_CPU[0,:,:])
             # plt.show()
             # plt.figure()
             # plt.imshow(self.background)
             # plt.show()
-            self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=51, axis=2)
+            # self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=51, axis=2)
             t1=time.time()
             if round(t1-t0,4) >0.2:
                 print('background subtraction took ', round(t1-t0,3),'s')
             
+            # print('GPU data: ', self.data_CPU[0,0,0:5], 'data size: ', self.data_CPU.shape, ' memoryLoc: ', memoryLoc)
             Alines =shape[0]*shape[1]
             self.data_CPU=self.data_CPU.reshape([Alines, samples])
 
@@ -189,6 +189,7 @@ class GPUThread(QThread):
             yp_gpu = cupy.reshape(yp_gpu,[Alines, samples])
             # yp_gpu[:,0] = 0
             # yp = cupy.asnumpy(yp_gpu)
+            # print('yp: ', yp[0:5,0:5])
             # from matplotlib import pyplot as plt
             # plt.figure()
             # plt.plot(self.intpX,self.data_CPU[0:samples],self.intpXp,yp[0,:])
@@ -269,7 +270,7 @@ class GPUThread(QThread):
             
     def cpuFFT(self, mode, memoryLoc, args):
         # get samples per Aline
-        samples = self.ui.NSamples.value()# - self.ui.DelaySamples.value()
+        samples = self.ui.NSamples_DH.value()# - self.ui.DelaySamples.value()
         # get depth pixels after FFT
         Pixel_start = self.ui.DepthStart.value()
         Pixel_range = self.ui.DepthRange.value()
@@ -322,7 +323,7 @@ class GPUThread(QThread):
             
     def update_Dispersion(self):
         # get samples per Aline
-        samples = self.ui.NSamples.value()# - self.ui.DelaySamples.value()
+        samples = self.ui.NSamples_DH.value()# - self.ui.DelaySamples.value()
         # print('GPU dispersion samples: ',samples)
             
         # self.window = np.float32(np.hanning(samples))
@@ -336,7 +337,7 @@ class GPUThread(QThread):
                 self.intpXp  = np.float32(np.fromfile(dispersion_path+'/intpXp.bin', dtype=np.float32))
                 self.indice = np.uint16(np.fromfile(dispersion_path+'/intpIndice.bin', dtype=np.uint16)).reshape([2,samples])
                 self.dispersion = np.float32(np.fromfile(dispersion_path+'/dspPhase.bin', dtype=np.float32)).reshape([1, samples])
-                self.dispersion = np.complex64(np.exp(-1j*self.dispersion))
+                self.dispersion = np.complex64(np.exp(1j*self.dispersion))
                 self.ui.statusbar.showMessage("load disperison compensation success...")
                 # self.ui.PrintOut.append("load disperison compensation success...")
                 self.log.write("load disperison compensation success...")
@@ -366,7 +367,7 @@ class GPUThread(QThread):
         
     def update_background(self):
         # get samples per Aline
-        samples = self.ui.NSamples.value()# - self.ui.DelaySamples.value()
+        samples = self.ui.NSamples_DH.value()# - self.ui.DelaySamples.value()
         # print('GPU dispersion samples: ',samples)
         Xpixels = self.ui.AlinesPerBline.value()
         # self.window = np.float32(np.hanning(samples))
@@ -396,14 +397,14 @@ class GPUThread(QThread):
             self.ui.statusbar.showMessage('no background found...using default')
             # self.ui.PrintOut.append("no disperison compensation found...")
             self.log.write("no background found...using default")
-            print("no background found...using default")
+            print("no background found...using default2")
         self.background_tile = self.background
         
 
     def update_FFTlength(self):
         self.length_FFT = 2
         # get samples per Aline
-        samples = self.ui.NSamples.value()# - self.ui.DelaySamples.value()
+        samples = self.ui.NSamples_DH.value()# - self.ui.DelaySamples.value()
         # print('GPU dispersion samples: ',samples)
         while self.length_FFT < samples:
             self.length_FFT *=2
