@@ -295,7 +295,7 @@ class Camera(QThread):
                 # grab_ms = (time.perf_counter() - t_grab) * 1000.0
                 grab_q.put((buf, 0))#grab_ms))
                 BlinesCount += 1
-                # print(BlinesCount)
+                print(BlinesCount)
         finally:
             grab_q.put(grab_stop)
         worker.join()

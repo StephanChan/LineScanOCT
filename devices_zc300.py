@@ -145,7 +145,7 @@ class ZC300:
         axis1 = ctypes.c_ubyte(axis)
         type11 = ctypes.c_uint(type1)
 
-        issuccess = self.zc300.zc300_set_stage_type(axis1, type11)
+        issuccess = self.zc300.zc300_set_stage_type(axis, type1)
         return issuccess
 
     def zc300_get_stage_type(self, axis):

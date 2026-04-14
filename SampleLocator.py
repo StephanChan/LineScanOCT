@@ -25,7 +25,9 @@ class UnifiedSampleScanner(QDialog):
         self.ui.pic_window.setAlignment(Qt.AlignCenter)
 
         # Microscope Parameters
-        self.pixel_size_mm = 0.02
+        self.pixel_size_mm = 0.0474
+        self.X_displacement = 60.5
+        self.Y_displacement = 16.5
         self.fov_w_mm = fov_w_mm
         self.fov_h_mm = fov_h_mm
 
@@ -81,11 +83,11 @@ class UnifiedSampleScanner(QDialog):
                 ret, frame = cap.read()
                 if ret:
                     # Match hardware orientation
-                    frame = cv2.rotate(cv2.flip(frame, 1), cv2.ROTATE_90_CLOCKWISE)
-                    frame_to_use = frame[630:3670, 180:2160]
+                    # frame = cv2.rotate(cv2.flip(frame, 1), cv2.ROTATE_90_CLOCKWISE)
+                    frame_to_use = frame#[630:3670, 180:2160]
             
             if frame_to_use is None:
-                frame_to_use = np.full((3040, 1980, 3), 40, dtype=np.uint8)
+                frame_to_use = np.full((3840, 2160, 3), 40, dtype=np.uint8)
 
             ts = self._get_timestamp()
             tiff.imwrite(os.path.join(self.save_dir, f"RawCapture_{ts}.tif"), frame_to_use)
@@ -146,7 +148,8 @@ class UnifiedSampleScanner(QDialog):
         if self.is_finalized:
             painter.setPen(QPen(QColor(255, 255, 0), 1))
             for loc in self.generated_locations:
-                cx, cy = loc['x'] / self.pixel_size_mm, loc['y'] / self.pixel_size_mm
+                print(loc)
+                cx, cy = (loc['x']-self.X_displacement) / self.pixel_size_mm, (loc['y']-self.Y_displacement) / self.pixel_size_mm
                 hw, hh = (self.fov_w_mm / 2) / self.pixel_size_mm, (self.fov_h_mm / 2) / self.pixel_size_mm
                 tl = to_ui((cx - hw, cy - hh))
                 br = to_ui((cx + hw, cy + hh))
@@ -219,7 +222,7 @@ class UnifiedSampleScanner(QDialog):
             roi_poly = Polygon(mm_poly_pts)
             
             centroid = roi_poly.centroid
-            self.sample_centers.append({'sample_id': sample_id, 'x': centroid.x, 'y': centroid.y, 'z': self.current_zpos})
+            self.sample_centers.append({'sample_id': sample_id, 'x': centroid.x + self.X_displacement, 'y': centroid.y + self.Y_displacement, 'z': self.current_zpos})
 
             min_x, min_y, max_x, max_y = roi_poly.bounds
             # x_centers = np.arange(min_x + self.fov_w_mm/2 - self.fov_w_mm, max_x + self.fov_w_mm, self.fov_w_mm)
@@ -232,7 +235,7 @@ class UnifiedSampleScanner(QDialog):
                     tile_coords = [(cx-self.fov_w_mm/2, cy-self.fov_h_mm/2), (cx+self.fov_w_mm/2, cy-self.fov_h_mm/2),
                                    (cx+self.fov_w_mm/2, cy+self.fov_h_mm/2), (cx-self.fov_w_mm/2, cy+self.fov_h_mm/2)]
                     if Polygon(tile_coords).intersects(roi_poly):
-                        self.generated_locations.append({'sample_id': sample_id, 'x': round(cx, 3), 'y': round(cy, 3), 'z': self.current_zpos})
+                        self.generated_locations.append({'sample_id': sample_id, 'x': round(cx + self.X_displacement, 3), 'y': round(cy + self.Y_displacement, 3), 'z': self.current_zpos})
 
         self.is_finalized = True
         self.update_display()

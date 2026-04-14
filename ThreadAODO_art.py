@@ -40,8 +40,8 @@ except:
     print('ART digitizer init failed, using simulation')
     
 try:
-    from Zolix_control import Stepper
-    st = Stepper()
+    from StageControl import ZC300MotorController
+    motors = ZC300MotorController()
 except:
     print('stage init failed, using simulation')
     # SIM = True
@@ -50,7 +50,6 @@ from Generaic_functions import GenAODO, LinePlot
 import time
 import traceback
 import numpy as np
-
 
     
     
@@ -141,6 +140,29 @@ class AODOThread(QThread):
         self.ui.Xcurrent.setValue(self.ui.XPosition.value())
         self.ui.Ycurrent.setValue(self.ui.YPosition.value())
         self.ui.Zcurrent.setValue(self.ui.ZPosition.value())
+        # initialize stages
+        motors.configure_axis(0) 
+        motors.configure_axis(1) 
+        motors.configure_axis(2) 
+        
+        motors.set_init_speed(0, 1)      # 起始速度 1 mm/s
+        motors.set_move_speed(0, self.ui.XSpeed.value())     # 运行速度  mm/s
+        motors.set_acceleration(0, self.ui.XAccelerate.value())   # 加速度  mm/s²
+        motors.set_home_speed(0, self.ui.XSpeed.value())      # 回零速度  mm/s
+        motors.set_position(0,-self.ui.XPosition.value())
+        
+        motors.set_init_speed(1, 1)      # 起始速度 1 mm/s
+        motors.set_move_speed(1, self.ui.YSpeed.value())     # 运行速度  mm/s
+        motors.set_acceleration(1, self.ui.YAccelerate.value())   # 加速度  mm/s²
+        motors.set_home_speed(1, self.ui.YSpeed.value())      # 回零速度  mm/s
+        motors.set_position(1,-self.ui.YPosition.value())
+        
+        motors.set_init_speed(2, 0.1)      # 起始速度 0.1 mm/s
+        motors.set_move_speed(2, self.ui.ZSpeed.value())     # 运行速度  mm/s
+        motors.set_acceleration(2, self.ui.ZAccelerate.value())   # 加速度  mm/s²
+        motors.set_home_speed(2, self.ui.ZSpeed.value())      # 回零速度  mm/s
+        motors.set_position(2,-self.ui.ZPosition.value())
+
         message = "Stage position updated..."
 
         self.ui.statusbar.showMessage(message)
@@ -151,9 +173,9 @@ class AODOThread(QThread):
     
     def Uninit(self):
         if not (SIM or self.SIM):
-            st.enable(0,False)
-            st.enable(1,False)
-            st.enable(2,False)
+            motors.set_enable(0,False)
+            motors.set_enable(1,False)
+            motors.set_enable(2,False)
             
             # pass
         self.StagebackQueue.put(0)
@@ -287,23 +309,29 @@ class AODOThread(QThread):
        
         
         if axis =='X':
-            st.enable(0,True)
+            motors.set_enable(0,True)
+            motors.set_move_speed(0, self.ui.XSpeed.value())
+            motors.set_acceleration(0, self.ui.XAccelerate.value())
             distance = self.ui.XPosition.value() - self.ui.Xcurrent.value()
-            st.move(0, -distance, self.ui.XSpeed.value())
+            motors.move_relative(0, distance)
             self.ui.Xcurrent.setValue(self.ui.Xcurrent.value()+distance)
            
         if axis =='Y':
-            st.enable(1,True)
+            motors.set_enable(1,True)
+            motors.set_move_speed(1, self.ui.YSpeed.value())
+            motors.set_acceleration(1, self.ui.YAccelerate.value())
             distance = self.ui.YPosition.value() - self.ui.Ycurrent.value()
             # print(distance, self.ui.YPosition.value())
-            st.move(1, -distance, self.ui.YSpeed.value())
+            motors.move_relative(1, distance)
             # print(self.ui.Ycurrent.value()+distance, self.ui.YPosition.value())
             self.ui.Ycurrent.setValue(self.ui.Ycurrent.value()+distance)
             
         if axis =='Z':
-            st.enable(2,True)
+            motors.set_enable(2,True)
+            motors.set_move_speed(2, self.ui.ZSpeed.value())
+            motors.set_acceleration(2, self.ui.ZAccelerate.value())
             distance = self.ui.ZPosition.value() - self.ui.Zcurrent.value()
-            st.move(2, -distance*62.5, self.ui.ZSpeed.value()*70)
+            motors.move_relative(2, distance)
             self.ui.Zcurrent.setValue(self.ui.Zcurrent.value()+distance)
         
         # if axis == 'X':
@@ -353,17 +381,38 @@ class AODOThread(QThread):
     def Home(self, axis):
         if not (SIM or self.SIM):
             if axis == 'X':
-                st.home(0, self.ui.XSpeed.value())
+                # self.ui.XPosition.setValue(0)
+                # self.DirectMove(axis)
+                # self.StagebackQueue.get()
+                motors.set_home_speed(0, self.ui.XSpeed.value())
+                motors.home(0)
                 self.ui.XPosition.setValue(0)
                 self.ui.Xcurrent.setValue(0)
+                # self.ui.XPosition.setValue(1)
+                # self.DirectMove(axis)
+                # self.StagebackQueue.get()
             elif axis == 'Y':
-                st.home(1, self.ui.YSpeed.value())
+                # self.ui.YPosition.setValue(0)
+                # self.DirectMove(axis)
+                # self.StagebackQueue.get()
+                motors.set_home_speed(1, self.ui.YSpeed.value())
+                motors.home(1)
                 self.ui.YPosition.setValue(0)
                 self.ui.Ycurrent.setValue(0)
+                # self.ui.YPosition.setValue(1)
+                # self.DirectMove(axis)
+                # self.StagebackQueue.get()
             elif axis == 'Z':
-                st.home(2, self.ui.ZSpeed.value()*70)
+                # self.ui.ZPosition.setValue(0)
+                # self.DirectMove(axis)
+                # self.StagebackQueue.get()
+                motors.set_home_speed(2, self.ui.ZSpeed.value())
+                motors.home(2)
                 self.ui.ZPosition.setValue(0)
                 self.ui.Zcurrent.setValue(0)
+                # self.ui.ZPosition.setValue(1)
+                # self.DirectMove(axis)
+                # self.StagebackQueue.get()
             
         else:
             time.sleep(2)

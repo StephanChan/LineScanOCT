@@ -4,7 +4,7 @@ import ctypes
 class ZC300:
     def __init__(self) -> None:
         # 初始化
-        self.zc300 = ctypes.cdll.LoadLibrary(r"D:\zolix\zolix\zolix_zc_300.dll")
+        self.zc300 = ctypes.cdll.LoadLibrary(r"D:\LineScanOCT\LineScanOCT\zolix\zolix_zc_300.dll")
 
     def zc300_enum_count(self):
         """获取设备数量"""
@@ -128,7 +128,7 @@ class ZC300:
         axis1 = ctypes.c_ubyte(axis)
         enabled1 = ctypes.c_bool(0)
 
-        self.zc300.zc300_get_enabled(axis1, ctypes.byref(enabled1))
+        self.zc300.zc300_get_enabled(axis, ctypes.byref(enabled1))
         return enabled1.value
 ###########################################
 
@@ -145,7 +145,7 @@ class ZC300:
         axis1 = ctypes.c_ubyte(axis)
         type11 = ctypes.c_uint(type1)
 
-        issuccess = self.zc300.zc300_set_stage_type(axis1, type11)
+        issuccess = self.zc300.zc300_set_stage_type(axis, type1)
         return issuccess
 
     def zc300_get_stage_type(self, axis):
@@ -161,7 +161,7 @@ class ZC300:
         axis1 = ctypes.c_ubyte(axis)
         type1 = ctypes.c_short(5)
 
-        self.zc300.zc300_get_stage_type(axis1, ctypes.byref(type1))
+        self.zc300.zc300_get_stage_type(axis, ctypes.byref(type1))
         return type1.value
 
 

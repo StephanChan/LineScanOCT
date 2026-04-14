@@ -129,14 +129,14 @@ class GPUThread(QThread):
             # plt.figure()
             # plt.imshow(self.data_CPU[0,:,:])
             # plt.show()
-            # self.data_CPU = self.data_CPU - self.background_tile
+            self.data_CPU = self.data_CPU - self.background_tile
             # plt.figure()
             # plt.imshow(self.data_CPU[0,:,:])
             # plt.show()
             # plt.figure()
             # plt.imshow(self.background)
             # plt.show()
-            # self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=51, axis=2)
+            self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=51, axis=2)
             t1=time.time()
             if round(t1-t0,4) >0.2:
                 print('background subtraction took ', round(t1-t0,3),'s')

@@ -257,7 +257,7 @@ class DnSThread(QThread):
             Xpixels = Xpixels//self.ui.AlineAVG.value()
         # print(data[10,100,50:60])
         self.Bline = np.transpose(Cscan[Ypixels//2,:,:]).copy()# has to be first index, otherwise the memory space is not continuous
-        self.AIP = np.mean(Cscan,2)
+        self.AIP = np.rot90(np.mean(Cscan,2),k=1,axes = (1,0))
         
         if self.ui.Save.isChecked():
             self.Save(Data = data, Raw = raw)

@@ -290,6 +290,8 @@ class GUI(MainWindow):
                 for i in range(len(sample_centers)):
                     self.ui.sampleSelector.addItem(f"Sample {i+1}")
             # print(self.sample_centers)
+        print(FOV_locations)
+        print(sample_centers)
         an_action = WeaverAction('PlatePreScan', args = [FOV_locations, sample_centers, raw_img, pixel_polygons])
         WeaverQueue.put(an_action)
 

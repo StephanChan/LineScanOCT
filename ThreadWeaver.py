@@ -262,6 +262,8 @@ class WeaverThread(QThread):
     def RptScan(self, mode):
         # an_action = DnSAction('Clear')
         # self.DnSQueue.put(an_action)
+        frame_rate = self.ui.FrameRate_DH.value()
+        self.ui.FrameRate_DH.setValue(10)
         an_action = DAction('ConfigureBoard')
         self.DQueue.put(an_action)
         self.DbackQueue.get()
@@ -286,7 +288,7 @@ class WeaverThread(QThread):
             ######################################### collect data
             try: # use try-except in cases where Stop button clicked and camera stopped prior to while loop
                 start = time.time()
-                an_action = self.DatabackQueue.get(timeout=3) # never time out
+                an_action = self.DatabackQueue.get(timeout=5) # never time out
                 # print('time to fetch data: '+str(round(time.time()-start,3)))
                 memoryLoc = an_action.action
                 # print(memoryLoc)
@@ -346,6 +348,7 @@ class WeaverThread(QThread):
         self.GPUQueue.put(an_action)
         an_action = GPUAction('display_counts', args = mode)
         self.GPUQueue.put(an_action)
+        self.ui.FrameRate_DH.setValue(frame_rate)
         return message
   
 
@@ -722,60 +725,7 @@ class WeaverThread(QThread):
         self.overlay_images[sample_id] = final_buffer
         self.ui.MosaicLabel.setPixmap(final_buffer)
         self.CurrentSampleLocations = new_fov_locations        
-    
-    
-    # def identify_agar(self, cscan, stripes, cscans):
-    #     value = np.mean(cscan,1)
-    #     # reshape into Ypixels x Xpixels matrix
-    #     value = value.reshape([self.ui.AlinesPerBline.value()*self.ui.BlineAVG.value(),\
-    #                            self.ui.NSamples.value()*self.ui.AlineAVG.value()+ \
-    #                            self.ui.PreClock.value()*2 + self.ui.PostClock.value()])
-    #     # trim galvo fly-back data
-    #     value = value[:,self.ui.PreClock.value():self.ui.PreClock.value()+\
-    #                   self.ui.NSamples.value()*self.ui.AlineAVG.value()]
-    #     # # downsample X dimension
-    #     # value = value.reshape([self.ui.AlinesPerBline.value()*self.ui.BlineAVG.value(),\
-    #     #                        self.ui.NSamples.value()*self.ui.AlineAVG.value()//self.Yds,self.Yds]).mean(-1)
-    #     self.ui.tileMean.setValue(np.mean(value))
-    #     if np.sum(value > self.ui.ThresholdValue.value())>value.shape[1]*value.shape[0]*0.05: 
-    #         self.tile_flag[stripes - 1][cscans] = 1
-    #         self.ui.TissueRadio.setChecked(True)
-    #         self.tmp_cscan = self.tmp_cscan + cscan/100.0
-    #     else:
-    #         self.ui.TissueRadio.setChecked(False)
-            
-    # def Focusing(self, cscan):
-    #     ######################################################### find average slice surface
-    #     cscan = cscan.reshape([self.ui.AlinesPerBline.value()*self.ui.BlineAVG.value(),\
-    #                            self.ui.NSamples.value()*self.ui.AlineAVG.value()+ self.ui.PreClock.value()*2 + self.ui.PostClock.value(),\
-    #                            self.ui.DepthRange.value()])
-    #     bscan = cscan.mean(0)
-    #     # remove galvo flayback data
-    #     bscan = bscan[self.ui.PreClock.value():self.ui.PreClock.value()+self.ui.NSamples.value()*self.ui.AlineAVG.value(),:]
-    #     # flatten surface
-    #     if np.any(self.surfCurve):
-    #         bscan_flatten = np.zeros(bscan.shape, dtype = np.float32)
-    #         for xx in range(bscan_flatten.shape[0]):
-    #             bscan_flatten[xx,0:bscan.shape[1]-self.surfCurve[xx]] = bscan[xx,self.surfCurve[xx]:]
-    #         plt.figure()
-    #         plt.imshow(bscan_flatten)
-    #         plt.savefig('slice'+str(self.ui.CuSlice.value())+'surface.jpg')
-    #         plt.close()
-    #     else:
-    #         bscan_flatten = bscan
-    #     # find tile surface
-    #     ascan = bscan_flatten.mean(0)
-        
-    #     surfAlinesPerBline = findchangept(ascan,1)
-
-    #     ##########################################################
-    #     self.ui.SurfAlinesPerBline.setValue(surfAlinesPerBline)
-    #     message = 'tile surf is:'+str(surfAlinesPerBline)
-    #     print(message)
-    #     self.log.write(message)
-    #     delta_z = (self.ui.SurfAlinesPerBline.value()-self.ui.SurfSet.value())*ZPIXELSIZE/1000.0
-    #     self.ui.ZIncrease.setValue(delta_z)
-        
+       
     def ZstageRepeatibility(self):
         mode = self.ui.ACQMode.currentText()
         device = self.ui.FFTDevice.currentText()
@@ -960,7 +910,7 @@ class WeaverThread(QThread):
         BAvg = self.ui.BlineAVG.value()
         self.ui.ACQMode.setCurrentText('FiniteBline')
         self.ui.FFTDevice.setCurrentText('None')
-        self.ui.BlineAVG.setValue(200)
+        self.ui.BlineAVG.setValue(100)
         ############################# measure an Aline
         print('acquiring Bline')
         self.ui.RunButton.setChecked(True)
@@ -998,9 +948,6 @@ class WeaverThread(QThread):
         self.ui.FFTDevice.setCurrentText(device)
         self.ui.BlineAVG.setValue(BAvg)
         return 'background measruement success...'
-    
-
-    
     
     def get_surfCurve(self):
         
@@ -1075,9 +1022,9 @@ class WeaverThread(QThread):
                 break
     
             # 2. Process Image (Rotate/Flip/Crop to match your previous setup)
-            frame = cv2.rotate(cv2.flip(frame, 1), cv2.ROTATE_90_CLOCKWISE)
+            # frame = cv2.rotate(cv2.flip(frame, 1), cv2.ROTATE_90_CLOCKWISE)
             # Assuming the same crop as your SampleLocator
-            frame = frame[630:3670, 180:2160]
+            # frame = frame[630:3670, 180:2160]
             
             # 3. Convert BGR to RGB
             rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -1095,7 +1042,7 @@ class WeaverThread(QThread):
                 self.ui.XZplane.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
     
         # 6. Release resources when button is unchecked
-        cap.release()
+        
         
     
     def save_session_data(self, folder_path):
