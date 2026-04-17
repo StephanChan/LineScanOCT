@@ -161,17 +161,35 @@ class Camera(QThread):
                 
                 else:
                     message = 'Invalid camera action: ' + self.item.action
-                    self.ui.statusbar.showMessage(message)
+                    if getattr(self, "ui_bridge", None) is not None:
+                        try:
+                            self.ui_bridge.status_message.emit(message)
+                        except Exception:
+                            self.ui.statusbar.showMessage(message)
+                    else:
+                        self.ui.statusbar.showMessage(message)
                     self.log.write(message)
             except Exception as error:
                 message = "\nError occurred, skipping: " + str(error)
-                self.ui.statusbar.showMessage(message)
+                if getattr(self, "ui_bridge", None) is not None:
+                    try:
+                        self.ui_bridge.status_message.emit(message)
+                    except Exception:
+                        self.ui.statusbar.showMessage(message)
+                else:
+                    self.ui.statusbar.showMessage(message)
                 self.log.write(message)
                 print(traceback.format_exc())
             self.item = self.queue.get()  # 获取下一个任务
         self.Close()
         print(self.exit_message)
-        self.ui.statusbar.showMessage(self.exit_message)
+        if getattr(self, "ui_bridge", None) is not None:
+            try:
+                self.ui_bridge.status_message.emit(self.exit_message)
+            except Exception:
+                self.ui.statusbar.showMessage(self.exit_message)
+        else:
+            self.ui.statusbar.showMessage(self.exit_message)
         
     # 初始化并打开真实相机
     def initCamera(self):
@@ -295,7 +313,7 @@ class Camera(QThread):
                 # grab_ms = (time.perf_counter() - t_grab) * 1000.0
                 grab_q.put((buf, 0))#grab_ms))
                 BlinesCount += 1
-                print(BlinesCount)
+                # print(BlinesCount)
         finally:
             grab_q.put(grab_stop)
         worker.join()

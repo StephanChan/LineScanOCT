@@ -10,12 +10,83 @@ from shapely.geometry import Polygon
 
 # Ensure SampleLocatorUI.py is in the same directory
 from SampleLocatorUI import Ui_Form
+from mosaic_scan_planner import (
+    CENTER_MODE,
+    FOV_OVERLAP,
+    MAX_Y_FOV_MM,
+    ROI_OCCUPANCY_TARGET,
+    plan_mosaic_scan,
+)
+
+USB_PIXEL_SIZE_MM = 0.0474
+USB_X_DISPLACEMENT_MM = 16.5
+USB_Y_DISPLACEMENT_MM = 60.5
+USB_CAMERA_INDEX = 0
+USB_FRAME_WIDTH = 3840
+USB_FRAME_HEIGHT = 2160
+USB_AUTO_EXPOSURE = 0.25
+USB_EXPOSURE = -5.0
+
+def usb_image_to_stage(px, py, image_width):
+    """
+    Convert displayed USB-camera image coordinates to stage coordinates.
+
+    The displayed image uses a top-right origin for the stage frame:
+    image vertical -> stage X, image horizontal -> stage Y.
+    """
+    stage_x = py * USB_PIXEL_SIZE_MM + USB_X_DISPLACEMENT_MM
+    stage_y = (image_width - px) * USB_PIXEL_SIZE_MM + USB_Y_DISPLACEMENT_MM
+    return stage_x, stage_y
+
+def stage_to_usb_image(stage_x, stage_y, image_width):
+    """Inverse transform of usb_image_to_stage()."""
+    px = image_width - ((stage_y - USB_Y_DISPLACEMENT_MM) / USB_PIXEL_SIZE_MM)
+    py = (stage_x - USB_X_DISPLACEMENT_MM) / USB_PIXEL_SIZE_MM
+    return px, py
+
+def orient_usb_frame(frame):
+    """Apply the display orientation used by the sample locator."""
+    return cv2.flip(frame, 1)
+
+def open_usb_camera(configure_exposure=False):
+    cap = cv2.VideoCapture(USB_CAMERA_INDEX, cv2.CAP_MSMF)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, USB_FRAME_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, USB_FRAME_HEIGHT)
+    if configure_exposure:
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, USB_AUTO_EXPOSURE)
+        cap.set(cv2.CAP_PROP_EXPOSURE, USB_EXPOSURE)
+    return cap
+
+def capture_usb_frame(configure_exposure=False):
+    cap = open_usb_camera(configure_exposure=configure_exposure)
+    try:
+        if not cap.isOpened():
+            return None
+        ret, frame = cap.read()
+        if not ret:
+            return None
+        return orient_usb_frame(frame)
+    finally:
+        cap.release()
+
+def blank_usb_frame():
+    return np.full((USB_FRAME_HEIGHT, USB_FRAME_WIDTH, 3), 40, dtype=np.uint8)
 
 class UnifiedSampleScanner(QDialog):
-    def __init__(self, save_dir=r'D:\LineScanOCT', fov_w_mm=2.0, fov_h_mm=1.0, current_zpos = 0):
+    def __init__(
+        self,
+        save_dir=r'D:\LineScanOCT',
+        fov_w_mm=2.0,
+        fov_h_mm=1.0,
+        current_zpos=0,
+        y_step_um=10.0,
+        stage_bounds=(0, 200, 0, 120),
+    ):
         super().__init__()
         self.save_dir = save_dir
         self.current_zpos = current_zpos
+        self.y_step_um = y_step_um
+        self.stage_bounds = stage_bounds
         os.makedirs(self.save_dir, exist_ok=True)
         
         self.ui = Ui_Form()
@@ -25,11 +96,16 @@ class UnifiedSampleScanner(QDialog):
         self.ui.pic_window.setAlignment(Qt.AlignCenter)
 
         # Microscope Parameters
-        self.pixel_size_mm = 0.0474
-        self.X_displacement = 60.5
-        self.Y_displacement = 16.5
+        self.pixel_size_mm = USB_PIXEL_SIZE_MM
+        self.X_displacement = USB_X_DISPLACEMENT_MM
+        self.Y_displacement = USB_Y_DISPLACEMENT_MM
         self.fov_w_mm = fov_w_mm
         self.fov_h_mm = fov_h_mm
+        self.roi_occupancy = ROI_OCCUPANCY_TARGET
+        self.fov_overlap = FOV_OVERLAP
+        self.max_y_fov_mm = MAX_Y_FOV_MM
+        self.center_mode = CENTER_MODE
+        self.debug_scan_planner = False
 
         # State Variables
         self.img_bgr = None
@@ -61,39 +137,45 @@ class UnifiedSampleScanner(QDialog):
 
         QTimer.singleShot(100, self.reset_view)
 
+    def image_to_stage(self, px, py):
+        """
+        Convert displayed USB-camera image coordinates to stage coordinates.
+
+        The displayed image uses a top-right origin for the stage frame:
+        image vertical -> stage X, image horizontal -> stage Y.
+        """
+        if self.img_bgr is None:
+            return 0.0, 0.0
+        _, image_w = self.img_bgr.shape[:2]
+        return usb_image_to_stage(px, py, image_w)
+
+    def stage_to_image(self, stage_x, stage_y):
+        """Inverse transform of image_to_stage()."""
+        if self.img_bgr is None:
+            return 0.0, 0.0
+        _, image_w = self.img_bgr.shape[:2]
+        return stage_to_usb_image(stage_x, stage_y, image_w)
+
     def _prepare_pixmap(self):
         """Converts CV2 image to QPixmap once to maintain high resolution and memory safety."""
         if self.img_bgr is None: return
         h, w = self.img_bgr.shape[:2]
-        rgb = cv2.cvtColor(self.img_bgr, cv2.COLOR_BGR2RGB)
+        rgb = np.ascontiguousarray(cv2.cvtColor(self.img_bgr, cv2.COLOR_BGR2RGB))
         # Using .copy() ensures Qt owns the memory, preventing kernel crashes
-        qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
+        qimg = QImage(rgb.tobytes(), w, h, 3 * w, QImage.Format_RGB888).copy()
         self.qpixmap_raw = QPixmap.fromImage(qimg)
 
     def _get_timestamp(self):
         return datetime.now().strftime("%Y%m%d_%H%M%S")
 
     def _capture_and_save_raw(self):
-        cap = cv2.VideoCapture(0, cv2.CAP_MSMF)
-        frame_to_use = None
-        try:
-            if cap.isOpened():
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
-                ret, frame = cap.read()
-                if ret:
-                    # Match hardware orientation
-                    # frame = cv2.rotate(cv2.flip(frame, 1), cv2.ROTATE_90_CLOCKWISE)
-                    frame_to_use = frame#[630:3670, 180:2160]
-            
-            if frame_to_use is None:
-                frame_to_use = np.full((3840, 2160, 3), 40, dtype=np.uint8)
+        frame_to_use = capture_usb_frame()
+        if frame_to_use is None:
+            frame_to_use = blank_usb_frame()
 
-            ts = self._get_timestamp()
-            tiff.imwrite(os.path.join(self.save_dir, f"RawCapture_{ts}.tif"), frame_to_use)
-            return frame_to_use
-        finally:
-            cap.release()
+        ts = self._get_timestamp()
+        tiff.imwrite(os.path.join(self.save_dir, f"RawCapture_{ts}.tif"), frame_to_use)
+        return frame_to_use
 
     def reset_view(self):
         if self.img_bgr is None: return
@@ -148,11 +230,12 @@ class UnifiedSampleScanner(QDialog):
         if self.is_finalized:
             painter.setPen(QPen(QColor(255, 255, 0), 1))
             for loc in self.generated_locations:
-                print(loc)
-                cx, cy = (loc['x']-self.X_displacement) / self.pixel_size_mm, (loc['y']-self.Y_displacement) / self.pixel_size_mm
-                hw, hh = (self.fov_w_mm / 2) / self.pixel_size_mm, (self.fov_h_mm / 2) / self.pixel_size_mm
-                tl = to_ui((cx - hw, cy - hh))
-                br = to_ui((cx + hw, cy + hh))
+                cx, cy = self.stage_to_image(loc['x'], loc['y'])
+                loc_y_fov = loc.get('y_length_mm', self.fov_h_mm)
+                h_half = (self.fov_w_mm / 2) / self.pixel_size_mm
+                w_half = (loc_y_fov / 2) / self.pixel_size_mm
+                tl = to_ui((cx - w_half, cy - h_half))
+                br = to_ui((cx + w_half, cy + h_half))
                 painter.drawRect(QRectF(tl[0], tl[1], br[0]-tl[0], br[1]-tl[1]))
 
         painter.end()
@@ -218,24 +301,45 @@ class UnifiedSampleScanner(QDialog):
 
         for idx, poly_pts in enumerate(self.polygons):
             sample_id = idx + 1 
-            mm_poly_pts = [(p[0] * self.pixel_size_mm, p[1] * self.pixel_size_mm) for p in poly_pts]
-            roi_poly = Polygon(mm_poly_pts)
-            
-            centroid = roi_poly.centroid
-            self.sample_centers.append({'sample_id': sample_id, 'x': centroid.x + self.X_displacement, 'y': centroid.y + self.Y_displacement, 'z': self.current_zpos})
-
-            min_x, min_y, max_x, max_y = roi_poly.bounds
-            # x_centers = np.arange(min_x + self.fov_w_mm/2 - self.fov_w_mm, max_x + self.fov_w_mm, self.fov_w_mm)
-            # y_centers = np.arange(min_y + self.fov_h_mm/2 - self.fov_h_mm, max_y + self.fov_h_mm, self.fov_h_mm)
-            x_centers = np.arange(min_x, max_x + self.fov_w_mm/2, self.fov_w_mm)
-            y_centers = np.arange(min_y, max_y + self.fov_w_mm/2, self.fov_h_mm)
-
-            for cx in x_centers:
-                for cy in y_centers:
-                    tile_coords = [(cx-self.fov_w_mm/2, cy-self.fov_h_mm/2), (cx+self.fov_w_mm/2, cy-self.fov_h_mm/2),
-                                   (cx+self.fov_w_mm/2, cy+self.fov_h_mm/2), (cx-self.fov_w_mm/2, cy+self.fov_h_mm/2)]
-                    if Polygon(tile_coords).intersects(roi_poly):
-                        self.generated_locations.append({'sample_id': sample_id, 'x': round(cx + self.X_displacement, 3), 'y': round(cy + self.Y_displacement, 3), 'z': self.current_zpos})
+            stage_poly_pts = [self.image_to_stage(p[0], p[1]) for p in poly_pts]
+            scan_plan = plan_mosaic_scan(
+                sample_id=sample_id,
+                mm_polygons=[stage_poly_pts],
+                x_fov_mm=self.fov_w_mm,
+                y_step_um=self.y_step_um,
+                stage_bounds=self.stage_bounds,
+                occupancy=self.roi_occupancy,
+                overlap=self.fov_overlap,
+                max_y_fov_mm=self.max_y_fov_mm,
+                center_mode=self.center_mode,
+            )
+            self.sample_centers.append(
+                {
+                    'sample_id': sample_id,
+                    'x': scan_plan.center_x,
+                    'y': scan_plan.center_y,
+                    'z': self.current_zpos,
+                }
+            )
+            for loc in scan_plan.fov_locations:
+                self.generated_locations.append(
+                    {
+                        'sample_id': sample_id,
+                        'x': loc['x'],
+                        'y': loc['y'],
+                        'z': self.current_zpos,
+                        'y_length_mm': scan_plan.y_length_mm,
+                        'y_pixels': scan_plan.y_pixels,
+                    }
+                )
+            if self.debug_scan_planner:
+                print(
+                    "USB sample scan plan: "
+                    f"sample_id={sample_id}, center=({scan_plan.center_x:.3f}, {scan_plan.center_y:.3f}), "
+                    f"roi_size=({scan_plan.roi_size[0]:.3f}, {scan_plan.roi_size[1]:.3f}), "
+                    f"tile_count={scan_plan.tile_count}, accepted={len(scan_plan.fov_locations)}, "
+                    f"planned_YLength={scan_plan.y_length_mm:.3f}, planned_Ypixels={scan_plan.y_pixels}"
+                )
 
         self.is_finalized = True
         self.update_display()

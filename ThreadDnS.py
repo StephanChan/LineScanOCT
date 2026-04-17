@@ -59,23 +59,22 @@ class DnSThread(QThread):
                 if self.item.action in ['FiniteAline','ContinuousAline']:
                     self.display_actions += 1
                     self.Process_aline(self.item.data, self.item.raw)
-                    self.Update_contrast()
+                    self._emit_display(kind="aline")
                 elif self.item.action in ['FiniteBline','ContinuousBline']:
                     self.Process_bline(self.item.data, self.item.raw, self.item.dynamic)
-                    self.Update_contrast()
                     self.display_actions += 1
+                    self._emit_display(kind="bline")
                 elif self.item.action in ['FiniteCscan','ContinuousCscan']:
                     self.display_actions += 1
                     if self.ui.DynCheckBox.isChecked():
                         self.Process_Cscan_Dynamic(self.item.data, self.item.dynamic)
                     else:
                         self.Process_Cscan(self.item.data, self.item.raw)
-                    self.Update_contrast()
+                    self._emit_display(kind="cscan")
                     
                 elif self.item.action == 'Process_Mosaic':
                     self.Process_Mosaic(self.item.data, self.item.raw, self.item.args)
-                    # if self.DynamicBlineIdx == 0:
-                    self.Update_contrast()
+                    self._emit_display(kind="mosaic")
                 elif self.item.action == 'Return_mosaic':
                     self.Return_mosaic()
                 elif self.item.action == 'Clear':
@@ -83,11 +82,11 @@ class DnSThread(QThread):
                     # self.SampleMosaic= []
                     self.DynamicBlineIdx = 0
                 elif self.item.action == 'UpdateContrast':
-                    self.Update_contrast()
+                    self._emit_display(kind="force")
                 elif self.item.action == 'UpdateContrastMosaic':
-                    self.Update_contrast_Mosaic()
+                    self._emit_display(kind="force")
                 elif self.item.action == 'UpdateContrastDyn':
-                    self.Update_contrast_Dyn()
+                    self._emit_display(kind="force")
                 elif self.item.action == 'display_counts':
                     self.print_display_counts(self.item.args)
                 elif self.item.action == 'restart_tilenum':
@@ -113,7 +112,7 @@ class DnSThread(QThread):
                     self.IncrementTime()
                 else:
                     message = 'Display and save thread is doing something invalid' + self.item.action
-                    self.ui.statusbar.showMessage(message)
+                    self._status(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
                 if time.time()-start>1:
@@ -121,7 +120,7 @@ class DnSThread(QThread):
             except Exception as error:
                 message = "\nAn error occurred:"+" skip the display and save action\n"
                 print(message)
-                self.ui.statusbar.showMessage(message)
+                self._status(message)
                 # self.ui.PrintOut.append(message)
                 self.log.write(message)
                 print(traceback.format_exc())
@@ -129,7 +128,82 @@ class DnSThread(QThread):
             # print(num, 'th display\n')
             self.item = self.queue.get()
             
-        self.ui.statusbar.showMessage("Display and save Thread successfully exited...")
+        self._status("Display and save Thread successfully exited...")
+
+    def _status(self, msg: str):
+        if getattr(self, "ui_bridge", None) is not None:
+            try:
+                self.ui_bridge.status_message.emit(msg)
+                return
+            except Exception:
+                pass
+        try:
+            self.ui.statusbar.showMessage(msg)
+        except Exception:
+            pass
+
+    def _emit_display(self, kind: str):
+        """
+        Emit display payloads to GUI thread via ui_bridge.
+        This thread must NOT create QPixmap or touch widgets for rendering.
+        """
+        bridge = getattr(self, "ui_bridge", None)
+        if bridge is None:
+            return
+
+        mode = self.ui.ACQMode.currentText()
+
+        if kind == "force":
+            if mode in ["FiniteAline", "ContinuousAline"]:
+                kind = "aline"
+            elif mode in ["FiniteBline", "ContinuousBline"]:
+                kind = "bline"
+            elif mode in ["FiniteCscan", "ContinuousCscan"]:
+                kind = "cscan"
+            elif mode in ["PlatePreScan", "PlateScan", "WellScan"]:
+                kind = "mosaic"
+            else:
+                return
+
+        if kind == "aline" and hasattr(self, "Aline") and np.size(self.Aline) > 0:
+            bridge.aline_ready.emit({"mode": mode, "aline": np.array(self.Aline, copy=True)})
+
+        if kind == "bline" and hasattr(self, "Bline") and np.size(self.Bline) > 0:
+            dyn = None
+            if hasattr(self, "DynBline") and np.size(self.DynBline) > 0:
+                dyn = np.array(self.DynBline, copy=True)
+            bridge.bline_ready.emit({"mode": mode, "bline": np.array(self.Bline, copy=True), "dyn": dyn})
+
+        if (
+            kind == "cscan"
+            and hasattr(self, "Bline")
+            and hasattr(self, "AIP")
+            and np.size(self.Bline) > 0
+            and np.size(self.AIP) > 0
+        ):
+            dynb = None
+            dyn = None
+            if hasattr(self, "DynBline") and np.size(self.DynBline) > 0:
+                dynb = np.array(self.DynBline, copy=True)
+            if hasattr(self, "Dyn") and np.size(self.Dyn) > 0:
+                dyn = np.array(self.Dyn, copy=True)
+            bridge.cscan_ready.emit(
+                {
+                    "mode": mode,
+                    "bline": np.array(self.Bline, copy=True),
+                    "dynb": dynb,
+                    "aip": np.array(self.AIP, copy=True),
+                    "dyn": dyn,
+                }
+            )
+
+        if kind == "mosaic" and hasattr(self, "SampleMosaic") and np.size(self.SampleMosaic) > 0:
+            bline = None
+            if hasattr(self, "Bline") and np.size(self.Bline) > 0:
+                bline = np.array(self.Bline, copy=True)
+            bridge.mosaic_ready.emit(
+                {"mode": mode, "mosaic": np.array(self.SampleMosaic, copy=True), "bline": bline}
+            )
             
     def print_display_counts(self, mode = ''):
         message = str(self.display_actions) + ' ' + mode +' displayed\n'
@@ -199,7 +273,7 @@ class DnSThread(QThread):
         Zpixels, Xpixels, Yrpt = self.get_FOV_size()
         if Zpixels != data.shape[2]:
             Zpixels = data.shape[2]
-        Ypixels = self.ui.Ypixels.value()
+        Ypixels = data.shape[0]
         # Bline averaging
         if data.shape[0] > 1:
             Bline=np.mean(data,0)
@@ -241,13 +315,13 @@ class DnSThread(QThread):
         Zpixels, Xpixels, Yrpt = self.get_FOV_size(raw)
         if Zpixels != data.shape[2]:
             Zpixels = data.shape[2]
-        Ypixels = self.ui.Ypixels.value() * Yrpt
+        Ypixels = data.shape[0]
         # Bline averaging
         if self.ui.BlineAVG.value() > 1:
             # reshape into Ypixels x Xpixels x Zpixels
-            Cscan = data.reshape([self.ui.Ypixels.value(), self.ui.BlineAVG.value(), Xpixels,Zpixels])
+            Ypixels = data.shape[0] // self.ui.BlineAVG.value()
+            Cscan = data.reshape([Ypixels, self.ui.BlineAVG.value(), Xpixels,Zpixels])
             Cscan=np.mean(Cscan,1)
-            Ypixels = self.ui.Ypixels.value()
         else:
             Cscan = data.copy()
         # Aline averaging if needed
@@ -257,7 +331,7 @@ class DnSThread(QThread):
             Xpixels = Xpixels//self.ui.AlineAVG.value()
         # print(data[10,100,50:60])
         self.Bline = np.transpose(Cscan[Ypixels//2,:,:]).copy()# has to be first index, otherwise the memory space is not continuous
-        self.AIP = np.rot90(np.mean(Cscan,2),k=1,axes = (1,0))
+        self.AIP = np.mean(Cscan,2)
         
         if self.ui.Save.isChecked():
             self.Save(Data = data, Raw = raw)
@@ -432,7 +506,7 @@ class DnSThread(QThread):
         Zpixels, Xpixels, Yrpt = self.get_FOV_size(Raw)
         if Zpixels != Data.shape[2]:
             Zpixels = Data.shape[2]
-        Ypixels = self.ui.Ypixels.value() * Yrpt
+        Ypixels = Data.shape[0]
         
         if self.ui.ACQMode.currentText() in ['FiniteAline', 'ContinuousAline']:
             filename = self.ui.DIR.toPlainText()+'/'+self.AlineFilename([Yrpt,Xpixels,Zpixels])

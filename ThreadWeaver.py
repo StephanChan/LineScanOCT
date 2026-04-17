@@ -13,7 +13,10 @@ from Generaic_functions import *
 from Actions import DnSAction, AODOAction, GPUAction, DAction
 import traceback
 import os
+import json
 import matplotlib.pyplot as plt
+from queue import Empty
+from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 from PyQt5.QtCore import Qt, QRectF, QPointF
 # from matplotlib.path import Path
@@ -22,6 +25,14 @@ from shapely.geometry import Polygon # Shapely is best for intersection math
 import datetime
 import pickle
 import cv2
+from mosaic_scan_planner import (
+    CENTER_MODE,
+    FOV_OVERLAP,
+    MAX_Y_FOV_MM,
+    ROI_OCCUPANCY_TARGET,
+    plan_mosaic_scan,
+)
+from SampleLocator import USB_PIXEL_SIZE_MM, open_usb_camera, orient_usb_frame, stage_to_usb_image
 # axial pixel size, measure with a microscope glass slide
 global ZPIXELSIZE
 ZPIXELSIZE = 4.4 # unit: um
@@ -32,6 +43,12 @@ class WeaverThread(QThread):
         self.mosaic = None
         self.overlay_images = {}
         self.FOV_locations = {}
+        self.mosaic_roi_occupancy = ROI_OCCUPANCY_TARGET
+        self.mosaic_fov_overlap = FOV_OVERLAP
+        self.mosaic_max_y_fov_mm = MAX_Y_FOV_MM
+        self.mosaic_center_mode = CENTER_MODE
+        self.debug_mosaic_correction = False
+        self._restore_y_geometry = None
         self.exit_message = 'ACQ thread successfully exited'
         
     def run(self):
@@ -45,7 +62,13 @@ class WeaverThread(QThread):
                 if self.item.action in ['ContinuousAline','ContinuousBline','ContinuousCscan']:
                     self.InitMemory()
                     message = self.RptScan(self.item.action)
-                    self.ui.statusbar.showMessage(message)
+                    if getattr(self, "ui_bridge", None) is not None:
+                        try:
+                            self.ui_bridge.status_message.emit(message)
+                        except Exception:
+                            self.ui.statusbar.showMessage(message)
+                    else:
+                        self.ui.statusbar.showMessage(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
                     
@@ -55,7 +78,13 @@ class WeaverThread(QThread):
                     if self.item.action in ['FiniteCscan'] and self.ui.Save.isChecked():
                         an_action = GPUAction('IncrementCscanNum')
                         self.GPUQueue.put(an_action)
-                    self.ui.statusbar.showMessage(message)
+                    if getattr(self, "ui_bridge", None) is not None:
+                        try:
+                            self.ui_bridge.status_message.emit(message)
+                        except Exception:
+                            self.ui.statusbar.showMessage(message)
+                    else:
+                        self.ui.statusbar.showMessage(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
                 elif self.item.action in ['LocationCameraLive']:
@@ -68,7 +97,13 @@ class WeaverThread(QThread):
                     # if not os.path.exists(self.ui.DIR.toPlainText()+'/surf'):
                     #     os.mkdir(self.ui.DIR.toPlainText()+'/surf')
                     message = self.PlatePreScan(self.item.args)
-                    self.ui.statusbar.showMessage(message)
+                    if getattr(self, "ui_bridge", None) is not None:
+                        try:
+                            self.ui_bridge.status_message.emit(message)
+                        except Exception:
+                            self.ui.statusbar.showMessage(message)
+                    else:
+                        self.ui.statusbar.showMessage(message)
                     self.log.write(message)
                 elif self.item.action == 'PlateScan':
                     # make directories
@@ -85,7 +120,13 @@ class WeaverThread(QThread):
                         for i in range(len(self.sample_centers)):
                             self.ui.sampleSelector.addItem(f"Sample {i+1}")
                     message = self.PlateScan(self.item.args)
-                    self.ui.statusbar.showMessage(message)
+                    if getattr(self, "ui_bridge", None) is not None:
+                        try:
+                            self.ui_bridge.status_message.emit(message)
+                        except Exception:
+                            self.ui.statusbar.showMessage(message)
+                    else:
+                        self.ui.statusbar.showMessage(message)
                     self.log.write(message)
                     if self.ui.Save.isChecked():
                         an_action = GPUAction('IncrementTime')
@@ -102,7 +143,13 @@ class WeaverThread(QThread):
                                 self.ui.sampleSelector.addItem(f"Sample {i+1}")
                         self.ui.sampleSelector.setCurrentIndex(0)
                     message = self.WellScan(self.item.args)
-                    self.ui.statusbar.showMessage(message)
+                    if getattr(self, "ui_bridge", None) is not None:
+                        try:
+                            self.ui_bridge.status_message.emit(message)
+                        except Exception:
+                            self.ui.statusbar.showMessage(message)
+                    else:
+                        self.ui.statusbar.showMessage(message)
                     self.log.write(message)
                     # if self.ui.Save.isChecked():
                     #     an_action = GPUAction('IncrementSampleID')
@@ -110,31 +157,61 @@ class WeaverThread(QThread):
 
                 elif self.item.action == 'ZstageRepeatibility':
                     message = self.ZstageRepeatibility()
-                    self.ui.statusbar.showMessage(message)
+                    if getattr(self, "ui_bridge", None) is not None:
+                        try:
+                            self.ui_bridge.status_message.emit(message)
+                        except Exception:
+                            self.ui.statusbar.showMessage(message)
+                    else:
+                        self.ui.statusbar.showMessage(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
                     
                 elif self.item.action == 'get_background':
                     message = self.get_background()
-                    self.ui.statusbar.showMessage(message)
+                    if getattr(self, "ui_bridge", None) is not None:
+                        try:
+                            self.ui_bridge.status_message.emit(message)
+                        except Exception:
+                            self.ui.statusbar.showMessage(message)
+                    else:
+                        self.ui.statusbar.showMessage(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
                     
                 elif self.item.action == 'get_surface':
                     message = self.get_surfCurve()
-                    self.ui.statusbar.showMessage(message)
+                    if getattr(self, "ui_bridge", None) is not None:
+                        try:
+                            self.ui_bridge.status_message.emit(message)
+                        except Exception:
+                            self.ui.statusbar.showMessage(message)
+                    else:
+                        self.ui.statusbar.showMessage(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
                     
                 else:
                     message = 'Weaver thread is doing something invalid: '+self.item.action
-                    self.ui.statusbar.showMessage(message)
+                    if getattr(self, "ui_bridge", None) is not None:
+                        try:
+                            self.ui_bridge.status_message.emit(message)
+                        except Exception:
+                            self.ui.statusbar.showMessage(message)
+                    else:
+                        self.ui.statusbar.showMessage(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
 
             except Exception as error:
                 message = "An error occurred in"+  self.item.action + "\n"
-                self.ui.statusbar.showMessage(message)
+                if getattr(self, "ui_bridge", None) is not None:
+                    try:
+                        self.ui_bridge.status_message.emit(message)
+                    except Exception:
+                        self.ui.statusbar.showMessage(message)
+                else:
+                    self.ui.statusbar.showMessage(message)
                 # self.ui.PrintOut.append(message)
                 self.log.write(message)
                 print(traceback.format_exc())
@@ -148,8 +225,56 @@ class WeaverThread(QThread):
             # wait for next command
             self.item = self.queue.get()
         # exit weaver thread
-        self.ui.statusbar.showMessage(self.exit_message)
+        if getattr(self, "ui_bridge", None) is not None:
+            try:
+                self.ui_bridge.status_message.emit(self.exit_message)
+            except Exception:
+                self.ui.statusbar.showMessage(self.exit_message)
+        else:
+            self.ui.statusbar.showMessage(self.exit_message)
             
+    def drain_queue(self, queue, name, keep=None):
+        """Remove queued items, optionally keeping items selected by keep(item)."""
+        drained = 0
+        kept = []
+        while True:
+            try:
+                item = queue.get_nowait()
+            except Empty:
+                break
+            if keep is not None and keep(item):
+                kept.append(item)
+            else:
+                drained += 1
+        for item in kept:
+            queue.put(item)
+        if drained:
+            message = f"Drained {drained} stale item(s) from {name}"
+            print(message)
+            self.log.write(message + "\n")
+        return drained
+
+    def drain_continuous_backlog(self, reason=""):
+        continuous_modes = {'ContinuousAline', 'ContinuousBline', 'ContinuousCscan'}
+
+        def keep_gpu_item(item):
+            is_fft_action = getattr(item, 'action', None) in {'GPU', 'CPU'}
+            is_continuous_mode = getattr(item, 'mode', None) in continuous_modes
+            return not (is_fft_action and is_continuous_mode)
+
+        drained_gpu = self.drain_queue(self.GPUQueue, "GPUQueue", keep=keep_gpu_item)
+        drained_camera = self.drain_queue(self.DatabackQueue, "DatabackQueue")
+        if drained_gpu or drained_camera:
+            suffix = f" ({reason})" if reason else ""
+            print(
+                "Continuous backlog drain complete"
+                f"{suffix}: GPUQueue={drained_gpu}, DatabackQueue={drained_camera}"
+            )
+
+    def clear_mosaic_display(self):
+        if getattr(self.ui, "mosaic_viewer", None) is not None:
+            self.ui.mosaic_viewer.clear_image()
+        
     
     def InitMemory(self):
         #################################################################
@@ -184,6 +309,7 @@ class WeaverThread(QThread):
     def SingleScan(self, mode, Args=[]):
         # an_action = DnSAction('Clear')
         # self.DnSQueue.put(an_action)
+        self.drain_continuous_backlog(reason=f"before {mode}")
         t0=time.time()
         # print(self.DbackQueue.qsize())
         an_action = DAction('ConfigureBoard')
@@ -208,13 +334,13 @@ class WeaverThread(QThread):
         self.AODOQueue.put(an_action)
         self.StagebackQueue.get()
         t4=time.time()
-        print('\n')
-        print('Camera config took: ',round(t1-t0,3),'sec')
+        # print('\n')
+        # print('Camera config took: ',round(t1-t0,3),'sec')
         print('Galvo board config took: ',round(t2-t1,3),'sec')
-        print('Camera start took: ',round(t3-t2,3),'sec')
-        print('Galvo board start took: ',round(t4-t3,3),'sec')
-        # print('current dbackqueue size:', self.DbackQueue.qsize())
-        print('\n')
+        # print('Camera start took: ',round(t3-t2,3),'sec')
+        # print('Galvo board start took: ',round(t4-t3,3),'sec')
+        # # print('current dbackqueue size:', self.DbackQueue.qsize())
+        # print('\n')
         message = 'User stopped SingleScan'
         for iAcq in range(self.NAcq):
             start = time.time()
@@ -224,6 +350,7 @@ class WeaverThread(QThread):
             while self.ui.RunButton.isChecked():
                 try:
                     an_action = self.DatabackQueue.get(timeout = 5)
+                    # print('camera queue size:', self.DatabackQueue.qsize())
                     print('time to fetch data: '+str(round(time.time()-start,3)))
                     memoryLoc = an_action.action
                     # print(memoryLoc)
@@ -272,6 +399,7 @@ class WeaverThread(QThread):
         self.AODOQueue.put(an_action)
         self.StagebackQueue.get()
         data_backs = 0 # count number of data backs
+        skipped_fft_actions = 0
 
         # start digitizer for one acuquqisition
         an_action = DAction('Acquire')
@@ -310,8 +438,11 @@ class WeaverThread(QThread):
                             message = mode + " successfully finished..."
                     else:
                         # In other modes, do FFT first
-                        an_action = GPUAction(self.ui.FFTDevice.currentText(), mode, memoryLoc)
-                        self.GPUQueue.put(an_action)
+                        if self.GPUQueue.qsize() == 0:
+                            an_action = GPUAction(self.ui.FFTDevice.currentText(), mode, memoryLoc)
+                            self.GPUQueue.put(an_action)
+                        else:
+                            skipped_fft_actions += 1
                         message = mode + " successfully finished..."
                     ######################################## check if Pause or Stop button is clicked
             except:
@@ -342,8 +473,11 @@ class WeaverThread(QThread):
         self.StagebackQueue.get() # wait for AODO CloseTask
         # digitizer will close automatically
         message = message + str(data_backs)+ ' data received by weaver'
+        if skipped_fft_actions:
+            message = message + f", {skipped_fft_actions} stale continuous FFT action(s) skipped"
         self.log.write(message)
         print(message)
+        self.drain_continuous_backlog(reason=f"after {mode}")
         an_action = GPUAction('display_FFT_actions')
         self.GPUQueue.put(an_action)
         an_action = GPUAction('display_counts', args = mode)
@@ -371,7 +505,10 @@ class WeaverThread(QThread):
                 # User stopped continuousBline, then we do Mosaic scan for this sample
                 self.AdjustZstage(isample['sample_id'])
     
-                message = self.iterate_FOVs('PlatePreScan')
+                try:
+                    message = self.iterate_FOVs('PlatePreScan')
+                finally:
+                    self.restore_y_geometry_after_correction()
                 self.ui.NextSampleButton.setText('下一个样品')
                 self.ui.RepeatSampleButton.setText('重新扫描')
                 while (not self.ui.NextSampleButton.isChecked()) and self.ui.RunButton.isChecked():
@@ -380,7 +517,10 @@ class WeaverThread(QThread):
                         self.ui.RepeatSampleButton.setText('扫描中，请等待')
                         self.process_mosaic_correction()
                         self.AdjustZstage(isample['sample_id'])
-                        message = self.iterate_FOVs('PlatePreScan')
+                        try:
+                            message = self.iterate_FOVs('PlatePreScan')
+                        finally:
+                            self.restore_y_geometry_after_correction()
                         self.ui.NextSampleButton.setText('下一个样品')
                         self.ui.RepeatSampleButton.setText('重新扫描')
                         self.ui.RepeatSampleButton.setChecked(False)
@@ -420,8 +560,11 @@ class WeaverThread(QThread):
                 self.ui.sampleSelector.setCurrentIndex(isample['sample_id']-1)
                 self.CurrentSampleLocations = [ii for ii in self.FOV_locations if ii['sample_id'] == isample['sample_id']]
                 # print('self.CurrentSampleLocations', self.CurrentSampleLocations)
-                self.ui.MosaicLabel.setPixmap(self.overlay_images[isample['sample_id']])
-                self.iterate_FOVs('PlateScan')
+                self.display_sample_overlay(isample['sample_id'])
+                try:
+                    self.iterate_FOVs('PlateScan')
+                finally:
+                    self.restore_y_geometry_after_correction()
                 if self.ui.Save.isChecked():
                     an_action = GPUAction('IncrementSampleID')
                     self.GPUQueue.put(an_action)
@@ -439,12 +582,15 @@ class WeaverThread(QThread):
         self.ui.FFTDevice.setCurrentText('GPU')
         sample_id = self.ui.sampleSelector.currentIndex()+1
         self.CurrentSampleLocations = [ii for ii in self.FOV_locations if ii['sample_id'] == sample_id]
-        self.ui.MosaicLabel.setPixmap(self.overlay_images[sample_id])
-        message = self.iterate_FOVs('WellScan')
+        self.display_sample_overlay(sample_id)
+        try:
+            message = self.iterate_FOVs('WellScan')
+        finally:
+            self.restore_y_geometry_after_correction()
         return(message) 
-    
-            
+
     def AdjustZstage(self, sample_id):
+        self.clear_mosaic_display()
         isample = self.sample_centers[sample_id-1]
         # move to center position of this sample
         self.ui.XPosition.setValue(isample['x'])
@@ -474,6 +620,9 @@ class WeaverThread(QThread):
         
     def iterate_FOVs(self, mode):
         # print(self.CurrentSampleLocations)
+        self.clear_mosaic_display()
+        self.drain_continuous_backlog(reason=f"before {mode}")
+        self.apply_y_geometry_from_locations()
         # move to position of this FOV
         iFOV = self.CurrentSampleLocations[0]
         self.ui.XPosition.setValue(iFOV['x'])
@@ -530,9 +679,52 @@ class WeaverThread(QThread):
                 message = 'User stopped'
         return(message)
 
-   
+    def sample_fov_locations(self, sample_id):
+        if getattr(self, "CurrentSampleLocations", None):
+            current_ids = {loc.get('sample_id') for loc in self.CurrentSampleLocations}
+            if sample_id in current_ids:
+                return [loc for loc in self.CurrentSampleLocations if loc.get('sample_id') == sample_id]
+        return [loc for loc in self.FOV_locations if loc.get('sample_id') == sample_id]
+
     def display_initial_scan_overlay(self, sample_id, raw_img, pixel_polygons):
-        """Displays initial USB scan crop and saves to self.overlay_images."""
+        """Stores USB overlay source data and renders it at the current label size."""
+        self.overlay_images[sample_id] = {
+            'type': 'usb_roi',
+            'raw_img': raw_img,
+            'pixel_polygons': pixel_polygons,
+        }
+        self.display_sample_overlay(sample_id)
+
+    def display_sample_overlay(self, sample_id):
+        source = self.overlay_images.get(sample_id)
+        if source is None:
+            self.ui.MosaicLabel.clear()
+            return
+        if isinstance(source, QPixmap):
+            self.ui.MosaicLabel.setPixmap(source)
+            return
+        if source.get('type') == 'usb_roi':
+            self.render_usb_roi_overlay(sample_id, source['raw_img'], source['pixel_polygons'])
+        elif source.get('type') == 'mosaic_correction':
+            self.render_mosaic_correction_overlay(sample_id, source)
+
+    def mosaic_label_render_size(self):
+        QApplication.processEvents()
+        label_w = self.ui.MosaicLabel.width()
+        label_h = self.ui.MosaicLabel.height()
+        if label_w < 100 or label_h < 100:
+            blank = QPixmap(300, 300)
+            blank.fill(Qt.black)
+            self.ui.MosaicLabel.setPixmap(blank)
+            QApplication.processEvents()
+            label_w = self.ui.MosaicLabel.width()
+            label_h = self.ui.MosaicLabel.height()
+        if label_w < 100 or label_h < 100:
+            return 300, 300
+        upscale = max(1, min(2, int(np.ceil(300 / max(label_w, label_h)))))
+        return int(label_w * upscale), int(label_h * upscale)
+
+    def render_usb_roi_overlay(self, sample_id, raw_img, pixel_polygons):
         poly_pts = pixel_polygons[sample_id - 1]
         poly_np = np.array(poly_pts, dtype=np.int32)
         x, y, w, h = cv2.boundingRect(poly_np)
@@ -542,13 +734,12 @@ class WeaverThread(QThread):
         x2, y2 = min(raw_img.shape[1], x + w + pad), min(raw_img.shape[0], y + h + pad)
         crop_img = raw_img[y1:y2, x1:x2].copy()
         
-        rgb_img = cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB)
+        rgb_img = np.ascontiguousarray(cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB))
         h_v, w_v, ch = rgb_img.shape
-        qt_img = QImage(rgb_img.data, w_v, h_v, ch * w_v, QImage.Format_RGB888).copy()
+        qt_img = QImage(rgb_img.tobytes(), w_v, h_v, ch * w_v, QImage.Format_RGB888).copy()
         base_pixmap = QPixmap.fromImage(qt_img)
 
-        label_w = self.ui.MosaicLabel.width()
-        label_h = self.ui.MosaicLabel.height()
+        label_w, label_h = self.mosaic_label_render_size()
         final_buffer = QPixmap(label_w, label_h)
         final_buffer.fill(Qt.black)
 
@@ -572,23 +763,68 @@ class WeaverThread(QThread):
             painter.drawLine(int(p1[0]), int(p1[1]), int(p2[0]), int(p2[1]))
 
         # Draw FOV Grid
-        usb_pixel_size = 0.02 
-        fov_w_px = self.ui.XLength.value() / usb_pixel_size
-        fov_h_px = self.ui.YLength.value() / usb_pixel_size
+        usb_pixel_size = USB_PIXEL_SIZE_MM
+        fov_x_px = self.ui.XLength.value() / usb_pixel_size
+        fov_y_px = self.ui.YLength.value() / usb_pixel_size
 
         painter.setPen(QPen(QColor(0, 255, 0), 2))
-        for fov in self.CurrentSampleLocations:
-            if fov['sample_id'] == sample_id:
-                cx_px, cy_px = fov['x'] / usb_pixel_size, fov['y'] / usb_pixel_size
-                tl = to_ui(cx_px - fov_w_px/2, cy_px - fov_h_px/2)
-                br = to_ui(cx_px + fov_w_px/2, cy_px + fov_h_px/2)
-                painter.drawRect(QRectF(tl[0], tl[1], br[0]-tl[0], br[1]-tl[1]))
+        for fov in self.sample_fov_locations(sample_id):
+            cx_px, cy_px = stage_to_usb_image(fov['x'], fov['y'], raw_img.shape[1])
+            loc_y_fov = fov.get('y_length_mm', self.ui.YLength.value())
+            fov_y_px = loc_y_fov / usb_pixel_size
+            tl = to_ui(cx_px - fov_y_px/2, cy_px - fov_x_px/2)
+            br = to_ui(cx_px + fov_y_px/2, cy_px + fov_x_px/2)
+            painter.drawRect(QRectF(tl[0], tl[1], br[0]-tl[0], br[1]-tl[1]))
 
         painter.end()
-        
-        # Save to global storage and display
-        self.overlay_images[sample_id] = final_buffer
         self.ui.MosaicLabel.setPixmap(final_buffer)
+
+    def apply_y_geometry_for_correction(self, y_length_mm, y_pixels):
+        if self._restore_y_geometry is None:
+            self._restore_y_geometry = {
+                "YLength": self.ui.YLength.value(),
+                "Ypixels": self.ui.Ypixels.value(),
+            }
+        if self.debug_mosaic_correction:
+            print(
+                "Mosaic correction Y geometry apply: "
+                f"YLength {self.ui.YLength.value():.3f} -> {y_length_mm:.3f}, "
+                f"Ypixels {self.ui.Ypixels.value()} -> {y_pixels}"
+            )
+        self.ui.YLength.setValue(float(y_length_mm))
+        self.ui.Ypixels.setValue(int(y_pixels))
+
+    def restore_y_geometry_after_correction(self):
+        if self._restore_y_geometry is None:
+            return
+        y_length = self._restore_y_geometry["YLength"]
+        y_pixels = self._restore_y_geometry["Ypixels"]
+        if self.debug_mosaic_correction:
+            print(
+                "Mosaic correction Y geometry restore: "
+                f"YLength {self.ui.YLength.value():.3f} -> {y_length:.3f}, "
+                f"Ypixels {self.ui.Ypixels.value()} -> {y_pixels}"
+            )
+        self.ui.YLength.setValue(float(y_length))
+        self.ui.Ypixels.setValue(int(y_pixels))
+        self._restore_y_geometry = None
+
+    def apply_y_geometry_from_locations(self):
+        if not self.CurrentSampleLocations:
+            return
+        first_loc = self.CurrentSampleLocations[0]
+        y_length = first_loc.get("y_length_mm", None)
+        y_pixels = first_loc.get("y_pixels", None)
+        if y_length is None or y_pixels is None:
+            return
+        self.apply_y_geometry_for_correction(float(y_length), int(y_pixels))
+
+    def current_location_y_length(self):
+        if self.CurrentSampleLocations:
+            y_length = self.CurrentSampleLocations[0].get("y_length_mm", None)
+            if y_length is not None:
+                return float(y_length)
+        return self.ui.YLength.value()
 
     def process_mosaic_correction(self ):
         """Called when user finishes drawing in XYPlane/InteractiveWidget."""
@@ -610,52 +846,106 @@ class WeaverThread(QThread):
         xs_orig = [p['x'] for p in self.CurrentSampleLocations]
         ys_orig = [p['y'] for p in self.CurrentSampleLocations]
         v_anchor_x = min(xs_orig) - (self.ui.XLength.value() / 2)
-        v_anchor_y = min(ys_orig) - (self.ui.YLength.value() / 2)
+        source_y_length = self.current_location_y_length()
+        v_anchor_y = min(ys_orig) - (source_y_length / 2)
 
-        for poly in new_polygons:
+        viewer = self.ui.mosaic_viewer
+        if self.debug_mosaic_correction and hasattr(viewer, "adj"):
+            print(
+                "Mosaic correction input: "
+                f"sample_id={current_id}, mosaic_shape={viewer.adj.shape}, "
+                f"pixel_aspect_ratio={getattr(viewer, 'pixel_aspect_ratio', None)}, "
+                f"px_w_mm={px_w_mm:.6g}, px_h_mm={px_h_mm:.6g}, "
+                f"anchor=({v_anchor_x:.3f}, {v_anchor_y:.3f}), source_YLength={source_y_length:.3f}, "
+                f"current_fovs={len(self.CurrentSampleLocations)}"
+            )
+
+        for ii, poly in enumerate(new_polygons, start=1):
+            raw_poly = np.array(poly, dtype=float)
+            raw_min = np.min(raw_poly, axis=0)
+            raw_max = np.max(raw_poly, axis=0)
             mm_poly = [(p[0] * px_w_mm + v_anchor_x, p[1] * px_h_mm + v_anchor_y) for p in poly]
             mm_polygons.append(mm_poly)
+            mm_poly_array = np.array(mm_poly, dtype=float)
+            mm_min = np.min(mm_poly_array, axis=0)
+            mm_max = np.max(mm_poly_array, axis=0)
+            if self.debug_mosaic_correction:
+                print(
+                    "Mosaic correction polygon: "
+                    f"#{ii}, vertices={len(poly)}, "
+                    f"raw_bounds=(x:{raw_min[0]:.2f}-{raw_max[0]:.2f}, y:{raw_min[1]:.2f}-{raw_max[1]:.2f}), "
+                    f"raw_size=({raw_max[0] - raw_min[0]:.2f}, {raw_max[1] - raw_min[1]:.2f}), "
+                    f"mm_bounds=(x:{mm_min[0]:.3f}-{mm_max[0]:.3f}, y:{mm_min[1]:.3f}-{mm_max[1]:.3f}), "
+                    f"mm_size=({mm_max[0] - mm_min[0]:.3f}, {mm_max[1] - mm_min[1]:.3f})"
+                )
+
+        scan_plan = plan_mosaic_scan(
+            sample_id=current_id,
+            mm_polygons=mm_polygons,
+            x_fov_mm=self.ui.XLength.value(),
+            y_step_um=self.ui.YStepSize.value(),
+            stage_bounds=(
+                self.ui.Xmin.value(),
+                self.ui.Xmax.value(),
+                self.ui.Ymin.value(),
+                self.ui.Ymax.value(),
+            ),
+            occupancy=self.mosaic_roi_occupancy,
+            overlap=self.mosaic_fov_overlap,
+            max_y_fov_mm=self.mosaic_max_y_fov_mm,
+            center_mode=self.mosaic_center_mode,
+        )
+        if self.debug_mosaic_correction:
+            print(
+                "Mosaic correction scan plan: "
+                f"center_mode={self.mosaic_center_mode}, "
+                f"center=({scan_plan.center_x:.3f}, {scan_plan.center_y:.3f}), "
+                f"roi_bounds=(x:{scan_plan.roi_bounds[0]:.3f}-{scan_plan.roi_bounds[2]:.3f}, "
+                f"y:{scan_plan.roi_bounds[1]:.3f}-{scan_plan.roi_bounds[3]:.3f}), "
+                f"roi_size=({scan_plan.roi_size[0]:.3f}, {scan_plan.roi_size[1]:.3f}), "
+                f"required_span=({scan_plan.required_span[0]:.3f}, {scan_plan.required_span[1]:.3f}), "
+                f"tile_count={scan_plan.tile_count}, candidates={scan_plan.candidate_count}, "
+                f"accepted={len(scan_plan.fov_locations)}, "
+                f"planned_YLength={scan_plan.y_length_mm:.3f}, planned_Ypixels={scan_plan.y_pixels}, "
+                f"locations={scan_plan.fov_locations}"
+            )
+        for loc in scan_plan.fov_locations:
+            loc["y_length_mm"] = scan_plan.y_length_mm
+            loc["y_pixels"] = scan_plan.y_pixels
+        self.apply_y_geometry_for_correction(scan_plan.y_length_mm, scan_plan.y_pixels)
 
         # Re-generate the scan grid and the new overlay
-        self.generate_new_scan_grid(current_id, mm_polygons, new_polygons)
+        self.generate_new_scan_grid(current_id, mm_polygons, new_polygons, scan_plan, source_y_length)
+        self.ui.mosaic_viewer.clear_polygons()
 
-    def generate_new_scan_grid(self, sample_id, mm_polygons, pixel_polygons):
+    def generate_new_scan_grid(self, sample_id, mm_polygons, pixel_polygons, scan_plan=None, source_y_length=None):
         """Generates FOVs and creates a new overlay encompassing both mosaic and new polygon."""
         XFOV = self.ui.XLength.value()
         YFOV = self.ui.YLength.value()
         px_w_mm = self.ui.XStepSize.value() / 1000.0
         px_h_mm = self.ui.YStepSize.value() / 1000.0
-        new_fov_locations = []
+        new_fov_locations = scan_plan.fov_locations if scan_plan is not None else []
         
-        # 1. Math logic for FOV generation (Shapely)
-        for mm_poly_pts in mm_polygons:
-            roi_poly = Polygon(mm_poly_pts)
-            p_xs, p_ys = zip(*mm_poly_pts)
-            x_range = np.arange(min(p_xs), max(p_xs)+XFOV/2, XFOV)
-            y_range = np.arange(min(p_ys), max(p_ys)+YFOV/2, YFOV)
-
-            centroid = roi_poly.centroid
-            self.sample_centers[sample_id-1]['x'] = centroid.x
-            self.sample_centers[sample_id-1]['y'] = centroid.y
-
-            for cx in x_range:
-                for cy in y_range:
-                    tile_poly = Polygon([
-                        (cx-XFOV/2, cy-YFOV/2), (cx+XFOV/2, cy-YFOV/2),
-                        (cx+XFOV/2, cy+YFOV/2), (cx-XFOV/2, cy+YFOV/2)
-                    ])
-                    if tile_poly.intersects(roi_poly):
-                        new_fov_locations.append({'sample_id': sample_id, 'x': round(cx, 3), 'y': round(cy, 3)})
+        if scan_plan is not None:
+            self.sample_centers[sample_id-1]['x'] = scan_plan.center_x
+            self.sample_centers[sample_id-1]['y'] = scan_plan.center_y
+            if self.debug_mosaic_correction:
+                print(
+                    "Mosaic correction FOV grid result: "
+                    f"sample_id={sample_id}, accepted_tiles={len(new_fov_locations)}, "
+                    f"YFOV={YFOV:.3f}"
+                )
 
         # 2. Setup Coordinate System and Bounding Box
-        mos_img = self.ui.mosaic_viewer.adj 
+        mos_img = np.ascontiguousarray(self.ui.mosaic_viewer.adj)
         orig_h, orig_w = mos_img.shape
         
         # Current Mosaic physical boundaries
         xs_orig = [p['x'] for p in self.CurrentSampleLocations]
         ys_orig = [p['y'] for p in self.CurrentSampleLocations]
         mos_min_x = min(xs_orig) - (XFOV / 2)
-        mos_min_y = min(ys_orig) - (YFOV / 2)
+        mosaic_source_y_fov = source_y_length if source_y_length is not None else YFOV
+        mos_min_y = min(ys_orig) - (mosaic_source_y_fov / 2)
         mos_max_x = mos_min_x + (orig_w * px_w_mm)
         mos_max_y = mos_min_y + (orig_h * px_h_mm)
 
@@ -674,8 +964,36 @@ class WeaverThread(QThread):
         canvas_w_px = int((global_max_x - global_min_x) / px_w_mm)
         canvas_h_px = int((global_max_y - global_min_y) / px_h_mm)
 
-        # 3. Render the Overlay
-        label_w, label_h = self.ui.MosaicLabel.width(), self.ui.MosaicLabel.height()
+        self.overlay_images[sample_id] = {
+            'type': 'mosaic_correction',
+            'mos_img': mos_img,
+            'mm_polygons': mm_polygons,
+            'fov_locations': [dict(fov) for fov in new_fov_locations],
+            'px_w_mm': px_w_mm,
+            'px_h_mm': px_h_mm,
+            'XFOV': XFOV,
+            'YFOV': YFOV,
+            'mosaic_bounds': (mos_min_x, mos_min_y, mos_max_x, mos_max_y),
+            'global_bounds': (global_min_x, global_min_y, global_max_x, global_max_y),
+            'canvas_size_px': (canvas_w_px, canvas_h_px),
+        }
+        self.render_mosaic_correction_overlay(sample_id, self.overlay_images[sample_id])
+        self.CurrentSampleLocations = new_fov_locations        
+
+    def render_mosaic_correction_overlay(self, sample_id, source):
+        mos_img = np.ascontiguousarray(source['mos_img'])
+        orig_h, orig_w = mos_img.shape
+        px_w_mm = source['px_w_mm']
+        px_h_mm = source['px_h_mm']
+        XFOV = source['XFOV']
+        YFOV = source['YFOV']
+        mm_polygons = source['mm_polygons']
+        new_fov_locations = source['fov_locations']
+        mos_min_x, mos_min_y, _, _ = source['mosaic_bounds']
+        global_min_x, global_min_y, _, _ = source['global_bounds']
+        canvas_w_px, canvas_h_px = source['canvas_size_px']
+
+        label_w, label_h = self.mosaic_label_render_size()
         final_buffer = QPixmap(label_w, label_h)
         final_buffer.fill(Qt.black)
 
@@ -683,32 +1001,33 @@ class WeaverThread(QThread):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
-        # Scale to fit UI Label
         scale_w = label_w / canvas_w_px
         scale_h = label_h / canvas_h_px
         sw, sh = int(canvas_w_px * scale_w), int(canvas_h_px * scale_h)
         dx, dy = (label_w - sw) // 2, (label_h - sh) // 2
 
-        # Draw stretched Mosaic at its relative position
-        
-        qt_mos = QImage(mos_img.data, orig_w, orig_h, orig_w, QImage.Format_Grayscale8).copy()
+        qt_mos = QImage(mos_img.tobytes(), orig_w, orig_h, orig_w, QImage.Format_Grayscale8).copy()
         mos_pixmap = QPixmap.fromImage(qt_mos)
 
         mos_offset_x = (mos_min_x - global_min_x) / px_w_mm
         mos_offset_y = (mos_min_y - global_min_y) / px_h_mm
-        painter.drawPixmap(int(dx + mos_offset_x * scale_w), int(dy + mos_offset_y * scale_h), 
-                           int(orig_w * scale_w), int(orig_h * scale_h), mos_pixmap)
+        painter.drawPixmap(
+            int(dx + mos_offset_x * scale_w),
+            int(dy + mos_offset_y * scale_h),
+            int(orig_w * scale_w),
+            int(orig_h * scale_h),
+            mos_pixmap,
+        )
 
-        # Draw New FOV Overlays
         painter.setPen(QPen(QColor(0, 255, 0), 1))
         for fov in new_fov_locations:
+            loc_y_fov = fov.get('y_length_mm', YFOV)
             tl_x = (fov['x'] - XFOV/2 - global_min_x) / px_w_mm
-            tl_y = (fov['y'] - YFOV/2 - global_min_y) / px_h_mm
+            tl_y = (fov['y'] - loc_y_fov/2 - global_min_y) / px_h_mm
             br_x = (fov['x'] + XFOV/2 - global_min_x) / px_w_mm
-            br_y = (fov['y'] + YFOV/2 - global_min_y) / px_h_mm
+            br_y = (fov['y'] + loc_y_fov/2 - global_min_y) / px_h_mm
             painter.drawRect(QRectF(dx + tl_x * scale_w, dy + tl_y * scale_h, (br_x-tl_x)*scale_w, (br_y-tl_y)*scale_h))
 
-        # Draw New Polygons
         painter.setPen(QPen(QColor(255, 0, 0), 2))
         for mm_poly in mm_polygons:
             for i in range(len(mm_poly)):
@@ -720,11 +1039,7 @@ class WeaverThread(QThread):
                 painter.drawLine(int(x1_ui), int(y1_ui), int(x2_ui), int(y2_ui))
 
         painter.end()
-        
-        # Update global storage and UI
-        self.overlay_images[sample_id] = final_buffer
         self.ui.MosaicLabel.setPixmap(final_buffer)
-        self.CurrentSampleLocations = new_fov_locations        
        
     def ZstageRepeatibility(self):
         mode = self.ui.ACQMode.currentText()
@@ -1003,28 +1318,14 @@ class WeaverThread(QThread):
     
     def live(self):
         """Continuously captures and displays video until RunButton is unchecked."""
-        # 1. Initialize Camera
-        cap = cv2.VideoCapture(0, cv2.CAP_MSMF)
-        # 2. Disable Auto Exposure (0.25 is manual, 0.75 is auto for many UVC cameras)
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25) 
-        
-        # 3. Set Exposure Value
-        # In OpenCV/Windows, exposure is often measured in powers of 2.
-        # -5 means 2^-5 = 1/32 sec (~31ms)
-        # -7 means 2^-7 = 1/128 sec (~8ms)
-        cap.set(cv2.CAP_PROP_EXPOSURE, -5.0)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
+        cap = open_usb_camera(configure_exposure=True)
     
         while self.ui.RunButton.isChecked():
             ret, frame = cap.read()
             if not ret:
                 break
     
-            # 2. Process Image (Rotate/Flip/Crop to match your previous setup)
-            # frame = cv2.rotate(cv2.flip(frame, 1), cv2.ROTATE_90_CLOCKWISE)
-            # Assuming the same crop as your SampleLocator
-            # frame = frame[630:3670, 180:2160]
+            frame = orient_usb_frame(frame)
             
             # 3. Convert BGR to RGB
             rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -1060,18 +1361,89 @@ class WeaverThread(QThread):
         
         with open(os.path.join(folder_path, 'scan_metadata.pkl'), 'wb') as f:
             pickle.dump(data_to_save, f)
+
+        self.save_usb_training_data(folder_path)
     
-        # 2. Save Overlay Images
-        # QPixmap must be saved as individual files (PNG/JPG)
+        overlay_sources = {
+            sample_id: source
+            for sample_id, source in self.overlay_images.items()
+            if isinstance(source, dict)
+        }
+        with open(os.path.join(folder_path, 'overlay_sources.pkl'), 'wb') as f:
+            pickle.dump(overlay_sources, f)
+
+        # Also save rendered overlay snapshots for quick visual inspection and
+        # backward compatibility with older sessions.
         image_dir = os.path.join(folder_path, 'overlays')
         if not os.path.exists(image_dir):
             os.makedirs(image_dir)
     
-        for sample_id, pixmap in self.overlay_images.items():
+        for sample_id, source in self.overlay_images.items():
             file_path = os.path.join(image_dir, f'sample_{sample_id}_overlay.png')
-            pixmap.save(file_path, "PNG")
+            if isinstance(source, QPixmap):
+                source.save(file_path, "PNG")
+            else:
+                self.display_sample_overlay(sample_id)
+                pixmap = self.ui.MosaicLabel.pixmap()
+                if pixmap is not None:
+                    pixmap.save(file_path, "PNG")
         
         print(f"Session data saved to {folder_path}")
+
+    def save_usb_training_data(self, folder_path):
+        if not hasattr(self, "raw_img") or self.raw_img is None:
+            return
+        if not hasattr(self, "pixel_polygons") or self.pixel_polygons is None:
+            return
+        if isinstance(self.raw_img, list) and len(self.raw_img) == 0:
+            return
+
+        image_path = os.path.join(folder_path, 'usb_raw_image.png')
+        cv2.imwrite(image_path, self.raw_img)
+
+        def clean_points(points):
+            return [[float(x), float(y)] for x, y in points]
+
+        def clean_records(records):
+            cleaned = []
+            for item in records:
+                cleaned.append(
+                    {
+                        key: (
+                            int(value)
+                            if isinstance(value, (np.integer,))
+                            else float(value)
+                            if isinstance(value, (np.floating,))
+                            else value
+                        )
+                        for key, value in item.items()
+                    }
+                )
+            return cleaned
+
+        roi_data = {
+            'image_file': os.path.basename(image_path),
+            'coordinate_system': {
+                'roi_vertices': 'USB displayed image pixel coordinates',
+                'image_vertical_axis': 'stage X',
+                'image_horizontal_axis': 'stage Y',
+                'image_right_direction': 'smaller stage Y',
+                'stage_units': 'mm',
+            },
+            'pixel_polygons': [
+                {
+                    'sample_id': idx + 1,
+                    'points': clean_points(poly),
+                }
+                for idx, poly in enumerate(self.pixel_polygons)
+            ],
+            'sample_centers': clean_records(self.sample_centers),
+            'fov_locations': clean_records(self.FOV_locations),
+        }
+
+        json_path = os.path.join(folder_path, 'usb_rois.json')
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(roi_data, f, indent=2)
     
     def load_session_data(self, folder_path):
         """
@@ -1087,8 +1459,15 @@ class WeaverThread(QThread):
         else:
             print("Metadata file not found.")
     
-        # 2. Load Overlay Images
         self.overlay_images = {}
+        overlay_sources_path = os.path.join(folder_path, 'overlay_sources.pkl')
+        if os.path.exists(overlay_sources_path):
+            with open(overlay_sources_path, 'rb') as f:
+                self.overlay_images = pickle.load(f)
+            print(f"Session data loaded from {folder_path}")
+            return
+
+        # 2. Load legacy rendered overlay images
         image_dir = os.path.join(folder_path, 'overlays')
         if os.path.exists(image_dir):
             for filename in os.listdir(image_dir):

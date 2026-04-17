@@ -38,13 +38,14 @@ try:
         pass
 except:
     print('ART digitizer init failed, using simulation')
+    SIM = True
     
 try:
     from StageControl import ZC300MotorController
     motors = ZC300MotorController()
 except:
     print('stage init failed, using simulation')
-    # SIM = True
+    SIM = True
     
 from Generaic_functions import GenAODO, LinePlot
 import time
@@ -113,7 +114,13 @@ class AODOThread(QThread):
 
                 else:
                     message = 'AODO thread is doing something undefined: '+self.item.action
-                    self.ui.statusbar.showMessage(message)
+                    if getattr(self, "ui_bridge", None) is not None:
+                        try:
+                            self.ui_bridge.status_message.emit(message)
+                        except Exception:
+                            self.ui.statusbar.showMessage(message)
+                    else:
+                        self.ui.statusbar.showMessage(message)
                     print(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
@@ -121,12 +128,24 @@ class AODOThread(QThread):
                 message = "\nAn error occurred,"+" skip the AODO action\n"
                 print(Exception)
                 print(message)
-                self.ui.statusbar.showMessage(message)
+                if getattr(self, "ui_bridge", None) is not None:
+                    try:
+                        self.ui_bridge.status_message.emit(message)
+                    except Exception:
+                        self.ui.statusbar.showMessage(message)
+                else:
+                    self.ui.statusbar.showMessage(message)
                 # self.ui.PrintOut.append(message)
                 self.log.write(message)
                 print(traceback.format_exc())
             self.item = self.queue.get()
-        self.ui.statusbar.showMessage('AODO thread successfully exited')
+        if getattr(self, "ui_bridge", None) is not None:
+            try:
+                self.ui_bridge.status_message.emit('AODO thread successfully exited')
+            except Exception:
+                self.ui.statusbar.showMessage('AODO thread successfully exited')
+        else:
+            self.ui.statusbar.showMessage('AODO thread successfully exited')
 
     def Init_all_termial(self):
         # Galvo terminal
@@ -140,32 +159,39 @@ class AODOThread(QThread):
         self.ui.Xcurrent.setValue(self.ui.XPosition.value())
         self.ui.Ycurrent.setValue(self.ui.YPosition.value())
         self.ui.Zcurrent.setValue(self.ui.ZPosition.value())
-        # initialize stages
-        motors.configure_axis(0) 
-        motors.configure_axis(1) 
-        motors.configure_axis(2) 
-        
-        motors.set_init_speed(0, 1)      # 起始速度 1 mm/s
-        motors.set_move_speed(0, self.ui.XSpeed.value())     # 运行速度  mm/s
-        motors.set_acceleration(0, self.ui.XAccelerate.value())   # 加速度  mm/s²
-        motors.set_home_speed(0, self.ui.XSpeed.value())      # 回零速度  mm/s
-        motors.set_position(0,-self.ui.XPosition.value())
-        
-        motors.set_init_speed(1, 1)      # 起始速度 1 mm/s
-        motors.set_move_speed(1, self.ui.YSpeed.value())     # 运行速度  mm/s
-        motors.set_acceleration(1, self.ui.YAccelerate.value())   # 加速度  mm/s²
-        motors.set_home_speed(1, self.ui.YSpeed.value())      # 回零速度  mm/s
-        motors.set_position(1,-self.ui.YPosition.value())
-        
-        motors.set_init_speed(2, 0.1)      # 起始速度 0.1 mm/s
-        motors.set_move_speed(2, self.ui.ZSpeed.value())     # 运行速度  mm/s
-        motors.set_acceleration(2, self.ui.ZAccelerate.value())   # 加速度  mm/s²
-        motors.set_home_speed(2, self.ui.ZSpeed.value())      # 回零速度  mm/s
-        motors.set_position(2,-self.ui.ZPosition.value())
+        if not (SIM or self.SIM):
+            # initialize stages
+            motors.configure_axis(0) 
+            motors.configure_axis(1) 
+            motors.configure_axis(2) 
+            
+            motors.set_init_speed(0, 1)      # 起始速度 1 mm/s
+            motors.set_move_speed(0, self.ui.XSpeed.value())     # 运行速度  mm/s
+            motors.set_acceleration(0, self.ui.XAccelerate.value())   # 加速度  mm/s²
+            motors.set_home_speed(0, self.ui.XSpeed.value())      # 回零速度  mm/s
+            motors.set_position(0,-self.ui.XPosition.value())
+            
+            motors.set_init_speed(1, 1)      # 起始速度 1 mm/s
+            motors.set_move_speed(1, self.ui.YSpeed.value())     # 运行速度  mm/s
+            motors.set_acceleration(1, self.ui.YAccelerate.value())   # 加速度  mm/s²
+            motors.set_home_speed(1, self.ui.YSpeed.value())      # 回零速度  mm/s
+            motors.set_position(1,-self.ui.YPosition.value())
+            
+            motors.set_init_speed(2, 0.1)      # 起始速度 0.1 mm/s
+            motors.set_move_speed(2, self.ui.ZSpeed.value())     # 运行速度  mm/s
+            motors.set_acceleration(2, self.ui.ZAccelerate.value())   # 加速度  mm/s²
+            motors.set_home_speed(2, self.ui.ZSpeed.value())      # 回零速度  mm/s
+            motors.set_position(2,-self.ui.ZPosition.value())
 
         message = "Stage position updated..."
 
-        self.ui.statusbar.showMessage(message)
+        if getattr(self, "ui_bridge", None) is not None:
+            try:
+                self.ui_bridge.status_message.emit(message)
+            except Exception:
+                self.ui.statusbar.showMessage(message)
+        else:
+            self.ui.statusbar.showMessage(message)
         # self.ui.PrintOut.append(message)
         self.log.write(message)
         print(message)

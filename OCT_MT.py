@@ -41,11 +41,13 @@ from PyQt5.QtWidgets import QApplication
 from Dialogs import StageDialog
 from PyQt5 import QtWidgets as QW
 import PyQt5.QtCore as qc
+from PyQt5.QtCore import QObject, pyqtSignal
 from mainWindow import MainWindow
 from Actions import *
 from Generaic_functions import LOG
 import time
 from SampleLocator import UnifiedSampleScanner
+from Generaic_functions import RGBImagePlot, fastLinePlot
 # init global memory for raw data, make it more than 2 for parallel acquisition and processing
 global memoryCount
 memoryCount = 10
@@ -97,6 +99,7 @@ class Camera_2(Camera):
         self.DatabackQueue = DatabackQueue
         self.log = log
         self.SIM = SIM    
+        self.ui_bridge = None
             
 
 from ThreadWeaver import WeaverThread
@@ -118,6 +121,7 @@ class WeaverThread_2(WeaverThread):
         self.GPU2weaverQueue = GPU2weaverQueue
         self.MosaicQueue = MosaicQueue
         self.log = log
+        self.ui_bridge = None
 
 # wrap GPU thread with Queues and Memory
 from ThreadGPU import GPUThread
@@ -133,6 +137,7 @@ class GPUThread_2(GPUThread):
             self.log = log
             self.SIM = SIM
             self.AMPLIFICATION = 10#AMPLIFICATION
+            self.ui_bridge = None
             
 # wrap Galvo&Stage control thread with queues
 from ThreadAODO_art import AODOThread
@@ -144,6 +149,7 @@ class AODOThread_2(AODOThread):
         self.StagebackQueue = StagebackQueue
         self.log = log
         self.SIM = SIM
+        self.ui_bridge = None
 
 # wrap Display and save thread with queues   
 from ThreadDnS import DnSThread
@@ -155,7 +161,17 @@ class DnSThread_2(DnSThread):
         self.MosaicQueue = MosaicQueue
         self.log = log
         self.use_maya = use_maya
+        self.ui_bridge = None
         
+
+# GUI-thread bridge for cross-thread UI updates (pixmaps/statusbar only)
+class UiBridge(QObject):
+    status_message = pyqtSignal(str)
+    aline_ready = pyqtSignal(object)   # dict payload
+    bline_ready = pyqtSignal(object)   # dict payload
+    cscan_ready = pyqtSignal(object)   # dict payload
+    mosaic_ready = pyqtSignal(object)  # dict payload
+
 
 # wrap MainWindow object with queues and threads   
 class GUI(MainWindow):
@@ -215,13 +231,25 @@ class GUI(MainWindow):
         # self.ui.SliceDir.clicked.connect(self.SliceDirection)
         # self.ui.VibEnabled.clicked.connect(self.Vibratome)
         self.ui.SliceN.valueChanged.connect(self.change_slice_number)
-        # Init all threads
-        self.Init_allThreads()
         
         # testing buttons
         self.ui.TestButten1.clicked.connect(self.TestButton1Func)
         self.ui.TestButten2.clicked.connect(self.TestButton2Func)
         self.ui.TestButten3.clicked.connect(self.TestButton3Func)
+
+        # UI bridge (must live on GUI thread)
+        self._ui_bridge = UiBridge()
+        self._ui_bridge.status_message.connect(self._on_status_message)
+        self._ui_bridge.aline_ready.connect(self._on_aline_ready)
+        self._ui_bridge.bline_ready.connect(self._on_bline_ready)
+        self._ui_bridge.cscan_ready.connect(self._on_cscan_ready)
+        self._ui_bridge.mosaic_ready.connect(self._on_mosaic_ready)
+        
+        # Init all threads
+        self.Init_allThreads()
+        # Simple FPS limiter for rendering-heavy slots
+        self._render_fps_limit = 30.0
+        self._last_render_t = {"aline": 0.0, "bline": 0.0, "cscan": 0.0, "mosaic": 0.0}
         
     def Init_allThreads(self):
         self.Weaver_thread = WeaverThread_2(self.ui, self.log)
@@ -229,12 +257,100 @@ class GUI(MainWindow):
         self.DnS_thread = DnSThread_2(self.ui, self.log)
         self.GPU_thread = GPUThread_2(self.ui, self.log)
         self.D_thread = Camera_2(self.ui, self.log)
+
+        # Inject UI bridge into worker threads (pixmaps/statusbar only)
+        self.Weaver_thread.ui_bridge = self._ui_bridge
+        self.AODO_thread.ui_bridge = self._ui_bridge
+        self.DnS_thread.ui_bridge = self._ui_bridge
+        self.GPU_thread.ui_bridge = self._ui_bridge
+        self.D_thread.ui_bridge = self._ui_bridge
         
         self.D_thread.start()
         self.GPU_thread.start()
         self.Weaver_thread.start()
         self.AODO_thread.start()
         self.DnS_thread.start()
+
+    def _fps_ok(self, key: str) -> bool:
+        now = time.monotonic()
+        min_dt = 1.0 / max(self._render_fps_limit, 1.0)
+        if now - self._last_render_t.get(key, 0.0) < min_dt:
+            return False
+        self._last_render_t[key] = now
+        return True
+
+    def _on_status_message(self, msg: str):
+        self.ui.statusbar.showMessage(msg)
+
+    def _on_aline_ready(self, payload: dict):
+        if not self._fps_ok("aline"):
+            return
+        aline = payload.get("aline", None)
+        if aline is None:
+            return
+        ym = self.ui.XZmin.value()
+        yM = self.ui.XZmax.value()
+        w = self.ui.XZplane.width()
+        h = self.ui.XZplane.height()
+        pixmap = fastLinePlot(aline, width=w, height=h, m=ym, M=yM)
+        self.ui.XZplane.setPixmap(pixmap)
+
+    def _on_bline_ready(self, payload: dict):
+        if not self._fps_ok("bline"):
+            return
+        bline = payload.get("bline", None)
+        if bline is None:
+            return
+        dyn = payload.get("dyn", None)
+        ym = self.ui.XZmin.value()
+        yM = self.ui.XZmax.value()
+        if dyn is not None and np.size(dyn) > 0:
+            pixmap = RGBImagePlot(matrix1=bline, matrix2=dyn, m=ym, M=yM)
+        else:
+            pixmap = RGBImagePlot(matrix1=bline, m=ym, M=yM)
+        self.ui.XZplane.setPixmap(pixmap)
+
+    def _on_cscan_ready(self, payload: dict):
+        if not self._fps_ok("cscan"):
+            return
+        bline = payload.get("bline", None)
+        dynb = payload.get("dynb", None)
+        aip = payload.get("aip", None)
+        dyn = payload.get("dyn", None)
+
+        if bline is not None:
+            ym = self.ui.XZmin.value()
+            yM = self.ui.XZmax.value()
+            if dynb is not None and np.size(dynb) > 0:
+                pixmap = RGBImagePlot(matrix1=bline, matrix2=dynb, m=ym, M=yM)
+            else:
+                pixmap = RGBImagePlot(matrix1=bline, m=ym, M=yM)
+            self.ui.XZplane.setPixmap(pixmap)
+
+        if aip is not None and getattr(self.ui, "mosaic_viewer", None) is not None:
+            XStepSize = self.ui.XStepSize.value()
+            YStepSize = self.ui.YStepSize.value()
+            if self.ui.DynCheckBox.isChecked() and dyn is not None and np.size(dyn) > 0:
+                tmp = np.tile(aip[:, :, np.newaxis], (1, 1, 3))
+                tmp[:, :, 0] = tmp[:, :, 0] + dyn
+                self.ui.mosaic_viewer.set_image(tmp, self.ui.Intmin.value(), self.ui.Intmax.value(), XStepSize, YStepSize)
+            else:
+                self.ui.mosaic_viewer.set_image(aip, self.ui.Intmin.value(), self.ui.Intmax.value(), XStepSize, YStepSize)
+
+    def _on_mosaic_ready(self, payload: dict):
+        if not self._fps_ok("mosaic"):
+            return
+        mosaic = payload.get("mosaic", None)
+        bline = payload.get("bline", None)
+        if bline is not None:
+            ym = self.ui.XZmin.value()
+            yM = self.ui.XZmax.value()
+            pixmap = RGBImagePlot(matrix1=bline, m=ym, M=yM)
+            self.ui.XZplane.setPixmap(pixmap)
+        if mosaic is not None and getattr(self.ui, "mosaic_viewer", None) is not None:
+            XStepSize = self.ui.XStepSize.value()
+            YStepSize = self.ui.YStepSize.value()
+            self.ui.mosaic_viewer.set_image(mosaic, self.ui.Intmin.value(), self.ui.Intmax.value(), XStepSize, YStepSize)
             
     def Stop_allThreads(self):
         exit_element=EXIT()
@@ -276,22 +392,39 @@ class GUI(MainWindow):
     def LocateSample(self):
         self.XHome()
         self.YHome()
-        self.scanner = UnifiedSampleScanner(self.ui.DIR.toPlainText(),fov_w_mm = self.ui.XLength.value(),fov_h_mm = self.ui.YLength.value(), current_zpos = self.ui.ZPosition.value())
-        if self.scanner.exec_(): 
-            FOV_locations = self.scanner.generated_locations
-            sample_centers = self.scanner.sample_centers
-            raw_img = self.scanner.final_raw_img
-            pixel_polygons = self.scanner.final_polygons
-            """Updates the combo box content on the main thread."""
+        self.scanner = UnifiedSampleScanner(
+            self.ui.DIR.toPlainText(),
+            fov_w_mm=self.ui.XLength.value(),
+            fov_h_mm=self.ui.YLength.value(),
+            current_zpos=self.ui.ZPosition.value(),
+            y_step_um=self.ui.YStepSize.value(),
+            stage_bounds=(
+                self.ui.Xmin.value(),
+                self.ui.Xmax.value(),
+                self.ui.Ymin.value(),
+                self.ui.Ymax.value(),
+            ),
+        )
+        if not self.scanner.exec_():
             self.ui.sampleSelector.clear()
-            if len(sample_centers) == 0:
-                self.ui.sampleSelector.addItem("No Samples Found")
-            else:
-                for i in range(len(sample_centers)):
-                    self.ui.sampleSelector.addItem(f"Sample {i+1}")
-            # print(self.sample_centers)
-        print(FOV_locations)
-        print(sample_centers)
+            self.ui.sampleSelector.addItem("No Samples Found")
+            return
+
+        FOV_locations = self.scanner.generated_locations
+        sample_centers = self.scanner.sample_centers
+        raw_img = self.scanner.final_raw_img
+        pixel_polygons = self.scanner.final_polygons
+        """Updates the combo box content on the main thread."""
+        self.ui.sampleSelector.clear()
+        if len(sample_centers) == 0:
+            self.ui.sampleSelector.addItem("No Samples Found")
+            return
+        else:
+            for i in range(len(sample_centers)):
+                self.ui.sampleSelector.addItem(f"Sample {i+1}")
+        # print(self.sample_centers)
+        # print(FOV_locations)
+        # print(sample_centers)
         an_action = WeaverAction('PlatePreScan', args = [FOV_locations, sample_centers, raw_img, pixel_polygons])
         WeaverQueue.put(an_action)
 

@@ -13,6 +13,10 @@ try:
     SIM = False
 except:
     SIM = True
+try:
+    from cupyx.scipy.ndimage import uniform_filter1d as cupy_uniform_filter1d
+except:
+    cupy_uniform_filter1d = None
 import numpy as np
 from Actions import DnSAction
 import os
@@ -25,6 +29,16 @@ class GPUThread(QThread):
         # TODO: write windowing and dispersion function
         self.exit_message = 'GPU thread successfully exited\n'
         self.FFT_actions = 0 # count how many FFT actions have taken place
+        self.bg_sub = False
+        self.background_gpu = None
+        self.intpX_gpu = None
+        self.intpXp_gpu = None
+        self.indice1_gpu = None
+        self.indice2_gpu = None
+        self.dispersion_gpu = None
+        self.release_gpu_memory_each_fft = False
+        self.gpu_chunk_frames = 64
+        self.yp_gpu_buffer = None
         
     def defwin(self):
         if not (SIM or self.SIM):
@@ -63,8 +77,7 @@ class GPUThread(QThread):
                         }
                 }
             ''','interp1d')
-        
-            
+
     def run(self):
         self.defwin()
         self.definterp()
@@ -102,12 +115,25 @@ class GPUThread(QThread):
                     self.log.write(message)
             except Exception as error:
                 message = "An error occurred, skip the FFT action\n"
-                self.ui.statusbar.showMessage(message)
+                if getattr(self, "ui_bridge", None) is not None:
+                    try:
+                        self.ui_bridge.status_message.emit(message)
+                    except Exception:
+                        self.ui.statusbar.showMessage(message)
+                else:
+                    self.ui.statusbar.showMessage(message)
                 # self.ui.PrintOut.append(message)
                 self.log.write(message)
                 print(traceback.format_exc())
             self.item = self.queue.get()
-        self.ui.statusbar.showMessage(self.exit_message)
+            # print('GPU queue size:', self.queue.qsize())
+        if getattr(self, "ui_bridge", None) is not None:
+            try:
+                self.ui_bridge.status_message.emit(self.exit_message)
+            except Exception:
+                self.ui.statusbar.showMessage(self.exit_message)
+        else:
+            self.ui.statusbar.showMessage(self.exit_message)
 
     def cudaFFT(self, mode, memoryLoc, args):
         # get samples per Aline
@@ -115,117 +141,32 @@ class GPUThread(QThread):
         # get depth pixels after FFT
         Pixel_start = self.ui.DepthStart.value()
         Pixel_range = self.ui.DepthRange.value()
-        self.data_CPU = np.float32(self.Memory[memoryLoc].copy())
-        # print('GPU data: ', self.data_CPU[0,0,0:5], 'data size: ', self.data_CPU.shape, ' memoryLoc: ', memoryLoc)
-        shape = self.data_CPU.shape
-        if self.background_tile.shape != shape:
-            self.background_tile = np.tile(self.background,[shape[0],1,1])
-        # print('backgournd shape:', self.background_tile.shape)
+        shape = self.Memory[memoryLoc].shape
+        # print('GPU data size: ', shape, ' memoryLoc: ', memoryLoc)
         # print('data shape', shape)
         # print('GPU receives:',self.data_CPU[0,0,0:10])
         if not (SIM or self.SIM):
-            # subtract background
-            t0=time.time()
-            # plt.figure()
-            # plt.imshow(self.data_CPU[0,:,:])
-            # plt.show()
-            self.data_CPU = self.data_CPU - self.background_tile
-            # plt.figure()
-            # plt.imshow(self.data_CPU[0,:,:])
-            # plt.show()
-            # plt.figure()
-            # plt.imshow(self.background)
-            # plt.show()
-            self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=51, axis=2)
-            t1=time.time()
-            if round(t1-t0,4) >0.2:
-                print('background subtraction took ', round(t1-t0,3),'s')
-            
-            # print('GPU data: ', self.data_CPU[0,0,0:5], 'data size: ', self.data_CPU.shape, ' memoryLoc: ', memoryLoc)
-            Alines =shape[0]*shape[1]
-            self.data_CPU=self.data_CPU.reshape([Alines, samples])
-
-            # plt.figure()
-            # plt.imshow(self.data_CPU[0])
-            # plt.show()
-
-            # print(self.data_CPU[0:10,0:5])
-            fftAxis = 1
-            # # zero-padding data before FFT
-            # if data_CPU.shape[1] != self.length_FFT:
-            #     data_padded = np.zeros([Alines, self.length_FFT], dtype = np.float32)
-            #     tmp = np.uint16((self.length_FFT-samples)/2)
-            #     data_padded[:,tmp:samples+tmp] = data_CPU
-            # else:
-            #     data_padded = data_CPU
-            # start = time.time()
-            # transfer data to GPU
-            if self.interp:
-                x_gpu  = cupy.array(self.intpX)
-                xp_gpu  = cupy.array(self.intpXp)
-                indice1 = cupy.array(self.indice[0,:])
-                indice2 = cupy.array(self.indice[1,:])
-                dispersion = cupy.array(self.dispersion)
-                
-            y_gpu  = cupy.array(self.data_CPU)
-            yp_gpu = cupy.zeros(self.data_CPU.shape, dtype = cupy.float32)
-            
-            
-            # print(self.dispersion.shape)
-            # print('data to gpu takes ', round(time.time()-t1,3))
-            # print(self.data_CPU[0:3])
-            # interpolation
-            t2 = time.time() 
-            if round(t2-t1,4) >0.2:
-                print('time for data transfer to GPU: ', round(t2-t1,3))
-            # yp_gpu = y_gpu
-            if self.interp:
-                self.interp_kernel((8,8),(16,16), (Alines, samples, x_gpu, xp_gpu, y_gpu, indice1, indice2, yp_gpu))
-            else:
-                yp_gpu = y_gpu
-            t3=time.time()
-            if round(t3-t2,4) >0.2:
-                print('time for interpolation: ', round(t3-t2,3))
-            yp_gpu = cupy.reshape(yp_gpu,[Alines, samples])
-            # yp_gpu[:,0] = 0
-            # yp = cupy.asnumpy(yp_gpu)
-            # print('yp: ', yp[0:5,0:5])
-            # from matplotlib import pyplot as plt
-            # plt.figure()
-            # plt.plot(self.intpX,self.data_CPU[0:samples],self.intpXp,yp[0,:])
-            # plt.show()
-            # yp_gpu = self.winfunc(yp_gpu, dispersion)
-
-            ################################################################################# FFT
-            # t3=time.time()
-            # print(yp_gpu[0:10,0:5])
-            # tmp=yp_gpu*dispersion
-            # print(tmp[0:10,0:5])
-            # print(tmp.shape)
-            
-            ######################################## 
-            # get interpolated data back for CPU FFT
-            # yp = cupy.asnumpy(yp_gpu)
-            # self.data_CPU = np.abs(np.fft.fft(yp, axis=fftAxis))/samples
-            # self.data_CPU = self.data_CPU[:,Pixel_start: Pixel_start+Pixel_range ]*self.AMPLIFICATION
-            #######################################
-            if self.interp:
-                data_gpu  = cupy.fft.fft(yp_gpu*dispersion, axis=fftAxis)/samples
-            else:
-                data_gpu  = cupy.fft.fft(yp_gpu, axis=fftAxis)/samples
-            t4=time.time()
-            if round(t4-t3,4) >0.5:
-                print('time for FFT: ', round(t4-t3,3))
-            # data_gpu  = cupy.fft.fft(yp_gpu, axis=fftAxis)/samples
-            # print(data_gpu[0:10,0:5])
-            
-            data_gpu = cupy.absolute(data_gpu[:,Pixel_start:Pixel_start + Pixel_range])
-            
-            self.data_CPU = cupy.asnumpy(data_gpu)*self.AMPLIFICATION
-            self.data_CPU = self.data_CPU.reshape(shape[0],shape[1],Pixel_range)
+            t_gpu_start = time.time()
+            chunk_frames = self.gpu_fft_chunk_frames(mode, shape[0])
+            dynamic_reference_gpu = self.dynamic_reference_gpu_for_chunks(mode, memoryLoc, shape)
+            self.data_CPU = np.empty((shape[0], shape[1], Pixel_range), dtype=np.float32)
+            for chunk_start in range(0, shape[0], chunk_frames):
+                chunk_end = min(shape[0], chunk_start + chunk_frames)
+                chunk = self.Memory[memoryLoc][chunk_start:chunk_end, :, :]
+                self.data_CPU[chunk_start:chunk_end, :, :] = self.cudaFFT_chunk(
+                    chunk,
+                    mode,
+                    samples,
+                    Pixel_start,
+                    Pixel_range,
+                    dynamic_reference_gpu,
+                )
+            del dynamic_reference_gpu
+            if self.release_gpu_memory_each_fft:
+                self.release_gpu_memory()
             t5=time.time()
-            if round(t5-t4,4) >0.2:
-                print('time for data to CPU: ', round(t5-t4,3))
+            if round(t5-t_gpu_start,4) >0.2:
+                print('time for chunked GPU FFT: ', round(t5-t_gpu_start,3))
             # print('data_CPU shape', self.data_CPU.shape)
             # print('data_CPU:', self.data_CPU[0,0,0:15])
             if self.ui.DynCheckBox.isChecked() and mode in [ 'FiniteBline', 'FiniteCscan']:
@@ -275,14 +216,17 @@ class GPUThread(QThread):
         Pixel_start = self.ui.DepthStart.value()
         Pixel_range = self.ui.DepthRange.value()
 
-        self.data_CPU = np.float32(self.Memory[memoryLoc].copy())
+        self.data_CPU = self.Memory[memoryLoc].astype(np.float32, copy=True)
         shape = self.data_CPU.shape
         # print('data shape', shape)
         # print('GPU receives:',self.data_CPU[0,0,0:10])
         # subtract background
         t0=time.time()
-        # self.data_CPU = self.data_CPU - np.tile(self.background,[shape[0],1,1])
-        self.data_CPU = self.data_CPU - uniform_filter1d(self.data_CPU, size=51, axis=2)
+        self.subtract_dynamic_reference_background(mode, shape)
+        # self.data_CPU -= self.background[np.newaxis, :, :]
+        baseline = uniform_filter1d(self.data_CPU, size=51, axis=2)
+        self.data_CPU -= baseline
+        del baseline
         if round(time.time()-t0,4) >1:
             print('background subtraction took ', round(time.time()-t0,3),'s')
         
@@ -320,6 +264,227 @@ class GPUThread(QThread):
             self.GPU2weaverQueue.put(self.data_CPU)
             # print('GPU data to weaver')
         
+    def subtract_dynamic_reference_background(self, mode, shape):
+        """
+        For dynamic acquisitions, use the first repeated frame in the burst as
+        the local DC/background reference. This tracks slow DC drift better than
+        the pre-measured background when BlineAVG frames are acquired close in time.
+        """
+        if not self.ui.DynCheckBox.isChecked():
+            return False
+        if mode not in [
+            'ContinuousBline',
+            'FiniteBline',
+            'ContinuousCscan',
+            'FiniteCscan',
+            'Process_Mosaic',
+            'PlatePreScan',
+            'PlateScan',
+            'WellScan',
+        ]:
+            return False
+        if len(shape) < 3 or shape[0] < 2:
+            return False
+        bline_avg = int(self.ui.BlineAVG.value())
+        if bline_avg < 2:
+            return False
+
+        if shape[0] == bline_avg:
+            dynamic_background = self.data_CPU[0:1, :, :].copy()
+            self.data_CPU -= dynamic_background
+            del dynamic_background
+            return True
+
+        if mode in ['ContinuousCscan', 'FiniteCscan'] and shape[0] % bline_avg == 0:
+            y_count = shape[0] // bline_avg
+            data_view = self.data_CPU.reshape([y_count, bline_avg, shape[1], shape[2]])
+            dynamic_background = data_view[:, 0:1, :, :].copy()
+            data_view -= dynamic_background
+            del dynamic_background
+            return True
+
+        return False
+
+    def gpu_fft_chunk_frames(self, mode, total_frames):
+        chunk_frames = max(1, int(self.gpu_chunk_frames))
+        if not self.ui.DynCheckBox.isChecked():
+            return min(total_frames, chunk_frames)
+
+        bline_avg = max(1, int(self.ui.BlineAVG.value()))
+        if bline_avg < 2:
+            return min(total_frames, chunk_frames)
+
+        if total_frames == bline_avg:
+            return total_frames
+
+        if mode in ['ContinuousCscan', 'FiniteCscan'] and total_frames % bline_avg == 0:
+            chunk_frames = max(chunk_frames, bline_avg)
+            chunk_frames = (chunk_frames // bline_avg) * bline_avg
+            return min(total_frames, max(bline_avg, chunk_frames))
+
+        return min(total_frames, chunk_frames)
+
+    def cudaFFT_chunk(self, raw_chunk, mode, samples, Pixel_start, Pixel_range, dynamic_reference_gpu=None):
+        chunk_shape = raw_chunk.shape
+        t0 = time.time()
+        y_gpu = cupy.asarray(raw_chunk, dtype=cupy.float32)
+
+        dynamic_reference_subtracted = self.subtract_dynamic_reference_background_gpu(
+            mode,
+            chunk_shape,
+            y_gpu,
+            dynamic_reference_gpu,
+        )
+        if self.bg_sub and not dynamic_reference_subtracted:
+            if self.background.shape == chunk_shape[1:]:
+                if self.background_gpu is None or self.background_gpu.shape != self.background.shape:
+                    self.background_gpu = cupy.asarray(self.background, dtype=cupy.float32)
+                y_gpu -= self.background_gpu[cupy.newaxis, :, :]
+            else:
+                print(
+                    'background shape mismatch, skip subtraction: ',
+                    self.background.shape,
+                    'data frame shape:',
+                    chunk_shape[1:],
+                )
+
+        baseline = self.gpu_uniform_filter1d(y_gpu, size=51, axis=2)
+        y_gpu -= baseline
+        del baseline
+
+        alines = chunk_shape[0] * chunk_shape[1]
+        y_gpu = y_gpu.reshape([alines, samples])
+
+        if self.interp:
+            self.ensure_dispersion_gpu_cache()
+            yp_gpu = self.gpu_interpolation_buffer(y_gpu.shape)
+            self.interp_kernel(
+                (8, 8),
+                (16, 16),
+                (
+                    alines,
+                    samples,
+                    self.intpX_gpu,
+                    self.intpXp_gpu,
+                    y_gpu,
+                    self.indice1_gpu,
+                    self.indice2_gpu,
+                    yp_gpu,
+                ),
+            )
+        else:
+            yp_gpu = y_gpu
+
+        if self.interp:
+            data_gpu = cupy.fft.fft(yp_gpu * self.dispersion_gpu, axis=1) / samples
+        else:
+            data_gpu = cupy.fft.fft(yp_gpu, axis=1) / samples
+
+        data_gpu = cupy.absolute(data_gpu[:, Pixel_start:Pixel_start + Pixel_range]) * self.AMPLIFICATION
+        data_cpu = cupy.asnumpy(data_gpu).reshape(chunk_shape[0], chunk_shape[1], Pixel_range)
+
+        del data_gpu, y_gpu
+        if self.interp:
+            del yp_gpu
+
+        return data_cpu
+
+    def gpu_interpolation_buffer(self, shape):
+        if self.yp_gpu_buffer is None or self.yp_gpu_buffer.shape != shape:
+            self.yp_gpu_buffer = cupy.empty(shape, dtype=cupy.float32)
+        return self.yp_gpu_buffer
+
+    def dynamic_reference_gpu_for_chunks(self, mode, memoryLoc, shape):
+        if not self.ui.DynCheckBox.isChecked():
+            return None
+        if mode in ['ContinuousCscan', 'FiniteCscan']:
+            return None
+        if mode not in [
+            'ContinuousBline',
+            'FiniteBline',
+            'Process_Mosaic',
+            'PlatePreScan',
+            'PlateScan',
+            'WellScan',
+        ]:
+            return None
+        if len(shape) < 3 or shape[0] < 2:
+            return None
+        bline_avg = int(self.ui.BlineAVG.value())
+        if bline_avg < 2:
+            return None
+        return cupy.asarray(self.Memory[memoryLoc][0:1, :, :], dtype=cupy.float32)
+
+    def subtract_dynamic_reference_background_gpu(self, mode, shape, data_gpu, dynamic_reference_gpu=None):
+        if not self.ui.DynCheckBox.isChecked():
+            return False
+        if mode not in [
+            'ContinuousBline',
+            'FiniteBline',
+            'ContinuousCscan',
+            'FiniteCscan',
+            'Process_Mosaic',
+            'PlatePreScan',
+            'PlateScan',
+            'WellScan',
+        ]:
+            return False
+        if len(shape) < 3 or shape[0] < 2:
+            return False
+        bline_avg = int(self.ui.BlineAVG.value())
+        if bline_avg < 2:
+            return False
+
+        if dynamic_reference_gpu is not None:
+            data_gpu -= dynamic_reference_gpu
+            return True
+
+        if shape[0] == bline_avg:
+            dynamic_background = data_gpu[0:1, :, :].copy()
+            data_gpu -= dynamic_background
+            del dynamic_background
+            return True
+
+        if mode in ['ContinuousCscan', 'FiniteCscan'] and shape[0] % bline_avg == 0:
+            y_count = shape[0] // bline_avg
+            data_view = data_gpu.reshape([y_count, bline_avg, shape[1], shape[2]])
+            dynamic_background = data_view[:, 0:1, :, :].copy()
+            data_view -= dynamic_background
+            del dynamic_background
+            return True
+
+        return False
+
+    def gpu_uniform_filter1d(self, data_gpu, size, axis):
+        if cupy_uniform_filter1d is not None:
+            return cupy_uniform_filter1d(data_gpu, size=size, axis=axis)
+        return cupy.mean(data_gpu, axis=axis, keepdims=True)
+
+    def ensure_dispersion_gpu_cache(self):
+        if self.intpX_gpu is None or self.intpX_gpu.shape != self.intpX.shape:
+            self.intpX_gpu = cupy.asarray(self.intpX, dtype=cupy.float32)
+        if self.intpXp_gpu is None or self.intpXp_gpu.shape != self.intpXp.shape:
+            self.intpXp_gpu = cupy.asarray(self.intpXp, dtype=cupy.float32)
+        if self.indice1_gpu is None or self.indice1_gpu.shape != self.indice[0, :].shape:
+            self.indice1_gpu = cupy.asarray(self.indice[0, :], dtype=cupy.uint16)
+        if self.indice2_gpu is None or self.indice2_gpu.shape != self.indice[1, :].shape:
+            self.indice2_gpu = cupy.asarray(self.indice[1, :], dtype=cupy.uint16)
+        if self.dispersion_gpu is None or self.dispersion_gpu.shape != self.dispersion.shape:
+            self.dispersion_gpu = cupy.asarray(self.dispersion, dtype=cupy.complex64)
+
+    def clear_dispersion_gpu_cache(self):
+        self.intpX_gpu = None
+        self.intpXp_gpu = None
+        self.indice1_gpu = None
+        self.indice2_gpu = None
+        self.dispersion_gpu = None
+
+    def release_gpu_memory(self):
+        cupy.get_default_memory_pool().free_all_blocks()
+        pinned_pool = getattr(cupy, "get_default_pinned_memory_pool", None)
+        if pinned_pool is not None:
+            pinned_pool().free_all_blocks()
+
             
     def update_Dispersion(self):
         # get samples per Aline
@@ -338,29 +503,52 @@ class GPUThread(QThread):
                 self.indice = np.uint16(np.fromfile(dispersion_path+'/intpIndice.bin', dtype=np.uint16)).reshape([2,samples])
                 self.dispersion = np.float32(np.fromfile(dispersion_path+'/dspPhase.bin', dtype=np.float32)).reshape([1, samples])
                 self.dispersion = np.complex64(np.exp(1j*self.dispersion))
-                self.ui.statusbar.showMessage("load disperison compensation success...")
+                if not (SIM or self.SIM):
+                    self.clear_dispersion_gpu_cache()
+                    self.ensure_dispersion_gpu_cache()
+                if getattr(self, "ui_bridge", None) is not None:
+                    try:
+                        self.ui_bridge.status_message.emit("load disperison compensation success...")
+                    except Exception:
+                        self.ui.statusbar.showMessage("load disperison compensation success...")
+                else:
+                    self.ui.statusbar.showMessage("load disperison compensation success...")
                 # self.ui.PrintOut.append("load disperison compensation success...")
                 self.log.write("load disperison compensation success...")
                 print("load disperison compensation success...")
             except:
                 self.interp = False
+                self.clear_dispersion_gpu_cache()
                 # self.intpX  = np.float32(np.linspace(0,1,samples))
                 # self.intpXp  = np.float32(np.linspace(0,1,samples))
                 # self.indice = np.uint16(np.linspace(0,samples-1,samples)).reshape([samples,1])
                 # self.indice = np.tile(self.indice,[1,2])
                 # self.dispersion = np.complex64(np.ones(samples)).reshape([1,samples])
-                self.ui.statusbar.showMessage('no disperison compensation found...skip interpolation')
+                if getattr(self, "ui_bridge", None) is not None:
+                    try:
+                        self.ui_bridge.status_message.emit('no disperison compensation found...skip interpolation')
+                    except Exception:
+                        self.ui.statusbar.showMessage('no disperison compensation found...skip interpolation')
+                else:
+                    self.ui.statusbar.showMessage('no disperison compensation found...skip interpolation')
                 # self.ui.PrintOut.append("no disperison compensation found...")
                 self.log.write("no disperison compensation found...skip interpolation")
                 print("no disperison compensation found...skip interpolation")
         else:
             self.interp = False
+            self.clear_dispersion_gpu_cache()
             # self.intpX  = np.float32(np.linspace(0,1,samples))
             # self.intpXp  = np.float32(np.linspace(0,1,samples))
             # self.indice = np.uint16(np.linspace(0,samples-1,samples)).reshape([samples,1])
             # self.indice = np.tile(self.indice,[1,2])
             # self.dispersion = np.complex64(np.ones(samples)).reshape([1,samples])
-            self.ui.statusbar.showMessage('no disperison compensation found...skip interpolation')
+            if getattr(self, "ui_bridge", None) is not None:
+                try:
+                    self.ui_bridge.status_message.emit('no disperison compensation found...skip interpolation')
+                except Exception:
+                    self.ui.statusbar.showMessage('no disperison compensation found...skip interpolation')
+            else:
+                self.ui.statusbar.showMessage('no disperison compensation found...skip interpolation')
             # self.ui.PrintOut.append("no disperison compensation found...")
             self.log.write("no disperison compensation found...skip interpolation")
             print("no disperison compensation found...skip interpolation")
@@ -377,24 +565,49 @@ class GPUThread(QThread):
         if os.path.isfile(background_path):
             try:
                 self.background  = np.float32(np.fromfile(background_path, dtype=np.float32)).reshape([Xpixels,samples])
+                if not (SIM or self.SIM):
+                    self.background_gpu = cupy.asarray(self.background, dtype=cupy.float32)
                 # print(self.background.shape)
     
                 # plt.figure()
                 # plt.imshow(self.background)
                 # plt.show()
-                self.ui.statusbar.showMessage("load background success...")
+                if getattr(self, "ui_bridge", None) is not None:
+                    try:
+                        self.ui_bridge.status_message.emit("load background success...")
+                    except Exception:
+                        self.ui.statusbar.showMessage("load background success...")
+                else:
+                    self.ui.statusbar.showMessage("load background success...")
                 # self.ui.PrintOut.append("load disperison compensation success...")
                 self.log.write("load background success...")
                 print("load background success...")
+                self.bg_sub = True
             except:
+                self.bg_sub = False
                 self.background = np.zeros([Xpixels, samples])
-                self.ui.statusbar.showMessage('no background found...using default')
+                self.background_gpu = None
+                if getattr(self, "ui_bridge", None) is not None:
+                    try:
+                        self.ui_bridge.status_message.emit('no background found...using default')
+                    except Exception:
+                        self.ui.statusbar.showMessage('no background found...using default')
+                else:
+                    self.ui.statusbar.showMessage('no background found...using default')
                 # self.ui.PrintOut.append("no disperison compensation found...")
                 self.log.write("no background found...using default")
                 print("no background found...using default")
         else:
+            self.bg_sub = False
             self.background = np.zeros([Xpixels, samples])
-            self.ui.statusbar.showMessage('no background found...using default')
+            self.background_gpu = None
+            if getattr(self, "ui_bridge", None) is not None:
+                try:
+                    self.ui_bridge.status_message.emit('no background found...using default')
+                except Exception:
+                    self.ui.statusbar.showMessage('no background found...using default')
+            else:
+                self.ui.statusbar.showMessage('no background found...using default')
             # self.ui.PrintOut.append("no disperison compensation found...")
             self.log.write("no background found...using default")
             print("no background found...using default2")
