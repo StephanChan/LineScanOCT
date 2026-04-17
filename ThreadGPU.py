@@ -37,8 +37,13 @@ class GPUThread(QThread):
         self.indice2_gpu = None
         self.dispersion_gpu = None
         self.release_gpu_memory_each_fft = False
-        self.gpu_chunk_frames = 64
+        self.gpu_chunk_frames = 8
+        self.gpu_overlap_transfer = True
+        # Profiling synchronizes each GPU stage, so overlap is temporarily bypassed.
+        self.gpu_profile_timing = False
         self.yp_gpu_buffer = None
+        self.yp_gpu_stream_buffers = [None, None]
+        self.gpu_streams = None
         
     def defwin(self):
         if not (SIM or self.SIM):
@@ -150,21 +155,36 @@ class GPUThread(QThread):
             chunk_frames = self.gpu_fft_chunk_frames(mode, shape[0])
             dynamic_reference_gpu = self.dynamic_reference_gpu_for_chunks(mode, memoryLoc, shape)
             self.data_CPU = np.empty((shape[0], shape[1], Pixel_range), dtype=np.float32)
-            for chunk_start in range(0, shape[0], chunk_frames):
-                chunk_end = min(shape[0], chunk_start + chunk_frames)
-                chunk = self.Memory[memoryLoc][chunk_start:chunk_end, :, :]
-                self.data_CPU[chunk_start:chunk_end, :, :] = self.cudaFFT_chunk(
-                    chunk,
+            profile = self.new_gpu_profile() if self.gpu_profile_timing else None
+            if self.gpu_overlap_transfer and not self.gpu_profile_timing and shape[0] > chunk_frames:
+                self.cudaFFT_chunked_overlapped(
                     mode,
+                    memoryLoc,
                     samples,
                     Pixel_start,
                     Pixel_range,
+                    chunk_frames,
                     dynamic_reference_gpu,
                 )
+            else:
+                for chunk_start in range(0, shape[0], chunk_frames):
+                    chunk_end = min(shape[0], chunk_start + chunk_frames)
+                    chunk = self.Memory[memoryLoc][chunk_start:chunk_end, :, :]
+                    self.data_CPU[chunk_start:chunk_end, :, :] = self.cudaFFT_chunk(
+                        chunk,
+                        mode,
+                        samples,
+                        Pixel_start,
+                        Pixel_range,
+                        dynamic_reference_gpu,
+                        profile,
+                    )
             del dynamic_reference_gpu
             if self.release_gpu_memory_each_fft:
                 self.release_gpu_memory()
             t5=time.time()
+            if profile is not None:
+                self.print_gpu_profile(profile)
             if round(t5-t_gpu_start,4) >0.2:
                 print('time for chunked GPU FFT: ', round(t5-t_gpu_start,3))
             # print('data_CPU shape', self.data_CPU.shape)
@@ -314,21 +334,31 @@ class GPUThread(QThread):
         if bline_avg < 2:
             return min(total_frames, chunk_frames)
 
-        if total_frames == bline_avg:
-            return total_frames
-
-        if mode in ['ContinuousCscan', 'FiniteCscan'] and total_frames % bline_avg == 0:
+        if mode in ['ContinuousCscan', 'FiniteCscan'] and total_frames > bline_avg and total_frames % bline_avg == 0:
             chunk_frames = max(chunk_frames, bline_avg)
             chunk_frames = (chunk_frames // bline_avg) * bline_avg
             return min(total_frames, max(bline_avg, chunk_frames))
 
         return min(total_frames, chunk_frames)
 
-    def cudaFFT_chunk(self, raw_chunk, mode, samples, Pixel_start, Pixel_range, dynamic_reference_gpu=None):
+    def cudaFFT_chunk(
+        self,
+        raw_chunk,
+        mode,
+        samples,
+        Pixel_start,
+        Pixel_range,
+        dynamic_reference_gpu=None,
+        profile=None,
+    ):
         chunk_shape = raw_chunk.shape
-        t0 = time.time()
-        y_gpu = cupy.asarray(raw_chunk, dtype=cupy.float32)
+        self.profile_start_chunk(profile)
 
+        t0 = time.perf_counter()
+        y_gpu = cupy.asarray(raw_chunk, dtype=cupy.float32)
+        self.profile_sync_add(profile, 'h2d_convert', t0)
+
+        t0 = time.perf_counter()
         dynamic_reference_subtracted = self.subtract_dynamic_reference_background_gpu(
             mode,
             chunk_shape,
@@ -347,14 +377,20 @@ class GPUThread(QThread):
                     'data frame shape:',
                     chunk_shape[1:],
                 )
+        self.profile_sync_add(profile, 'background', t0)
 
+        t0 = time.perf_counter()
         baseline = self.gpu_uniform_filter1d(y_gpu, size=51, axis=2)
         y_gpu -= baseline
         del baseline
+        self.profile_sync_add(profile, 'highpass', t0)
 
+        t0 = time.perf_counter()
         alines = chunk_shape[0] * chunk_shape[1]
         y_gpu = y_gpu.reshape([alines, samples])
+        self.profile_sync_add(profile, 'reshape', t0)
 
+        t0 = time.perf_counter()
         if self.interp:
             self.ensure_dispersion_gpu_cache()
             yp_gpu = self.gpu_interpolation_buffer(y_gpu.shape)
@@ -374,14 +410,22 @@ class GPUThread(QThread):
             )
         else:
             yp_gpu = y_gpu
+        self.profile_sync_add(profile, 'interpolation', t0)
 
+        t0 = time.perf_counter()
         if self.interp:
             data_gpu = cupy.fft.fft(yp_gpu * self.dispersion_gpu, axis=1) / samples
         else:
             data_gpu = cupy.fft.fft(yp_gpu, axis=1) / samples
+        self.profile_sync_add(profile, 'fft', t0)
 
+        t0 = time.perf_counter()
         data_gpu = cupy.absolute(data_gpu[:, Pixel_start:Pixel_start + Pixel_range]) * self.AMPLIFICATION
+        self.profile_sync_add(profile, 'abs_crop', t0)
+
+        t0 = time.perf_counter()
         data_cpu = cupy.asnumpy(data_gpu).reshape(chunk_shape[0], chunk_shape[1], Pixel_range)
+        self.profile_add(profile, 'd2h', time.perf_counter() - t0)
 
         del data_gpu, y_gpu
         if self.interp:
@@ -389,19 +433,197 @@ class GPUThread(QThread):
 
         return data_cpu
 
-    def gpu_interpolation_buffer(self, shape):
-        if self.yp_gpu_buffer is None or self.yp_gpu_buffer.shape != shape:
-            self.yp_gpu_buffer = cupy.empty(shape, dtype=cupy.float32)
-        return self.yp_gpu_buffer
+    def new_gpu_profile(self):
+        return {
+            'chunks': 0,
+            'h2d_convert': 0.0,
+            'background': 0.0,
+            'highpass': 0.0,
+            'reshape': 0.0,
+            'interpolation': 0.0,
+            'fft': 0.0,
+            'abs_crop': 0.0,
+            'd2h': 0.0,
+        }
+
+    def profile_start_chunk(self, profile):
+        if profile is not None:
+            profile['chunks'] += 1
+
+    def profile_sync_add(self, profile, key, start_time):
+        if profile is None:
+            return
+        cupy.cuda.get_current_stream().synchronize()
+        profile[key] += time.perf_counter() - start_time
+
+    def profile_add(self, profile, key, elapsed):
+        if profile is not None:
+            profile[key] += elapsed
+
+    def print_gpu_profile(self, profile):
+        total = sum(profile[key] for key in profile if key != 'chunks')
+        if total <= 0:
+            return
+        print(
+            'GPU profile: '
+            f"chunks={profile['chunks']}, "
+            f"h2d+convert={profile['h2d_convert']:.3f}s, "
+            f"background={profile['background']:.3f}s, "
+            f"highpass={profile['highpass']:.3f}s, "
+            f"reshape={profile['reshape']:.3f}s, "
+            f"interp={profile['interpolation']:.3f}s, "
+            f"fft={profile['fft']:.3f}s, "
+            f"abs/crop={profile['abs_crop']:.3f}s, "
+            f"d2h={profile['d2h']:.3f}s, "
+            f"sum={total:.3f}s"
+        )
+
+    def cudaFFT_chunked_overlapped(
+        self,
+        mode,
+        memoryLoc,
+        samples,
+        Pixel_start,
+        Pixel_range,
+        chunk_frames,
+        dynamic_reference_gpu,
+    ):
+        streams = self.gpu_overlap_streams()
+        slot_refs = [None, None]
+        for chunk_index, chunk_start in enumerate(range(0, self.Memory[memoryLoc].shape[0], chunk_frames)):
+            slot = chunk_index % 2
+            if slot_refs[slot] is not None:
+                slot_refs[slot]['stream'].synchronize()
+                slot_refs[slot] = None
+
+            chunk_end = min(self.Memory[memoryLoc].shape[0], chunk_start + chunk_frames)
+            chunk = self.Memory[memoryLoc][chunk_start:chunk_end, :, :]
+            host_out = self.data_CPU[chunk_start:chunk_end, :, :]
+            slot_refs[slot] = self.cudaFFT_chunk_async(
+                chunk,
+                mode,
+                samples,
+                Pixel_start,
+                Pixel_range,
+                dynamic_reference_gpu,
+                streams[slot],
+                slot,
+                host_out,
+            )
+
+        for slot in range(2):
+            if slot_refs[slot] is not None:
+                slot_refs[slot]['stream'].synchronize()
+                slot_refs[slot] = None
+
+    def cudaFFT_chunk_async(
+        self,
+        raw_chunk,
+        mode,
+        samples,
+        Pixel_start,
+        Pixel_range,
+        dynamic_reference_gpu,
+        stream,
+        slot,
+        host_out,
+    ):
+        chunk_shape = raw_chunk.shape
+        keep_alive = []
+        with stream:
+            y_gpu = cupy.asarray(raw_chunk, dtype=cupy.float32)
+            keep_alive.append(y_gpu)
+
+            dynamic_reference_subtracted = self.subtract_dynamic_reference_background_gpu(
+                mode,
+                chunk_shape,
+                y_gpu,
+                dynamic_reference_gpu,
+                keep_alive,
+            )
+            if self.bg_sub and not dynamic_reference_subtracted:
+                if self.background.shape == chunk_shape[1:]:
+                    if self.background_gpu is None or self.background_gpu.shape != self.background.shape:
+                        self.background_gpu = cupy.asarray(self.background, dtype=cupy.float32)
+                    y_gpu -= self.background_gpu[cupy.newaxis, :, :]
+                else:
+                    print(
+                        'background shape mismatch, skip subtraction: ',
+                        self.background.shape,
+                        'data frame shape:',
+                        chunk_shape[1:],
+                    )
+
+            baseline = self.gpu_uniform_filter1d(y_gpu, size=51, axis=2)
+            keep_alive.append(baseline)
+            y_gpu -= baseline
+
+            alines = chunk_shape[0] * chunk_shape[1]
+            y_gpu = y_gpu.reshape([alines, samples])
+            keep_alive.append(y_gpu)
+
+            if self.interp:
+                self.ensure_dispersion_gpu_cache()
+                yp_gpu = self.gpu_interpolation_buffer(y_gpu.shape, slot=slot)
+                self.interp_kernel(
+                    (8, 8),
+                    (16, 16),
+                    (
+                        alines,
+                        samples,
+                        self.intpX_gpu,
+                        self.intpXp_gpu,
+                        y_gpu,
+                        self.indice1_gpu,
+                        self.indice2_gpu,
+                        yp_gpu,
+                    ),
+                )
+            else:
+                yp_gpu = y_gpu
+            keep_alive.append(yp_gpu)
+
+            if self.interp:
+                data_gpu = cupy.fft.fft(yp_gpu * self.dispersion_gpu, axis=1) / samples
+            else:
+                data_gpu = cupy.fft.fft(yp_gpu, axis=1) / samples
+
+            data_gpu = cupy.absolute(data_gpu[:, Pixel_start:Pixel_start + Pixel_range]) * self.AMPLIFICATION
+            data_gpu = data_gpu.reshape(chunk_shape[0], chunk_shape[1], Pixel_range)
+            keep_alive.append(data_gpu)
+            self.copy_gpu_to_host_async(data_gpu, host_out, stream)
+
+        return {'stream': stream, 'keep_alive': keep_alive}
+
+    def copy_gpu_to_host_async(self, data_gpu, host_out, stream):
+        try:
+            cupy.asnumpy(data_gpu, out=host_out, stream=stream, blocking=False)
+        except TypeError:
+            cupy.asnumpy(data_gpu, out=host_out, stream=stream)
+
+    def gpu_overlap_streams(self):
+        if self.gpu_streams is None:
+            self.gpu_streams = [cupy.cuda.Stream(non_blocking=True), cupy.cuda.Stream(non_blocking=True)]
+        return self.gpu_streams
+
+    def gpu_interpolation_buffer(self, shape, slot=None):
+        if slot is None:
+            if self.yp_gpu_buffer is None or self.yp_gpu_buffer.shape != shape:
+                self.yp_gpu_buffer = cupy.empty(shape, dtype=cupy.float32)
+            return self.yp_gpu_buffer
+
+        if self.yp_gpu_stream_buffers[slot] is None or self.yp_gpu_stream_buffers[slot].shape != shape:
+            self.yp_gpu_stream_buffers[slot] = cupy.empty(shape, dtype=cupy.float32)
+        return self.yp_gpu_stream_buffers[slot]
 
     def dynamic_reference_gpu_for_chunks(self, mode, memoryLoc, shape):
         if not self.ui.DynCheckBox.isChecked():
             return None
-        if mode in ['ContinuousCscan', 'FiniteCscan']:
-            return None
         if mode not in [
             'ContinuousBline',
             'FiniteBline',
+            'ContinuousCscan',
+            'FiniteCscan',
             'Process_Mosaic',
             'PlatePreScan',
             'PlateScan',
@@ -413,9 +635,18 @@ class GPUThread(QThread):
         bline_avg = int(self.ui.BlineAVG.value())
         if bline_avg < 2:
             return None
+        if mode in ['ContinuousCscan', 'FiniteCscan'] and shape[0] != bline_avg:
+            return None
         return cupy.asarray(self.Memory[memoryLoc][0:1, :, :], dtype=cupy.float32)
 
-    def subtract_dynamic_reference_background_gpu(self, mode, shape, data_gpu, dynamic_reference_gpu=None):
+    def subtract_dynamic_reference_background_gpu(
+        self,
+        mode,
+        shape,
+        data_gpu,
+        dynamic_reference_gpu=None,
+        keep_alive=None,
+    ):
         if not self.ui.DynCheckBox.isChecked():
             return False
         if mode not in [
@@ -441,16 +672,18 @@ class GPUThread(QThread):
 
         if shape[0] == bline_avg:
             dynamic_background = data_gpu[0:1, :, :].copy()
+            if keep_alive is not None:
+                keep_alive.append(dynamic_background)
             data_gpu -= dynamic_background
-            del dynamic_background
             return True
 
         if mode in ['ContinuousCscan', 'FiniteCscan'] and shape[0] % bline_avg == 0:
             y_count = shape[0] // bline_avg
             data_view = data_gpu.reshape([y_count, bline_avg, shape[1], shape[2]])
             dynamic_background = data_view[:, 0:1, :, :].copy()
+            if keep_alive is not None:
+                keep_alive.append(dynamic_background)
             data_view -= dynamic_background
-            del dynamic_background
             return True
 
         return False
