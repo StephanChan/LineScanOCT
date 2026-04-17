@@ -43,6 +43,10 @@ class GPUThread(QThread):
         self.gpu_profile_timing = False
         self.yp_gpu_buffer = None
         self.yp_gpu_stream_buffers = [None, None]
+        self.raw_gpu_buffer = None
+        self.raw_gpu_stream_buffers = [None, None]
+        self.float_gpu_buffer = None
+        self.float_gpu_stream_buffers = [None, None]
         self.gpu_streams = None
         
     def defwin(self):
@@ -355,8 +359,12 @@ class GPUThread(QThread):
         self.profile_start_chunk(profile)
 
         t0 = time.perf_counter()
-        y_gpu = cupy.asarray(raw_chunk, dtype=cupy.float32)
-        self.profile_sync_add(profile, 'h2d_convert', t0)
+        raw_gpu = self.load_raw_chunk_to_gpu(raw_chunk)
+        self.profile_sync_add(profile, 'h2d_uint16', t0)
+
+        t0 = time.perf_counter()
+        y_gpu = self.convert_raw_chunk_to_float(raw_gpu)
+        self.profile_sync_add(profile, 'u16_to_f32', t0)
 
         t0 = time.perf_counter()
         dynamic_reference_subtracted = self.subtract_dynamic_reference_background_gpu(
@@ -433,10 +441,27 @@ class GPUThread(QThread):
 
         return data_cpu
 
+    def load_raw_chunk_to_gpu(self, raw_chunk, slot=None, stream=None):
+        raw_gpu = self.gpu_raw_buffer(raw_chunk.shape, raw_chunk.dtype, slot=slot)
+        if stream is None:
+            raw_gpu.set(raw_chunk)
+        else:
+            try:
+                raw_gpu.set(raw_chunk, stream=stream)
+            except TypeError:
+                raw_gpu.set(raw_chunk)
+        return raw_gpu
+
+    def convert_raw_chunk_to_float(self, raw_gpu, slot=None):
+        y_gpu = self.gpu_float_buffer(raw_gpu.shape, slot=slot)
+        y_gpu[...] = raw_gpu
+        return y_gpu
+
     def new_gpu_profile(self):
         return {
             'chunks': 0,
-            'h2d_convert': 0.0,
+            'h2d_uint16': 0.0,
+            'u16_to_f32': 0.0,
             'background': 0.0,
             'highpass': 0.0,
             'reshape': 0.0,
@@ -467,7 +492,8 @@ class GPUThread(QThread):
         print(
             'GPU profile: '
             f"chunks={profile['chunks']}, "
-            f"h2d+convert={profile['h2d_convert']:.3f}s, "
+            f"h2d_uint16={profile['h2d_uint16']:.3f}s, "
+            f"u16->f32={profile['u16_to_f32']:.3f}s, "
             f"background={profile['background']:.3f}s, "
             f"highpass={profile['highpass']:.3f}s, "
             f"reshape={profile['reshape']:.3f}s, "
@@ -531,7 +557,9 @@ class GPUThread(QThread):
         chunk_shape = raw_chunk.shape
         keep_alive = []
         with stream:
-            y_gpu = cupy.asarray(raw_chunk, dtype=cupy.float32)
+            raw_gpu = self.load_raw_chunk_to_gpu(raw_chunk, slot=slot, stream=stream)
+            keep_alive.append(raw_gpu)
+            y_gpu = self.convert_raw_chunk_to_float(raw_gpu, slot=slot)
             keep_alive.append(y_gpu)
 
             dynamic_reference_subtracted = self.subtract_dynamic_reference_background_gpu(
@@ -605,6 +633,35 @@ class GPUThread(QThread):
         if self.gpu_streams is None:
             self.gpu_streams = [cupy.cuda.Stream(non_blocking=True), cupy.cuda.Stream(non_blocking=True)]
         return self.gpu_streams
+
+    def gpu_raw_buffer(self, shape, dtype, slot=None):
+        dtype = np.dtype(dtype)
+        if slot is None:
+            if (
+                self.raw_gpu_buffer is None
+                or self.raw_gpu_buffer.shape != shape
+                or self.raw_gpu_buffer.dtype != dtype
+            ):
+                self.raw_gpu_buffer = cupy.empty(shape, dtype=dtype)
+            return self.raw_gpu_buffer
+
+        if (
+            self.raw_gpu_stream_buffers[slot] is None
+            or self.raw_gpu_stream_buffers[slot].shape != shape
+            or self.raw_gpu_stream_buffers[slot].dtype != dtype
+        ):
+            self.raw_gpu_stream_buffers[slot] = cupy.empty(shape, dtype=dtype)
+        return self.raw_gpu_stream_buffers[slot]
+
+    def gpu_float_buffer(self, shape, slot=None):
+        if slot is None:
+            if self.float_gpu_buffer is None or self.float_gpu_buffer.shape != shape:
+                self.float_gpu_buffer = cupy.empty(shape, dtype=cupy.float32)
+            return self.float_gpu_buffer
+
+        if self.float_gpu_stream_buffers[slot] is None or self.float_gpu_stream_buffers[slot].shape != shape:
+            self.float_gpu_stream_buffers[slot] = cupy.empty(shape, dtype=cupy.float32)
+        return self.float_gpu_stream_buffers[slot]
 
     def gpu_interpolation_buffer(self, shape, slot=None):
         if slot is None:
