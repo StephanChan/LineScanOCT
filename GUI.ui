@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1658</width>
-    <height>1018</height>
+    <width>1569</width>
+    <height>889</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -245,6 +245,9 @@
               <property name="scaledContents">
                <bool>true</bool>
               </property>
+              <property name="alignment">
+               <set>Qt::AlignCenter</set>
+              </property>
              </widget>
             </item>
             <item>
@@ -376,6 +379,9 @@
             <property name="scaledContents">
              <bool>true</bool>
             </property>
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
+            </property>
            </widget>
           </item>
           <item>
@@ -407,7 +413,7 @@
                 <number>4096</number>
                </property>
                <property name="singleStep">
-                <number>2</number>
+                <number>1</number>
                </property>
                <property name="pageStep">
                 <number>5</number>
@@ -516,7 +522,7 @@
          </font>
         </property>
         <property name="text">
-         <string>LocateSample</string>
+         <string>定位样品</string>
         </property>
        </widget>
       </item>
@@ -828,7 +834,7 @@
           <item row="0" column="0">
            <widget class="QCheckBox" name="DynCheckBox">
             <property name="text">
-             <string>Dynamic OCT</string>
+             <string>动态OCT</string>
             </property>
            </widget>
           </item>
@@ -855,7 +861,7 @@
         </widget>
         <widget class="QWidget" name="StageTab">
          <attribute name="title">
-          <string>三轴滑台</string>
+          <string>电动滑台</string>
          </attribute>
          <layout class="QHBoxLayout" name="horizontalLayout_7">
           <item>
@@ -1459,7 +1465,7 @@
         </widget>
         <widget class="QWidget" name="MosaicTab">
          <attribute name="title">
-          <string>样品扫描</string>
+          <string>孔板扫描</string>
          </attribute>
          <layout class="QHBoxLayout" name="horizontalLayout_3">
           <item>
@@ -1612,7 +1618,7 @@
         </widget>
         <widget class="QWidget" name="tab">
          <attribute name="title">
-          <string>FOV隐藏参数</string>
+          <string>隐藏参数</string>
          </attribute>
          <layout class="QGridLayout" name="gridLayout_3">
           <item row="0" column="0" colspan="2">
@@ -2661,9 +2667,32 @@
         </widget>
         <widget class="QWidget" name="tab_2">
          <attribute name="title">
-          <string>图像预处理</string>
+          <string>图像优化</string>
          </attribute>
          <layout class="QGridLayout" name="gridLayout_11">
+          <item row="1" column="0">
+           <widget class="QLineEdit" name="InD_DIR">
+            <property name="minimumSize">
+             <size>
+              <width>0</width>
+              <height>100</height>
+             </size>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>300</width>
+              <height>16777215</height>
+             </size>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QPushButton" name="redoBG">
+            <property name="text">
+             <string>Do Background</string>
+            </property>
+           </widget>
+          </item>
           <item row="0" column="2">
            <widget class="QPushButton" name="redoSurf">
             <property name="enabled">
@@ -2680,10 +2709,13 @@
             </property>
            </widget>
           </item>
-          <item row="0" column="1">
-           <widget class="QPushButton" name="redoBG">
+          <item row="2" column="2">
+           <widget class="QPushButton" name="LoadSurface">
+            <property name="enabled">
+             <bool>true</bool>
+            </property>
             <property name="text">
-             <string>Do Background</string>
+             <string>Load surface</string>
             </property>
            </widget>
           </item>
@@ -2703,29 +2735,10 @@
             </property>
            </widget>
           </item>
-          <item row="2" column="2">
-           <widget class="QPushButton" name="LoadSurface">
-            <property name="enabled">
-             <bool>true</bool>
-            </property>
+          <item row="2" column="1">
+           <widget class="QPushButton" name="LoadBG">
             <property name="text">
-             <string>Load surface</string>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="0">
-           <widget class="QLineEdit" name="InD_DIR">
-            <property name="minimumSize">
-             <size>
-              <width>0</width>
-              <height>100</height>
-             </size>
-            </property>
-            <property name="maximumSize">
-             <size>
-              <width>300</width>
-              <height>16777215</height>
-             </size>
+             <string>Load Background files</string>
             </property>
            </widget>
           </item>
@@ -2733,13 +2746,6 @@
            <widget class="QPushButton" name="LoadInD">
             <property name="text">
              <string>Load Interpolation files</string>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="1">
-           <widget class="QPushButton" name="LoadBG">
-            <property name="text">
-             <string>Load Background files</string>
             </property>
            </widget>
           </item>
@@ -2763,14 +2769,27 @@
            </widget>
           </item>
           <item row="1" column="3">
-           <spacer name="horizontalSpacer_8">
-            <property name="sizeHint" stdset="0">
-             <size>
-              <width>40</width>
-              <height>20</height>
-             </size>
+           <widget class="QSlider" name="DynContrast">
+            <property name="value">
+             <number>50</number>
             </property>
-           </spacer>
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QLabel" name="label_27">
+            <property name="layoutDirection">
+             <enum>Qt::LeftToRight</enum>
+            </property>
+            <property name="text">
+             <string>Dynamic contrast</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
+            </property>
+           </widget>
           </item>
          </layout>
         </widget>
@@ -2972,7 +2991,7 @@ p, li { white-space: pre-wrap; }
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>1658</width>
+     <width>1569</width>
      <height>34</height>
     </rect>
    </property>

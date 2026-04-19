@@ -47,7 +47,13 @@ from Actions import *
 from Generaic_functions import LOG
 import time
 from SampleLocator import UnifiedSampleScanner
-from Generaic_functions import RGBImagePlot, fastLinePlot
+from Display_rendering import (
+    render_aodo_waveform_ready,
+    render_aline_ready,
+    render_bline_ready,
+    render_cscan_ready,
+    render_mosaic_ready,
+)
 # init global memory for raw data, make it more than 2 for parallel acquisition and processing
 global memoryCount
 memoryCount = 10
@@ -136,7 +142,10 @@ class GPUThread_2(GPUThread):
             self.GPU2weaverQueue = GPU2weaverQueue
             self.log = log
             self.SIM = SIM
-            self.AMPLIFICATION = 10#AMPLIFICATION
+            self.AMPLIFICATION = 1024#AMPLIFICATION
+            self.default_static_normalization_mean = 40.0
+            self.static_normalization_mean = self.default_static_normalization_mean
+            self.dynamic_use_first_frame_background = True
             self.ui_bridge = None
             
 # wrap Galvo&Stage control thread with queues
@@ -171,6 +180,7 @@ class UiBridge(QObject):
     bline_ready = pyqtSignal(object)   # dict payload
     cscan_ready = pyqtSignal(object)   # dict payload
     mosaic_ready = pyqtSignal(object)  # dict payload
+    aodo_waveform_ready = pyqtSignal(object)  # dict payload
 
 
 # wrap MainWindow object with queues and threads   
@@ -203,6 +213,7 @@ class GUI(MainWindow):
         self.ui.XZmin.valueChanged.connect(self.Update_contrast)
         self.ui.Intmax.valueChanged.connect(self.Update_contrast)
         self.ui.Intmin.valueChanged.connect(self.Update_contrast)
+        self.ui.DynContrast.valueChanged.connect(self.Update_contrast)
         # self.ui.Dynmax.valueChanged.connect(self.Update_contrast_Dyn)
         # self.ui.Dynmin.valueChanged.connect(self.Update_contrast_Dyn)
 
@@ -244,6 +255,13 @@ class GUI(MainWindow):
         self._ui_bridge.bline_ready.connect(self._on_bline_ready)
         self._ui_bridge.cscan_ready.connect(self._on_cscan_ready)
         self._ui_bridge.mosaic_ready.connect(self._on_mosaic_ready)
+        self._ui_bridge.aodo_waveform_ready.connect(self._on_aodo_waveform_ready)
+        self._last_display_payloads = {
+            "aline": None,
+            "bline": None,
+            "cscan": None,
+            "mosaic": None,
+        }
         
         # Init all threads
         self.Init_allThreads()
@@ -283,74 +301,31 @@ class GUI(MainWindow):
         self.ui.statusbar.showMessage(msg)
 
     def _on_aline_ready(self, payload: dict):
+        self._last_display_payloads["aline"] = payload
         if not self._fps_ok("aline"):
             return
-        aline = payload.get("aline", None)
-        if aline is None:
-            return
-        ym = self.ui.XZmin.value()
-        yM = self.ui.XZmax.value()
-        w = self.ui.XZplane.width()
-        h = self.ui.XZplane.height()
-        pixmap = fastLinePlot(aline, width=w, height=h, m=ym, M=yM)
-        self.ui.XZplane.setPixmap(pixmap)
+        render_aline_ready(self.ui, payload)
 
     def _on_bline_ready(self, payload: dict):
+        self._last_display_payloads["bline"] = payload
         if not self._fps_ok("bline"):
             return
-        bline = payload.get("bline", None)
-        if bline is None:
-            return
-        dyn = payload.get("dyn", None)
-        ym = self.ui.XZmin.value()
-        yM = self.ui.XZmax.value()
-        if dyn is not None and np.size(dyn) > 0:
-            pixmap = RGBImagePlot(matrix1=bline, matrix2=dyn, m=ym, M=yM)
-        else:
-            pixmap = RGBImagePlot(matrix1=bline, m=ym, M=yM)
-        self.ui.XZplane.setPixmap(pixmap)
+        render_bline_ready(self.ui, payload)
 
     def _on_cscan_ready(self, payload: dict):
+        self._last_display_payloads["cscan"] = payload
         if not self._fps_ok("cscan"):
             return
-        bline = payload.get("bline", None)
-        dynb = payload.get("dynb", None)
-        aip = payload.get("aip", None)
-        dyn = payload.get("dyn", None)
-
-        if bline is not None:
-            ym = self.ui.XZmin.value()
-            yM = self.ui.XZmax.value()
-            if dynb is not None and np.size(dynb) > 0:
-                pixmap = RGBImagePlot(matrix1=bline, matrix2=dynb, m=ym, M=yM)
-            else:
-                pixmap = RGBImagePlot(matrix1=bline, m=ym, M=yM)
-            self.ui.XZplane.setPixmap(pixmap)
-
-        if aip is not None and getattr(self.ui, "mosaic_viewer", None) is not None:
-            XStepSize = self.ui.XStepSize.value()
-            YStepSize = self.ui.YStepSize.value()
-            if self.ui.DynCheckBox.isChecked() and dyn is not None and np.size(dyn) > 0:
-                tmp = np.tile(aip[:, :, np.newaxis], (1, 1, 3))
-                tmp[:, :, 0] = tmp[:, :, 0] + dyn
-                self.ui.mosaic_viewer.set_image(tmp, self.ui.Intmin.value(), self.ui.Intmax.value(), XStepSize, YStepSize)
-            else:
-                self.ui.mosaic_viewer.set_image(aip, self.ui.Intmin.value(), self.ui.Intmax.value(), XStepSize, YStepSize)
+        render_cscan_ready(self.ui, payload)
 
     def _on_mosaic_ready(self, payload: dict):
+        self._last_display_payloads["mosaic"] = payload
         if not self._fps_ok("mosaic"):
             return
-        mosaic = payload.get("mosaic", None)
-        bline = payload.get("bline", None)
-        if bline is not None:
-            ym = self.ui.XZmin.value()
-            yM = self.ui.XZmax.value()
-            pixmap = RGBImagePlot(matrix1=bline, m=ym, M=yM)
-            self.ui.XZplane.setPixmap(pixmap)
-        if mosaic is not None and getattr(self.ui, "mosaic_viewer", None) is not None:
-            XStepSize = self.ui.XStepSize.value()
-            YStepSize = self.ui.YStepSize.value()
-            self.ui.mosaic_viewer.set_image(mosaic, self.ui.Intmin.value(), self.ui.Intmax.value(), XStepSize, YStepSize)
+        render_mosaic_ready(self.ui, payload)
+
+    def _on_aodo_waveform_ready(self, payload: dict):
+        render_aodo_waveform_ready(self.ui, payload)
             
     def Stop_allThreads(self):
         exit_element=EXIT()
@@ -381,7 +356,7 @@ class GUI(MainWindow):
                 WeaverQueue.put(an_action)
             else:
                 self.Stop_task()
-        elif self.ui.ACQMode.currentText() in ['FiniteAline','FiniteBline','FiniteCscan', 'PlateScan', 'WellScan']:
+        elif self.ui.ACQMode.currentText() in ['FiniteAline','FiniteBline','FiniteCscan', 'PlatePreScan', 'PlateScan', 'WellScan']:
             if self.ui.RunButton.isChecked():
                 self.ui.RunButton.setText('Stop')
                 # self.ui.RunButton.setEnabled(False)
@@ -425,7 +400,7 @@ class GUI(MainWindow):
         # print(self.sample_centers)
         # print(FOV_locations)
         # print(sample_centers)
-        an_action = WeaverAction('PlatePreScan', args = [FOV_locations, sample_centers, raw_img, pixel_polygons])
+        an_action = WeaverAction('PlatePreScan', payload = [FOV_locations, sample_centers, raw_img, pixel_polygons])
         WeaverQueue.put(an_action)
 
     def InitStages(self):
@@ -552,18 +527,29 @@ class GUI(MainWindow):
         GPUQueue.put(an_action)
         
     def Update_contrast(self):
-        # if not self.ui.RunButton.isChecked():
-        an_action = DnSAction('UpdateContrast')
-        DnSQueue.put(an_action)
+        acq_mode = self.ui.ACQMode.currentText()
+        if acq_mode in ["FiniteAline", "ContinuousAline"]:
+            payload = self._last_display_payloads.get("aline")
+            if payload is not None:
+                render_aline_ready(self.ui, payload)
+        elif acq_mode in ["FiniteBline", "ContinuousBline"]:
+            payload = self._last_display_payloads.get("bline")
+            if payload is not None:
+                render_bline_ready(self.ui, payload)
+        elif acq_mode in ["FiniteCscan", "ContinuousCscan"]:
+            payload = self._last_display_payloads.get("cscan")
+            if payload is not None:
+                render_cscan_ready(self.ui, payload)
+        elif acq_mode in ["PlatePreScan", "PlateScan", "WellScan"]:
+            payload = self._last_display_payloads.get("mosaic")
+            if payload is not None:
+                render_mosaic_ready(self.ui, payload)
 
     def Update_contrast_Mosaic(self):
-        # if not self.ui.RunButton.isChecked():
-        an_action = DnSAction('UpdateContrastMosaic')
-        DnSQueue.put(an_action)
+        self.Update_contrast()
             
     def Update_contrast_Dyn(self):
-        an_action = DnSAction('UpdateContrastDyn')
-        DnSQueue.put(an_action)
+        self.Update_contrast()
         
     # def redo_dispersion_compensation(self):
     #     an_action = WeaverAction('dispersion_compensation')
@@ -587,17 +573,17 @@ class GUI(MainWindow):
     #     DQueue.put(an_action)
     
     def TestButton1Func(self):
-        args = [[0, 0], [10, 100]]
-        an_action = DnSAction('Init_Mosaic', data = None, args = args)
+        payload = [[0, 0], [10, 100]]
+        an_action = DnSAction('Init_Mosaic', data = None, payload = payload)
         DnSQueue.put(an_action)
         
     def TestButton2Func(self):
-        args = [[1, 1], [10, 100]]
-        an_action = DnSAction('Mosaic', data = np.ones([300*1700,150],dtype=np.float32)*50, args = args)
+        payload = [[1, 1], [10, 100]]
+        an_action = DnSAction('Mosaic', data = np.ones([300*1700,150],dtype=np.float32)*50, payload = payload)
         DnSQueue.put(an_action)
     
     def TestButton3Func(self):
-        an_action = DnSAction('display_mosaic') # data in Memory[memoryLoc]
+        an_action = DnSAction('display_mosaic') # data in Memory[memory_slot]
         DnSQueue.put(an_action)
         
     def closeEvent(self, event):

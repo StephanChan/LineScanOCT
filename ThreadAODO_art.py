@@ -28,44 +28,53 @@ from PyQt5.QtCore import  QThread
 try:
     import sys
     sys.path.append(r"C:\\Program Files (x86)\\ART Technology\\ART-DAQ\\Samples\\Python\\LIB\\")
-    
+
     if "ni" not in sys.modules:
         import artdaq as ni
         from artdaq.constants import AcquisitionType as Atype
-        from artdaq.constants import Edge, ProductCategory, RegenerationMode, Signal     
+        from artdaq.constants import Edge, ProductCategory, RegenerationMode, Signal
     else:
-        # Module already loaded – you can safely use it
+        # Module already loaded; you can safely use it.
         pass
 except:
     print('ART digitizer init failed, using simulation')
     SIM = True
-    
+
 try:
     from StageControl import ZC300MotorController
     motors = ZC300MotorController()
 except:
     print('stage init failed, using simulation')
     SIM = True
-    
-from Generaic_functions import GenAODO, LinePlot
+
+from Generaic_functions import GenAODO
+from HardwareSpecs import (
+    AODO_AO_VOLTAGE_MAX,
+    AODO_AO_VOLTAGE_MIN,
+    AODO_DEFAULT_FRAME_RATE,
+    AODO_TRIGGER_IN_PFI,
+    AODO_TRIGGER_OUT_PFI,
+    digital_line_mask,
+    get_camera_spec,
+    get_stage_axis_spec,
+)
 import time
 import traceback
-import numpy as np
 
-    
-    
+
+
 class AODOThread(QThread):
     def __init__(self):
         super().__init__()
         self.AOtask = None
         self.DOtask = None
-        
-    
+
+
     def run(self):
         self.Init_all_termial()
         self.StagebackQueue.get()
         self.QueueOut()
-        
+
     def QueueOut(self):
         self.item = self.queue.get()
         while self.item.action != 'exit':
@@ -94,7 +103,7 @@ class AODOThread(QThread):
                     self.StepMove(axis = 'Y', Direction = 'DOWN')
                 elif self.item.action == 'ZDOWN':
                     self.StepMove(axis = 'Z', Direction = 'DOWN')
-                    
+
                 elif self.item.action == 'Init':
                     self.Init_all_termial()
                 elif self.item.action == 'Uninit':
@@ -113,99 +122,82 @@ class AODOThread(QThread):
                     self.centergalvo()
 
                 else:
-                    message = 'AODO thread is doing something undefined: '+self.item.action
-                    if getattr(self, "ui_bridge", None) is not None:
-                        try:
-                            self.ui_bridge.status_message.emit(message)
-                        except Exception:
-                            self.ui.statusbar.showMessage(message)
-                    else:
-                        self.ui.statusbar.showMessage(message)
+                    message = f"Unknown stage/galvo command: {self.item.action}"
+                    self.emit_status(message)
                     print(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
             except Exception:
-                message = "\nAn error occurred,"+" skip the AODO action\n"
+                message = "Stage/galvo command failed. This action was skipped."
                 print(Exception)
                 print(message)
-                if getattr(self, "ui_bridge", None) is not None:
-                    try:
-                        self.ui_bridge.status_message.emit(message)
-                    except Exception:
-                        self.ui.statusbar.showMessage(message)
-                else:
-                    self.ui.statusbar.showMessage(message)
+                self.emit_status(message)
                 # self.ui.PrintOut.append(message)
                 self.log.write(message)
                 print(traceback.format_exc())
             self.item = self.queue.get()
-        if getattr(self, "ui_bridge", None) is not None:
-            try:
-                self.ui_bridge.status_message.emit('AODO thread successfully exited')
-            except Exception:
-                self.ui.statusbar.showMessage('AODO thread successfully exited')
-        else:
-            self.ui.statusbar.showMessage('AODO thread successfully exited')
+        self.emit_status("Stage/galvo thread exited.")
+
+    def emit_status(self, message):
+        if message is None:
+            return
+        self.ui_bridge.status_message.emit(str(message))
 
     def Init_all_termial(self):
         # Galvo terminal
         self.GalvoAO = self.ui.AODOboard.toPlainText()+'/'+self.ui.GalvoAO.currentText()
-        
+
         # synchronized DO terminal
         self.SyncDO = self.ui.AODOboard.toPlainText()+'/'+self.ui.SyncDO.currentText()
-        self.Trigger_out = '/'+ self.ui.AODOboard.toPlainText()+'/PFI3'
-        self.Trigger_in ='/'+ self.ui.AODOboard.toPlainText()+'/PFI7'
+        self.Trigger_out = '/'+ self.ui.AODOboard.toPlainText()+'/'+AODO_TRIGGER_OUT_PFI
+        self.Trigger_in ='/'+ self.ui.AODOboard.toPlainText()+'/'+AODO_TRIGGER_IN_PFI
         # print(self.GalvoAO, self.SyncDO)
         self.ui.Xcurrent.setValue(self.ui.XPosition.value())
         self.ui.Ycurrent.setValue(self.ui.YPosition.value())
         self.ui.Zcurrent.setValue(self.ui.ZPosition.value())
         if not (SIM or self.SIM):
             # initialize stages
-            motors.configure_axis(0) 
-            motors.configure_axis(1) 
-            motors.configure_axis(2) 
-            
-            motors.set_init_speed(0, 1)      # 起始速度 1 mm/s
-            motors.set_move_speed(0, self.ui.XSpeed.value())     # 运行速度  mm/s
-            motors.set_acceleration(0, self.ui.XAccelerate.value())   # 加速度  mm/s²
-            motors.set_home_speed(0, self.ui.XSpeed.value())      # 回零速度  mm/s
-            motors.set_position(0,-self.ui.XPosition.value())
-            
-            motors.set_init_speed(1, 1)      # 起始速度 1 mm/s
-            motors.set_move_speed(1, self.ui.YSpeed.value())     # 运行速度  mm/s
-            motors.set_acceleration(1, self.ui.YAccelerate.value())   # 加速度  mm/s²
-            motors.set_home_speed(1, self.ui.YSpeed.value())      # 回零速度  mm/s
-            motors.set_position(1,-self.ui.YPosition.value())
-            
-            motors.set_init_speed(2, 0.1)      # 起始速度 0.1 mm/s
-            motors.set_move_speed(2, self.ui.ZSpeed.value())     # 运行速度  mm/s
-            motors.set_acceleration(2, self.ui.ZAccelerate.value())   # 加速度  mm/s²
-            motors.set_home_speed(2, self.ui.ZSpeed.value())      # 回零速度  mm/s
-            motors.set_position(2,-self.ui.ZPosition.value())
+            x_axis = get_stage_axis_spec('X')
+            y_axis = get_stage_axis_spec('Y')
+            z_axis = get_stage_axis_spec('Z')
+            motors.configure_axis(x_axis.axis_index)
+            motors.configure_axis(y_axis.axis_index)
+            motors.configure_axis(z_axis.axis_index)
+            motors.set_init_speed(x_axis.axis_index, x_axis.init_speed_mm_s)
+            motors.set_move_speed(x_axis.axis_index, self.ui.XSpeed.value())
+            motors.set_acceleration(x_axis.axis_index, self.ui.XAccelerate.value())
+            motors.set_home_speed(x_axis.axis_index, self.ui.XSpeed.value())
+            motors.set_position(x_axis.axis_index,-self.ui.XPosition.value())
 
-        message = "Stage position updated..."
+            motors.set_init_speed(y_axis.axis_index, y_axis.init_speed_mm_s)
+            motors.set_move_speed(y_axis.axis_index, self.ui.YSpeed.value())
+            motors.set_acceleration(y_axis.axis_index, self.ui.YAccelerate.value())
+            motors.set_home_speed(y_axis.axis_index, self.ui.YSpeed.value())
+            motors.set_position(y_axis.axis_index,-self.ui.YPosition.value())
 
-        if getattr(self, "ui_bridge", None) is not None:
-            try:
-                self.ui_bridge.status_message.emit(message)
-            except Exception:
-                self.ui.statusbar.showMessage(message)
-        else:
-            self.ui.statusbar.showMessage(message)
+            motors.set_init_speed(z_axis.axis_index, z_axis.init_speed_mm_s)
+            motors.set_move_speed(z_axis.axis_index, self.ui.ZSpeed.value())
+            motors.set_acceleration(z_axis.axis_index, self.ui.ZAccelerate.value())
+            motors.set_home_speed(z_axis.axis_index, self.ui.ZSpeed.value())
+            motors.set_position(z_axis.axis_index,-self.ui.ZPosition.value())
+
+        message = "Stage position updated."
+
+        self.emit_status(message)
         # self.ui.PrintOut.append(message)
         self.log.write(message)
         print(message)
         self.StagebackQueue.put(0)
-    
+
     def Uninit(self):
         if not (SIM or self.SIM):
-            motors.set_enable(0,False)
-            motors.set_enable(1,False)
-            motors.set_enable(2,False)
-            
+            motors.set_enable(get_stage_axis_spec('X').axis_index, False)
+            motors.set_enable(get_stage_axis_spec('Y').axis_index, False)
+            motors.set_enable(get_stage_axis_spec('Z').axis_index, False)
+
             # pass
         self.StagebackQueue.put(0)
-        
+
     def ConfigTask(self):
         # Generate waveform
         self.DOwaveform,self.AOwaveform,status = GenAODO(mode=self.ui.ACQMode.currentText(), \
@@ -215,40 +207,27 @@ class AODOThread(QThread):
                                                  YSteps =  self.ui.Ypixels.value(), \
                                                  BVG = self.ui.BlineAVG.value(),\
                                                  Galvo_bias = self.ui.GalvoBias.value())
-        if self.ui.SyncDO.currentText() == 'port0/line0':
-            self.DOwaveform = self.DOwaveform * pow(2,0)
-        elif self.ui.SyncDO.currentText() == 'port0/line1':
-            self.DOwaveform = self.DOwaveform * pow(2,1)
-        elif self.ui.SyncDO.currentText() == 'port0/line2':
-            self.DOwaveform = self.DOwaveform * pow(2,2)
-        elif self.ui.SyncDO.currentText() == 'port0/line3':
-            self.DOwaveform = self.DOwaveform * pow(2,3)
-        elif self.ui.SyncDO.currentText() == 'port0/line4':
-            self.DOwaveform = self.DOwaveform * pow(2,4)
-        elif self.ui.SyncDO.currentText() == 'port0/line5':
-            self.DOwaveform = self.DOwaveform * pow(2,5)
-        elif self.ui.SyncDO.currentText() == 'port0/line6':
-            self.DOwaveform = self.DOwaveform * pow(2,6)
-        elif self.ui.SyncDO.currentText() == 'port0/line7':
-            self.DOwaveform = self.DOwaveform * pow(2,7)
-        pixmap = LinePlot(self.AOwaveform,self.DOwaveform, np.min([np.min(self.AOwaveform),0]), np.max([np.max(self.AOwaveform),1]))
-        # clear content on the waveformLabel
-        # self.ui.XwaveformLabel.clear()
-        # update iamge on the waveformLabel
-        self.ui.XwaveformLabel.setPixmap(pixmap)
+        self.DOwaveform = self.DOwaveform * digital_line_mask(self.ui.SyncDO.currentText())
+        if not self.ui.DynCheckBox.isChecked():
+            self.ui_bridge.aodo_waveform_ready.emit({
+                "ao_waveform": self.AOwaveform,
+                "do_waveform": self.DOwaveform,
+            })
         if not (SIM or self.SIM): # if not running simulation mode
-            if self.ui.Camera.currentText() == 'Daheng':
-                frameRate = self.ui.FrameRate_DH.value()*2#np.floor(self.ui.FrameRate.value()-30)*2
-            elif self.ui.Camera.currentText() == 'PhotonFocus':
-                frameRate = self.ui.FrameRate.value()*2
+            camera_name = self.ui.Camera.currentText()
+            camera = get_camera_spec(camera_name)
+            if camera_name == 'Daheng' and camera is not None:
+                frameRate = self.ui.FrameRate_DH.value() * camera.frame_rate_multiplier
+            elif camera_name == 'PhotonFocus' and camera is not None:
+                frameRate = self.ui.FrameRate.value() * camera.frame_rate_multiplier
             else:
-                frameRate = 400
+                frameRate = AODO_DEFAULT_FRAME_RATE
             ######################################################################################
             # init AO task
             self.AOtask = ni.Task('AOtask')
             # Config channel and vertical
             self.AOtask.ao_channels.add_ao_voltage_chan(physical_channel=self.GalvoAO, \
-                                                  min_val=- 10.0, max_val=10.0, \
+                                                  min_val=AODO_AO_VOLTAGE_MIN, max_val=AODO_AO_VOLTAGE_MAX, \
                                                   units=ni.constants.VoltageUnits.VOLTS)
             # depending on whether continuous or finite, config clock and mode
             if self.ui.ACQMode.currentText() in ['ContinuousAline', 'ContinuousBline','ContinuousCscan']:
@@ -274,7 +253,6 @@ class AODOThread(QThread):
                                                    # source=self.ClockTerm, \
                                                    # active_edge= Edge.RISING,\
                                                    sample_mode=mode,samps_per_chan=len(self.DOwaveform))
-           
 
             # self.DOtask.triggers.start_trigger.cfg_dig_edge_start_trig(self.AODOTrig)
             self.DOtask.triggers.start_trigger.cfg_dig_edge_start_trig(self.Trigger_in)
@@ -289,7 +267,7 @@ class AODOThread(QThread):
             # self.log.write(message)
         self.StagebackQueue.put(0)
         return 'AODO configuration success'
-        
+
     def StartTask(self):
         if not (SIM or self.SIM):
             self.AOtask.write(self.AOwaveform, auto_start = False)
@@ -303,7 +281,7 @@ class AODOThread(QThread):
             # self.AOtask.wait_until_done(timeout = 60)
             self.AOtask.stop()
             self.DOtask.stop()
-        
+
     def tryStopTask(self):
         if not (SIM or self.SIM):
             try:
@@ -312,54 +290,57 @@ class AODOThread(QThread):
                 self.AOtask.stop()
                 self.DOtask.stop()
 
-    
+
     def CloseTask(self):
         if not (SIM or self.SIM):
             self.AOtask.close()
             self.DOtask.close()
         self.StagebackQueue.put(0)
 
-    
+
     def centergalvo(self):
         if not (SIM or self.SIM):
             with ni.Task('AOtask') as AOtask:
                 AOtask.ao_channels.add_ao_voltage_chan(physical_channel=self.GalvoAO, \
-                                                      min_val=- 10.0, max_val=10.0, \
+                                                      min_val=AODO_AO_VOLTAGE_MIN, max_val=AODO_AO_VOLTAGE_MAX, \
                                                       units=ni.constants.VoltageUnits.VOLTS)
                 AOtask.write(self.ui.GalvoBias.value(), auto_start = True)
                 AOtask.wait_until_done(timeout = 1)
                 AOtask.stop()
 
-        
+
     def Move(self, axis = 'X'):
-       
-        
+
+
         if axis =='X':
-            motors.set_enable(0,True)
-            motors.set_move_speed(0, self.ui.XSpeed.value())
-            motors.set_acceleration(0, self.ui.XAccelerate.value())
+            x_axis = get_stage_axis_spec('X')
+            motors.set_enable(x_axis.axis_index,True)
+            motors.set_move_speed(x_axis.axis_index, self.ui.XSpeed.value())
+            motors.set_acceleration(x_axis.axis_index, self.ui.XAccelerate.value())
             distance = self.ui.XPosition.value() - self.ui.Xcurrent.value()
-            motors.move_relative(0, distance)
+            motors.move_relative(x_axis.axis_index, distance)
             self.ui.Xcurrent.setValue(self.ui.Xcurrent.value()+distance)
-           
+
         if axis =='Y':
-            motors.set_enable(1,True)
-            motors.set_move_speed(1, self.ui.YSpeed.value())
-            motors.set_acceleration(1, self.ui.YAccelerate.value())
+            y_axis = get_stage_axis_spec('Y')
+            motors.set_enable(y_axis.axis_index,True)
+            motors.set_move_speed(y_axis.axis_index, self.ui.YSpeed.value())
+            motors.set_acceleration(y_axis.axis_index, self.ui.YAccelerate.value())
             distance = self.ui.YPosition.value() - self.ui.Ycurrent.value()
             # print(distance, self.ui.YPosition.value())
-            motors.move_relative(1, distance)
+            motors.move_relative(y_axis.axis_index, distance)
             # print(self.ui.Ycurrent.value()+distance, self.ui.YPosition.value())
             self.ui.Ycurrent.setValue(self.ui.Ycurrent.value()+distance)
-            
+
         if axis =='Z':
-            motors.set_enable(2,True)
-            motors.set_move_speed(2, self.ui.ZSpeed.value())
-            motors.set_acceleration(2, self.ui.ZAccelerate.value())
+            z_axis = get_stage_axis_spec('Z')
+            motors.set_enable(z_axis.axis_index,True)
+            motors.set_move_speed(z_axis.axis_index, self.ui.ZSpeed.value())
+            motors.set_acceleration(z_axis.axis_index, self.ui.ZAccelerate.value())
             distance = self.ui.ZPosition.value() - self.ui.Zcurrent.value()
-            motors.move_relative(2, distance)
+            motors.move_relative(z_axis.axis_index, distance)
             self.ui.Zcurrent.setValue(self.ui.Zcurrent.value()+distance)
-        
+
         # if axis == 'X':
         #     self.ui.Xcurrent.setValue(self.ui.Xcurrent.value()+distance)
         #     # self.ui.XPosition.setValue(self.Xpos)
@@ -372,46 +353,47 @@ class AODOThread(QThread):
         # message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
         # print(message)
         # self.log.write(message)
-        
+
     def DirectMove(self, axis):
         if not (SIM or self.SIM):
             self.Move(axis)
         else:
             time.sleep(1)
-        message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
+        message = f"Stage position: X={self.ui.Xcurrent.value()}, Y={round(self.ui.Ycurrent.value(), 2)}, Z={self.ui.Zcurrent.value()}."
         print(message)
         self.log.write(message)
         self.StagebackQueue.put(0)
-        
+
     def StepMove(self, axis, Direction):
         if not (SIM or self.SIM):
             if axis == 'X':
-                distance = self.ui.Xstagestepsize.value() if Direction == 'UP' else -self.ui.Xstagestepsize.value() 
+                distance = self.ui.Xstagestepsize.value() if Direction == 'UP' else -self.ui.Xstagestepsize.value()
                 self.ui.XPosition.setValue(self.ui.Xcurrent.value()+distance)
                 self.Move(axis)
             elif axis == 'Y':
-                distance = self.ui.Ystagestepsize.value() if Direction == 'UP' else -self.ui.Ystagestepsize.value() 
+                distance = self.ui.Ystagestepsize.value() if Direction == 'UP' else -self.ui.Ystagestepsize.value()
                 self.ui.YPosition.setValue(self.ui.Ycurrent.value()+distance)
                 self.Move(axis)
             elif axis == 'Z':
-                distance = self.ui.Zstagestepsize.value() if Direction == 'UP' else -self.ui.Zstagestepsize.value() 
+                distance = self.ui.Zstagestepsize.value() if Direction == 'UP' else -self.ui.Zstagestepsize.value()
                 self.ui.ZPosition.setValue(self.ui.Zcurrent.value()+distance)
                 self.Move(axis)
         else:
             time.sleep(1)
-        message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
+        message = f"Stage position: X={self.ui.Xcurrent.value()}, Y={round(self.ui.Ycurrent.value(), 2)}, Z={self.ui.Zcurrent.value()}."
         print(message)
         self.log.write(message)
         self.StagebackQueue.put(0)
-            
+
     def Home(self, axis):
         if not (SIM or self.SIM):
             if axis == 'X':
                 # self.ui.XPosition.setValue(0)
                 # self.DirectMove(axis)
                 # self.StagebackQueue.get()
-                motors.set_home_speed(0, self.ui.XSpeed.value())
-                motors.home(0)
+                x_axis = get_stage_axis_spec('X')
+                motors.set_home_speed(x_axis.axis_index, self.ui.XSpeed.value())
+                motors.home(x_axis.axis_index)
                 self.ui.XPosition.setValue(0)
                 self.ui.Xcurrent.setValue(0)
                 # self.ui.XPosition.setValue(1)
@@ -421,8 +403,9 @@ class AODOThread(QThread):
                 # self.ui.YPosition.setValue(0)
                 # self.DirectMove(axis)
                 # self.StagebackQueue.get()
-                motors.set_home_speed(1, self.ui.YSpeed.value())
-                motors.home(1)
+                y_axis = get_stage_axis_spec('Y')
+                motors.set_home_speed(y_axis.axis_index, self.ui.YSpeed.value())
+                motors.home(y_axis.axis_index)
                 self.ui.YPosition.setValue(0)
                 self.ui.Ycurrent.setValue(0)
                 # self.ui.YPosition.setValue(1)
@@ -432,18 +415,17 @@ class AODOThread(QThread):
                 # self.ui.ZPosition.setValue(0)
                 # self.DirectMove(axis)
                 # self.StagebackQueue.get()
-                motors.set_home_speed(2, self.ui.ZSpeed.value())
-                motors.home(2)
+                z_axis = get_stage_axis_spec('Z')
+                motors.set_home_speed(z_axis.axis_index, self.ui.ZSpeed.value())
+                motors.home(z_axis.axis_index)
                 self.ui.ZPosition.setValue(0)
                 self.ui.Zcurrent.setValue(0)
                 # self.ui.ZPosition.setValue(1)
                 # self.DirectMove(axis)
                 # self.StagebackQueue.get()
-            
         else:
             time.sleep(2)
-        message = 'X :'+str(self.ui.Xcurrent.value())+' Y :'+str(round(self.ui.Ycurrent.value(),2))+' Z :'+str(self.ui.Zcurrent.value())
+        message = f"Stage position: X={self.ui.Xcurrent.value()}, Y={round(self.ui.Ycurrent.value(), 2)}, Z={self.ui.Zcurrent.value()}."
         print(message)
         self.log.write(message)
         self.StagebackQueue.put(0)
-            

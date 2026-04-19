@@ -14,18 +14,15 @@ import PyQt5.QtCore as qc
 import numpy as np
 from Actions import *
 from Generaic_functions import *
+from HardwareSpecs import camera_step_size_um, get_camera_spec, get_laser_spec, get_objective_spec
 import traceback
 from InteractiveWidget import InteractiveMosaicWidget
-# system magnification with 10X objective
-
-global Magnification4X
-Magnification4X = 2.5
 # try:
 #     from traits.api import HasTraits, Instance, on_trait_change
 #     from traitsui.api import View, Item
 #     from mayavi.core.ui.api import MayaviScene, MlabSceneModel, \
 #             SceneEditor
-#     from mayavi import mlab 
+#     from mayavi import mlab
 #     print('using maya for 3D visulizaiton')
 #     maya_installed = True
 # except:
@@ -39,7 +36,7 @@ Magnification4X = 2.5
 #         def __init__(self, data):
 #             HasTraits.__init__(self)
 #             self.data = data
-            
+
 #         def update_contrast(self, low, high):
 #             # pass
 #             # calculate data according to low and high
@@ -48,7 +45,7 @@ Magnification4X = 2.5
 #             self.plot.current_range=(low,M*high/1000)
 #             # # print(low, high)
 #             # print(self.plot.current_range)
-            
+
 #         def update_data(self, data):
 #             self.plot.mlab_source.scalars = data
 #             # print(data.shape)
@@ -58,7 +55,7 @@ Magnification4X = 2.5
 #             M=np.max(data)
 #             self.plot.current_range=(0, M*0.2)
 #             # print(self.plot.current_range)
-            
+
 #         @on_trait_change('scene.activated')
 #         def inital_plot(self):
 #             self.plot = mlab.pipeline.volume(mlab.pipeline.scalar_field(self.data))
@@ -74,12 +71,12 @@ Magnification4X = 2.5
 #                           AlinesPerBline=250, width=300, show_label=False),
 #                     resizable=True # We need this to resize with the parent widget
 #                     )
-        
+
 #     # The QWidget containing the visualization, this is pure PyQt4 code.
 #     class MayaviQWidget(QWidget):
 #         def __init__(self, data = None):
 #             super().__init__()
-            
+
 #             data = np.random.random((200,1000,300))
 #             self.visualization = Visualization(data)
 #             layout = QVBoxLayout(self)
@@ -102,23 +99,23 @@ class MainWindow(QMainWindow):
         self.Calculate_CameraWidth_settings()
         self.Calculate_Galvo_settings()
         ##################### Swap the old label for the new widget in your layout
-        # 1. Initialize the interactive widget 
+        # 1. Initialize the interactive widget
         # We attach it directly to the existing self.ui container
         self.ui.mosaic_viewer = InteractiveMosaicWidget(self.ui.XYplane.parent())
-        
+
         # 2. Replace the static QLabel in the layout
         # This ensures the new widget appears exactly where XYplane was designed
         layout = self.ui.XYplane.parentWidget().layout()
         layout.replaceWidget(self.ui.XYplane, self.ui.mosaic_viewer)
-        
+
         # 3. Clean up the old reference
         self.ui.XYplane.hide()
-        
-        # 4. (Optional) If you want ThreadDnS to keep using the old name 'XYplane' 
+
+        # 4. (Optional) If you want ThreadDnS to keep using the old name 'XYplane'
         # to avoid changing too much code, just reassign it:
         self.ui.XYplane = self.ui.mosaic_viewer
         #################### load configuration settings
-        
+
         # self.Update_laser()
         # self.update_galvoXwaveform()
         # self.update_Mosaic()
@@ -128,40 +125,40 @@ class MainWindow(QMainWindow):
         # self.ui.DepthEndBar.setValue(0)
         self.Adjust_Bline_Height()
         self.connectActions()
-        
+
     def setStageMinMax(self):
         self.ui.XPosition.setMinimum(self.ui.Xmin.value())
         self.ui.XPosition.setMaximum(self.ui.Xmax.value())
-        
+
         self.ui.YPosition.setMinimum(self.ui.Ymin.value())
         self.ui.YPosition.setMaximum(self.ui.Ymax.value())
-        
+
         self.ui.ZPosition.setMinimum(self.ui.Zmin.value())
         self.ui.ZPosition.setMaximum(self.ui.Zmax.value())
-        
+
         self.ui.Xcurrent.setMinimum(self.ui.Xmin.value())
         self.ui.Xcurrent.setMaximum(self.ui.Xmax.value())
-        
+
         self.ui.Ycurrent.setMinimum(self.ui.Ymin.value())
         self.ui.Ycurrent.setMaximum(self.ui.Ymax.value())
-        
+
         self.ui.Zcurrent.setMinimum(self.ui.Zmin.value())
         self.ui.Zcurrent.setMaximum(self.ui.Zmax.value())
-    
-    
-        
+
+
+
     # def addMaya(self):
     #     if (maya_installed and self.use_maya):
     #         self.ui.mayavi_widget = MayaviQWidget()
     #         self.ui.mayavi_widget.setMinimumSize(qc.QSize(100, 100))
     #         self.ui.mayavi_widget.setMaximumSize(qc.QSize(1000, 1000))
     #         self.ui.mayavi_widget.setObjectName("XYZView")
-            
+
     #         # self.ui.verticalLayout_2.removeWidget(self.ui.tmp_label)
     #         # self.ui.verticalLayout_2.addWidget(self.ui.mayavi_widget)
     #         self.ui.verticalLayout_5.replaceWidget(self.ui.MUS_mosaic, self.ui.mayavi_widget)
     #         self.ui.verticalLayout_5.removeWidget(self.ui.MUS_mosaic)
-        
+
     def LoadSettings(self, config_filepath):
         settings = qc.QSettings(config_filepath, qc.QSettings.IniFormat)
         for ii in dir(self.ui):
@@ -213,86 +210,65 @@ class MainWindow(QMainWindow):
                     self.ui.__getattribute__(ii).setChecked(status)
                 except:
                     print(ii, ' setting missing, using default...')
-        
-                
+
+
     def Calculate_CameraWidth_settings(self):
         # select camera brand
-        if self.ui.Camera.currentText() == 'PhotonFocus':
-            CameraPixelSize = 9.0 # um
-            MaxHeight = 1100.0
-            self.ui.AlinesPerBline.setMaximum(int(MaxHeight))
-        elif self.ui.Camera.currentText() == 'XingTu':
-            CameraPixelSize = 6.5 # um
-            MaxHeight = 1024.0
-            self.ui.AlinesPerBline.setMaximum(int(MaxHeight))
-        elif self.ui.Camera.currentText() == 'Daheng':
-            CameraPixelSize = 9.0 # um
-            MaxHeight = 1600.0
-            self.ui.AlinesPerBline.setMaximum(int(MaxHeight))
-        else:
+        camera = get_camera_spec(self.ui.Camera.currentText())
+        if camera is None:
             status = 'camera not calibrated, abort FOV calculation'
             self.ui.statusbar.showMessage(status)
             return None, status
+        MaxHeight = int(camera.max_height_px)
+        self.ui.AlinesPerBline.setMaximum(MaxHeight)
+
         # select objective magnification
-        if self.ui.Objective.currentText() == '5X':
-            cameraStepSize =  CameraPixelSize/Magnification4X/1.25 # um
-            MaxXLength = cameraStepSize/1000.0*MaxHeight
-        elif self.ui.Objective.currentText() == '4X':
-            cameraStepSize =  CameraPixelSize/Magnification4X # um
-            MaxXLength = cameraStepSize/1000.0*MaxHeight
-        elif self.ui.Objective.currentText() == '10X':
-            cameraStepSize = CameraPixelSize/Magnification4X/2.5 # um
-            MaxXLength = cameraStepSize/1000.0*MaxHeight
-        elif self.ui.Objective.currentText() == '20X':
-            cameraStepSize =  CameraPixelSize/Magnification4X/5 # um
-            MaxXLength = cameraStepSize/1000.0*MaxHeight
-        else:
+        try:
+            cameraStepSize = camera_step_size_um(self.ui.Camera.currentText(), self.ui.Objective.currentText())
+        except KeyError:
             status = 'objective not calibrated, abort generating Galvo waveform'
             self.ui.statusbar.showMessage(status)
             return None, status
+        MaxXLength = cameraStepSize/1000.0*MaxHeight
         self.ui.XStepSize.setValue(cameraStepSize)
-        
+
         # set XLength limit
         self.ui.XLength.setMaximum(MaxXLength)
-        
+
         # Calculate AlinesPerBline pixel numbers based on user set FOV size
-        AlinesPerBline = np.uint16(self.ui.XLength.value()*1000/cameraStepSize//8*8)
+        AlinesPerBline = int(self.ui.XLength.value()*1000/cameraStepSize//8*8)
+        AlinesPerBline = max(8, min(AlinesPerBline, MaxHeight))
         self.ui.AlinesPerBline.setValue(AlinesPerBline)
         # set offsetH limit
         # self.ui.offsetH.setMaximum((MaxHeight - Height)//2)
-        self.ui.Xoffsetlength.setMaximum((MaxHeight - AlinesPerBline)//2*cameraStepSize/1000)
-        self.ui.Xoffsetlength.setMinimum(-(MaxHeight - AlinesPerBline)//2*cameraStepSize/1000)
+        offset_limit_px = (MaxHeight - AlinesPerBline)//2
+        self.ui.Xoffsetlength.setMaximum(offset_limit_px*cameraStepSize/1000)
+        self.ui.Xoffsetlength.setMinimum(-offset_limit_px*cameraStepSize/1000)
         # Calculate offsetH pixel numbers based on corrected user set offsetLength
-        offsetH = np.int16(MaxHeight - AlinesPerBline)//2+np.int16(np.round(self.ui.Xoffsetlength.value()*1000/cameraStepSize))
+        offsetH = offset_limit_px + int(np.round(self.ui.Xoffsetlength.value()*1000/cameraStepSize))
         offsetH = offsetH//8*8
         self.ui.offsetH.setValue(offsetH)
-        
+
     def Calculate_Galvo_settings(self):
         # select objective magnification
-        if self.ui.Objective.currentText() == '4X':
-            angle2mmratio = 2.094/1.19*1.25
-        elif self.ui.Objective.currentText() == '5X':
-            angle2mmratio = 2.094/1.19
-        elif self.ui.Objective.currentText() == '10X':
-            angle2mmratio = 2.094/2/1.19
-        elif self.ui.Objective.currentText() == '20X':
-            angle2mmratio = 2.094/1.19/4
-        else:
+        objective = get_objective_spec(self.ui.Objective.currentText())
+        if objective is None:
             status = 'objective not calibrated, abort generating Galvo waveform'
             self.ui.statusbar.showMessage(status)
             return None, status
-        
+        angle2mmratio = objective.angle_to_mm_ratio
+
         # Calculate AlinesPerBline pixel numbers based on user set FOV size
         Ypixels = np.uint16(np.round(self.ui.YLength.value()*1000/self.ui.YStepSize.value()))
         self.ui.Ypixels.setValue(Ypixels)
         self.ui.GalvoBias.setMinimum(-1)
         # Calculate offsetH pixel numbers based on corrected user set offsetLength
         self.ui.GalvoBias.setValue(self.ui.Yoffsetlength.value()/angle2mmratio)
-        
+
     def Adjust_Bline_Height(self):
         self.ui.DepthStart.setValue(self.ui.NSamples_DH.value() - self.ui.DepthStartBar.value())
         self.ui.DepthRange.setValue(np.max([self.ui.DepthStartBar.value() - self.ui.DepthEndBar.value(),1]))
-        
+
     def SaveSettings(self):
         settings = qc.QSettings("config.ini", qc.QSettings.IniFormat)
         for ii in dir(self.ui):
@@ -314,12 +290,12 @@ class MainWindow(QMainWindow):
             elif type(self.ui.__getattribute__(ii)) == QW.QScrollBar:
                 settings.setValue(ii,self.ui.__getattribute__(ii).value())
                 # print(ii,self.ui.__getattribute__(ii).value())
-            
+
     def connectActions(self):
         self.ui.Objective.currentTextChanged.connect(self.Calculate_CameraWidth_settings)
         self.ui.Objective.currentTextChanged.connect(self.Calculate_Galvo_settings)
         self.ui.Camera.currentTextChanged.connect(self.Calculate_CameraWidth_settings)
-        
+
         self.ui.XLength.valueChanged.connect(self.Calculate_CameraWidth_settings)
         self.ui.Xoffsetlength.valueChanged.connect(self.Calculate_CameraWidth_settings)
         self.ui.YLength.valueChanged.connect(self.Calculate_Galvo_settings)
@@ -328,7 +304,7 @@ class MainWindow(QMainWindow):
         self.ui.BlineAVG.valueChanged.connect(self.Calculate_Galvo_settings)
         self.ui.DepthStartBar.valueChanged.connect(self.Adjust_Bline_Height)
         self.ui.DepthEndBar.valueChanged.connect(self.Adjust_Bline_Height)
-        
+
         # self.ui.Objective.currentTextChanged.connect(self.update_galvoXwaveform)
         # self.ui.PreClock.valueChanged.connect(self.update_galvoXwaveform)
         # self.ui.PostClock.valueChanged.connect(self.update_galvoXwaveform)
@@ -336,17 +312,17 @@ class MainWindow(QMainWindow):
         # self.ui.YStepSize.valueChanged.connect(self.update_galvoYwaveform)
         # self.ui.BlineAVG.valueChanged.connect(self.update_galvoYwaveform)
         # self.ui.YBias.valueChanged.connect(self.update_galvoYwaveform)
-        
-        
+
+
         # self.ui.XStart.valueChanged.connect(self.update_Mosaic)
         # self.ui.XStop.valueChanged.connect(self.update_Mosaic)
         # self.ui.YStart.valueChanged.connect(self.update_Mosaic)
         # self.ui.YStop.valueChanged.connect(self.update_Mosaic)
         # self.ui.Overlap.valueChanged.connect(self.update_Mosaic)
-        
+
         # self.ui.ImageZDepth.valueChanged.connect(self.Calculate_ImageDepth)
         # self.ui.ImageZnumber.valueChanged.connect(self.Calculate_ImageDepth)
-        
+
         # self.ui.SliceZStart.valueChanged.connect(self.Calculate_SliceDepth)
         # self.ui.SliceZDepth.valueChanged.connect(self.Calculate_SliceDepth)
         # self.ui.SliceZnumber.valueChanged.connect(self.Calculate_SliceDepth)
@@ -367,37 +343,37 @@ class MainWindow(QMainWindow):
         self.ui.Ymax.valueChanged.connect(self.setStageMinMax)
         self.ui.Zmin.valueChanged.connect(self.setStageMinMax)
         self.ui.Zmax.valueChanged.connect(self.setStageMinMax)
-        
+
         self.ui.LoadSurface.clicked.connect(self.chooseSurfaceFile)
         # self.ui.LoadDarkField.clicked.connect(self.chooseDarkFieldFile)
         # self.ui.LoadFlatField.clicked.connect(self.chooseFlatFieldFile)
 
     def chooseSurfaceFile(self):
-        fileName_choose, filetype = QFileDialog.getOpenFileName(self,  
-                                   "select surface file",  
-                                   self.ui.DIR.toPlainText(), # 起始路径 
+        fileName_choose, filetype = QFileDialog.getOpenFileName(self,
+                                   "select surface file",
+                                   self.ui.DIR.toPlainText(), # 起始路径
                                    "All Files (*);;Text Files (*.txt)")   # 设置文件扩展名过滤,用双分号间隔
 
         if fileName_choose == "":
            print("\n use default")
            return
         self.ui.Surf_DIR.setText(fileName_choose)
-        
+
     # def chooseDarkFieldFile(self):
-    #     fileName_choose, filetype = QFileDialog.getOpenFileName(self,  
-    #                                "select dark field file",  
-    #                                os.getcwd(), # 起始路径 
+    #     fileName_choose, filetype = QFileDialog.getOpenFileName(self,
+    #                                "select dark field file",
+    #                                os.getcwd(), # 起始路径
     #                                "All Files (*);;Text Files (*.txt)")   # 设置文件扩展名过滤,用双分号间隔
 
     #     if fileName_choose == "":
     #        print("\n use default")
     #        return
     #     self.ui.DarkField_DIR.setText(fileName_choose)
-    
+
     # def chooseFlatFieldFile(self):
-    #     fileName_choose, filetype = QFileDialog.getOpenFileName(self,  
-    #                                "select flat field file",  
-    #                                os.getcwd(), # 起始路径 
+    #     fileName_choose, filetype = QFileDialog.getOpenFileName(self,
+    #                                "select flat field file",
+    #                                os.getcwd(), # 起始路径
     #                                "All Files (*);;Text Files (*.txt)")   # 设置文件扩展名过滤,用双分号间隔
 
     #     if fileName_choose == "":
@@ -407,46 +383,46 @@ class MainWindow(QMainWindow):
 
     def chooseDir(self):
         if self.ui.Save.isChecked():
-            
-             dir_choose = QFileDialog.getExistingDirectory(self,  
-                                         "select saving directory",  
+
+             dir_choose = QFileDialog.getExistingDirectory(self,
+                                         "select saving directory",
                                          self.ui.DIR.toPlainText()) # 起始路径
-        
+
              if dir_choose == "":
                  print("\n use default")
                  return
              self.ui.DIR.setText(dir_choose)
-             
+
     def LoadConfig(self):
-        fileName_choose, filetype = QFileDialog.getOpenFileName(self,  
-                                   "select config file",  
-                                   os.getcwd(), # 起始路径 
+        fileName_choose, filetype = QFileDialog.getOpenFileName(self,
+                                   "select config file",
+                                   os.getcwd(), # 起始路径
                                    "All Files (*);;Text Files (*.txt)")   # 设置文件扩展名过滤,用双分号间隔
 
         if fileName_choose == "":
            print("\n use default")
            return
-        
+
         try:
             self.LoadSettings(fileName_choose)
         except Exception as error:
             print('settings reload failed, using default settings')
             print(traceback.format_exc())
-        
+
     def chooseInD(self):
-         dir_choose = QFileDialog.getExistingDirectory(self,  
-                                     "select saving directory",  
+         dir_choose = QFileDialog.getExistingDirectory(self,
+                                     "select saving directory",
                                      self.ui.InD_DIR.text()) # 起始路径
 
          if dir_choose == "":
              print("\n use default")
              return
          self.ui.InD_DIR.setText(dir_choose)
-        
+
     def chooseBackground(self):
-        fileName_choose, filetype = QFileDialog.getOpenFileName(self,  
-                                   "select background file",  
-                                   self.ui.DIR.toPlainText(), # 起始路径 
+        fileName_choose, filetype = QFileDialog.getOpenFileName(self,
+                                   "select background file",
+                                   self.ui.DIR.toPlainText(), # 起始路径
                                    "All Files (*);;Text Files (*.txt)")   # 设置文件扩展名过滤,用双分号间隔
 
         if fileName_choose == "":
@@ -455,7 +431,7 @@ class MainWindow(QMainWindow):
 
         self.ui.BG_DIR.setText(fileName_choose)
         # self.update_background()
-        
+
     def update_galvoXwaveform(self):
         # calculate the total X range
         Xrange=self.ui.Xsteps.value()*self.ui.XStepSize.value()/1000
@@ -486,7 +462,7 @@ class MainWindow(QMainWindow):
             self.ui.XwaveformLabel.clear()
             # update iamge on the waveformLabel
             self.ui.XwaveformLabel.setPixmap(pixmap)
-        
+
     # def update_galvoYwaveform(self):
     #     # calculate the total X range
     #     Yrange=self.ui.Ysteps.value()*self.ui.YStepSize.value()/1000
@@ -506,7 +482,7 @@ class MainWindow(QMainWindow):
     #         self.ui.YwaveformLabel.clear()
     #         # update iamge on the waveformLabel
     #         self.ui.YwaveformLabel.setPixmap(pixmap)
-        
+
     def update_Mosaic(self):
         self.Mosaic, status = GenMosaic_XGalvo(self.ui.XStart.value(),\
                                         self.ui.XStop.value(),\
@@ -528,34 +504,33 @@ class MainWindow(QMainWindow):
                     mosaic[1,ii*2] = element.ystop
                     mosaic[0,ii*2+1] = element.x
                     mosaic[1,ii*2+1] = element.ystart
-                
+
             pixmap = ScatterPlot(mosaic)
             # clear content on the waveformLabel
             self.ui.MosaicLabel.clear()
             # update iamge on the waveformLabel
             self.ui.MosaicLabel.setPixmap(pixmap)
-        
+
     def Calculate_ImageDepth(self):
         self.image_depths = GenAlinesPerBlines(self.ui.ImageZStart.value(),\
                                        self.ui.ImageZDepth.value(),\
                                        self.ui.ImageZnumber.value())
         #print(self.image_depths)
         #self.ui.statusbar.showMessage(self.image_depths)
-            
+
     def Calculate_SliceDepth(self):
         self.slice_depths = GenAlinesPerBlines(self.ui.SliceZStart.value(),\
                                        self.ui.SliceZDepth.value(),\
                                        self.ui.SliceZnumber.value())
         #print(self.slice_depths)
         #self.ui.statusbar.showMessage(self.image_depths)
-        
+
     def Update_laser(self):
-        if self.ui.Laser.currentText() == 'Axsun100k':
-            self.Aline_frq = 100000
-        elif self.ui.Laser.currentText() == 'Thorlabs200k':
-            self.Aline_frq = 200000
-        else:
+        laser = get_laser_spec(self.ui.Laser.currentText())
+        if laser is None:
             self.ui.statusbar.showMessage('Laser invalid!!!')
-    
-        
-        
+            return
+        self.Aline_frq = laser.aline_frequency_hz
+
+
+

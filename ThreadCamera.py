@@ -35,7 +35,7 @@ class Camera(QThread):
     def __init__(self):
         super().__init__()
         self.MemoryLoc = 0
-        self.exit_message = 'Digitizer thread successfully exited'
+        self.exit_message = 'Digitizer thread exited.'
 
     def run(self):
         if not SIM:
@@ -63,9 +63,9 @@ class Camera(QThread):
                 elif self.item.action == 'GetTemp':
                     self.GetTemp()
                 else:
-                    self.ui.statusbar.showMessage('Digitizer thread is doing something invalid: '+self.item.action)
+                    self.emit_status(f"Unknown digitizer command: {self.item.action}")
             except Exception as error:
-                self.ui.statusbar.showMessage("\nAn error occurred:"+" skip the Digitizer action\n")
+                self.emit_status("Digitizer command failed. This action was skipped.")
                 print(traceback.format_exc())
             # message = 'DIGITIZER spent: '+ str(round(time.time()-start,3))+'s'
             # print(message)
@@ -77,6 +77,11 @@ class Camera(QThread):
         if not (SIM or self.SIM):
             self.UninitBoard()
         print(self.exit_message)
+
+    def emit_status(self, message):
+        if message is None:
+            return
+        self.ui_bridge.status_message.emit(str(message))
         
     def ExitWithErrorPrompt(self, errString, pfResult = None):
         print(errString)

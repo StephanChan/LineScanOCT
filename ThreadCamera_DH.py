@@ -118,7 +118,7 @@ class Camera(QThread):
         #定义Camera类的初始化函数，以及一些通用变量
         super().__init__()
         self.MemoryLoc = 0
-        self.exit_message = 'Camera thread successfully exited'
+        self.exit_message = 'Camera thread exited.'
         self.hcam = None       # 相机句柄
         self.hcam_fr = None    # 相机外部特征句柄
         self._packed_converter = None
@@ -160,36 +160,23 @@ class Camera(QThread):
                         self.simData()
                 
                 else:
-                    message = 'Invalid camera action: ' + self.item.action
-                    if getattr(self, "ui_bridge", None) is not None:
-                        try:
-                            self.ui_bridge.status_message.emit(message)
-                        except Exception:
-                            self.ui.statusbar.showMessage(message)
-                    else:
-                        self.ui.statusbar.showMessage(message)
+                    message = f"Unknown camera command: {self.item.action}"
+                    self.emit_status(message)
                     self.log.write(message)
             except Exception as error:
-                message = "\nError occurred, skipping: " + str(error)
-                if getattr(self, "ui_bridge", None) is not None:
-                    try:
-                        self.ui_bridge.status_message.emit(message)
-                    except Exception:
-                        self.ui.statusbar.showMessage(message)
-                else:
-                    self.ui.statusbar.showMessage(message)
+                message = "Camera command failed. This action was skipped: " + str(error)
+                self.emit_status(message)
                 self.log.write(message)
                 print(traceback.format_exc())
             self.item = self.queue.get()  # 获取下一个任务
         self.Close()
         print(self.exit_message)
-        if getattr(self, "ui_bridge", None) is not None:
-            try:
-                self.ui_bridge.status_message.emit(self.exit_message)
-            except Exception:
-                self.ui.statusbar.showMessage(self.exit_message)
-        else:
-            self.ui.statusbar.showMessage(self.exit_message)
+        self.emit_status(self.exit_message)
+
+    def emit_status(self, message):
+        if message is None:
+            return
+        self.ui_bridge.status_message.emit(str(message))
         
     # 初始化并打开真实相机
     def initCamera(self):
@@ -246,7 +233,7 @@ class Camera(QThread):
             self.hcam_fr.get_int_feature("Width").set(self.AlinesPerBline )
             self.hcam_fr.get_int_feature("OffsetY").set(self.ui.offsetW_DH.value())
             self.hcam_fr.get_int_feature("OffsetX").set(self.ui.offsetH.value())
-        self.DbackQueue.put(0)
+        # self.DbackQueue.put(0)
             
     def Acquire(self):
         # 开始采集任务：producer 使用 dq_buf；consumer 转换并写入 Memory，处理后必须 q_buf 归还缓冲
@@ -256,12 +243,27 @@ class Camera(QThread):
         use_packed = self.ui.PixelFormat_DH.currentText() in ["Mono12Packed"]
         consumer_error = []
         ds = self.hcam.data_stream[0]
+        profile = {
+            "dq_buf": 0.0,
+            "queue_put": 0.0,
+            "queue_get": 0.0,
+            "packed_convert": 0.0,
+            "numpy_view": 0.0,
+            "memory_write": 0.0,
+            "q_buf": 0.0,
+            "grabbed": 0,
+            "processed": 0,
+            "timeouts": 0,
+        }
+        total_t0 = time.perf_counter()
 
         def consumer():
             try:
                 BlinesCount = 0
                 while True:
+                    t_get = time.perf_counter()
                     item = grab_q.get()
+                    profile["queue_get"] += time.perf_counter() - t_get
                     if item is grab_stop:
                         break
                     buf, grab_ms = item
@@ -269,21 +271,31 @@ class Camera(QThread):
                     try:
                         if buf is None:
                             print("camera time out...")
+                            profile["timeouts"] += 1
                             Bline = np.zeros([self.NSamples_DH, self.AlinesPerBline])
                         else:
                             # t_conv = time.perf_counter()
                             if use_packed:
+                                t_convert = time.perf_counter()
                                 mono_image_array, _ = self._packed_converter.convert(
                                     buf, GxPixelFormatEntry.MONO12)
+                                profile["packed_convert"] += time.perf_counter() - t_convert
+                                t_view = time.perf_counter()
                                 Bline = np.frombuffer(
                                     mono_image_array, dtype=np.uint16).reshape(
                                    self.NSamples_DH, self.AlinesPerBline)
+                                profile["numpy_view"] += time.perf_counter() - t_view
                                 # print(Bline.shape)
                             else:
+                                t_view = time.perf_counter()
                                 Bline = buf.get_numpy_array()
+                                profile["numpy_view"] += time.perf_counter() - t_view
                             # conv_ms = (time.perf_counter() - t_conv) * 1000.0
 
+                        t_write = time.perf_counter()
                         self.Memory[self.MemoryLoc][BlinesCount % NBlines] = np.transpose(Bline)
+                        profile["memory_write"] += time.perf_counter() - t_write
+                        profile["processed"] += 1
                         BlinesCount += 1
                         # print("grab_ms={:.3f}  conv_ms={:.3f}".format(grab_ms, conv_ms))
                         if BlinesCount % NBlines == 0:
@@ -297,7 +309,9 @@ class Camera(QThread):
                                 self.hcam.stream_on()
                     finally:
                         if buf is not None:
+                            t_q = time.perf_counter()
                             ds.q_buf(buf)
+                            profile["q_buf"] += time.perf_counter() - t_q
             except Exception:
                 consumer_error.append(traceback.format_exc())
                 print(traceback.format_exc())
@@ -309,14 +323,34 @@ class Camera(QThread):
             BlinesCount = 0
             while BlinesCount < self.BlinesPerAcq and self.ui.RunButton.isChecked():
                 # t_grab = time.perf_counter()
+                t_dq = time.perf_counter()
                 buf = ds.dq_buf(timeout=200)
+                profile["dq_buf"] += time.perf_counter() - t_dq
                 # grab_ms = (time.perf_counter() - t_grab) * 1000.0
+                t_put = time.perf_counter()
                 grab_q.put((buf, 0))#grab_ms))
+                profile["queue_put"] += time.perf_counter() - t_put
                 BlinesCount += 1
+                profile["grabbed"] += 1
                 # print(BlinesCount)
         finally:
             grab_q.put(grab_stop)
         worker.join()
+        total = time.perf_counter() - total_t0
+        print(
+            "Daheng acquire profile: "
+            f"frames_grabbed={profile['grabbed']}, "
+            f"frames_processed={profile['processed']}, "
+            f"timeouts={profile['timeouts']}, "
+            f"dq_buf={profile['dq_buf']:.3f}s, "
+            f"queue_put={profile['queue_put']:.3f}s, "
+            f"queue_get={profile['queue_get']:.3f}s, "
+            f"packed_convert={profile['packed_convert']:.3f}s, "
+            f"numpy_view={profile['numpy_view']:.3f}s, "
+            f"memory_transpose_write={profile['memory_write']:.3f}s, "
+            f"q_buf={profile['q_buf']:.3f}s, "
+            f"total={total:.3f}s"
+        )
         if consumer_error:
             raise RuntimeError("Acquire consumer failed:\n" + consumer_error[0])
 

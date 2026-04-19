@@ -13,10 +13,6 @@ try:
     SIM = False
 except:
     SIM = True
-try:
-    from cupyx.scipy.ndimage import uniform_filter1d as cupy_uniform_filter1d
-except:
-    cupy_uniform_filter1d = None
 import numpy as np
 from Actions import DnSAction
 import os
@@ -27,7 +23,7 @@ class GPUThread(QThread):
     def __init__(self):
         super().__init__()
         # TODO: write windowing and dispersion function
-        self.exit_message = 'GPU thread successfully exited\n'
+        self.exit_message = 'GPU processing thread exited.'
         self.FFT_actions = 0 # count how many FFT actions have taken place
         self.bg_sub = False
         self.background_gpu = None
@@ -39,6 +35,14 @@ class GPUThread(QThread):
         self.release_gpu_memory_each_fft = False
         self.gpu_chunk_frames = 8
         self.gpu_overlap_transfer = True
+        self.default_static_normalization_mean = 40000.0
+        self.static_normalization_mean = self.default_static_normalization_mean
+        self.static_normalization_eps = 1e-3
+        self.dynamic_normalization_eps = 1e-3
+        self.dynamic_use_first_frame_background = True
+        self.dynamic_uniform_filter_size = 10
+        self.dynamic_gaussian_smoothing = False
+        self.dynMagnification = 10
         # Profiling synchronizes each GPU stage, so overlap is temporarily bypassed.
         self.gpu_profile_timing = False
         self.yp_gpu_buffer = None
@@ -47,6 +51,10 @@ class GPUThread(QThread):
         self.raw_gpu_stream_buffers = [None, None]
         self.float_gpu_buffer = None
         self.float_gpu_stream_buffers = [None, None]
+        self.highpass_gpu_buffer = None
+        self.highpass_gpu_stream_buffers = [None, None]
+        self.dynamic_filter_gpu_buffer = None
+        self.dynamic_var_gpu_buffer = None
         self.gpu_streams = None
         
     def defwin(self):
@@ -86,6 +94,124 @@ class GPUThread(QThread):
                         }
                 }
             ''','interp1d')
+            self.highpass51_kernel = cupy.RawKernel(r'''
+            extern "C" __global__
+            void highpass51(const float* src, float* dst, int lines, int samples){
+                const int radius = 25;
+                const float inv_size = 1.0f / 51.0f;
+                extern __shared__ float tile[];
+
+                int line = blockIdx.y;
+                int sample_start = blockIdx.x * blockDim.x;
+                int tx = threadIdx.x;
+                int sample = sample_start + tx;
+                long long base = (long long)line * samples;
+
+                if(line >= lines){
+                    return;
+                }
+
+                int center_index = sample_start + tx;
+                while(center_index < 0 || center_index >= samples){
+                    if(center_index < 0){
+                        center_index = -center_index - 1;
+                    }
+                    if(center_index >= samples){
+                        center_index = 2 * samples - center_index - 1;
+                    }
+                }
+                tile[tx + radius] = src[base + center_index];
+
+                if(tx < radius){
+                    int left_index = sample_start + tx - radius;
+                    int right_index = sample_start + blockDim.x + tx;
+
+                    while(left_index < 0 || left_index >= samples){
+                        if(left_index < 0){
+                            left_index = -left_index - 1;
+                        }
+                        if(left_index >= samples){
+                            left_index = 2 * samples - left_index - 1;
+                        }
+                    }
+                    while(right_index < 0 || right_index >= samples){
+                        if(right_index < 0){
+                            right_index = -right_index - 1;
+                        }
+                        if(right_index >= samples){
+                            right_index = 2 * samples - right_index - 1;
+                        }
+                    }
+                    tile[tx] = src[base + left_index];
+                    tile[tx + blockDim.x + radius] = src[base + right_index];
+                }
+
+                __syncthreads();
+
+                if(sample < samples){
+                    float sum = 0.0f;
+                    int tile_center = tx + radius;
+                    for(int offset = -radius; offset <= radius; ++offset){
+                        sum += tile[tile_center + offset];
+                    }
+                    dst[base + sample] = src[base + sample] - sum * inv_size;
+                }
+            }
+            ''','highpass51')
+            self.dynamic_uniform_axis0_kernel = cupy.RawKernel(r'''
+            extern "C" __global__
+            void uniform_axis0_nearest(const float* src, float* dst, int frames, int xpix, int zpix, int window){
+                long long total = (long long)frames * xpix * zpix;
+                long long tid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+                long long stride = (long long)blockDim.x * gridDim.x;
+                int left = window / 2;
+                int right = window - left - 1;
+
+                for(long long idx = tid; idx < total; idx += stride){
+                    int z = idx % zpix;
+                    long long tmp = idx / zpix;
+                    int x = tmp % xpix;
+                    int t = tmp / xpix;
+                    float sum = 0.0f;
+                    for(int offset = -left; offset <= right; ++offset){
+                        int tt = t + offset;
+                        if(tt < 0){
+                            tt = 0;
+                        }
+                        if(tt >= frames){
+                            tt = frames - 1;
+                        }
+                        long long src_idx = ((long long)tt * xpix + x) * zpix + z;
+                        sum += src[src_idx];
+                    }
+                    dst[idx] = sum / (float)window;
+                }
+            }
+            ''','uniform_axis0_nearest')
+            self.dynamic_variance_axis0_kernel = cupy.RawKernel(r'''
+            extern "C" __global__
+            void variance_axis0(const float* src, float* dst, int frames, int xpix, int zpix){
+                long long total = (long long)xpix * zpix;
+                long long tid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+                long long stride = (long long)blockDim.x * gridDim.x;
+
+                for(long long idx = tid; idx < total; idx += stride){
+                    int z = idx % zpix;
+                    int x = idx / zpix;
+                    float sum = 0.0f;
+                    float sumsq = 0.0f;
+                    for(int t = 0; t < frames; ++t){
+                        long long src_idx = ((long long)t * xpix + x) * zpix + z;
+                        float v = src[src_idx];
+                        sum += v;
+                        sumsq += v * v;
+                    }
+                    float mean = sum / (float)frames;
+                    float var = sumsq / (float)frames - mean * mean;
+                    dst[idx] = var > 0.0f ? var : 0.0f;
+                }
+            }
+            ''','variance_axis0')
 
     def run(self):
         self.defwin()
@@ -101,10 +227,10 @@ class GPUThread(QThread):
             start=time.time()
             try:
                 if self.item.action == 'GPU':
-                    self.cudaFFT(self.item.mode, self.item.memoryLoc, self.item.args)
+                    self.cudaFFT(self.item.DnS_action, self.item.acq_mode, self.item.memory_slot, self.item.payload)
                     self.FFT_actions += 1
                 elif self.item.action == 'CPU':
-                    self.cpuFFT(self.item.mode, self.item.memoryLoc, self.item.args)
+                    self.cpuFFT(self.item.DnS_action, self.item.acq_mode, self.item.memory_slot, self.item.payload)
                     self.FFT_actions += 1
                 elif self.item.action == 'update_Dispersion':
                     self.update_Dispersion()
@@ -114,56 +240,52 @@ class GPUThread(QThread):
                     self.display_FFT_actions()
                     
                 else:
-                    # self.ui.statusbar.showMessage('GPU thread is doing something invalid '+self.item.action)
-                    an_action = DnSAction(self.item.action, args = self.item.args)
+                    an_action = DnSAction(
+                        self.item.action,
+                        acq_mode=self.item.acq_mode,
+                        payload=self.item.payload,
+                    )
                     self.DnSQueue.put(an_action)
                 if time.time()-start > 1:
-                    message = '\n an FFT action took '+str(round(time.time()-start,3))+' s\n'
+                    message = 'FFT processing took '+str(round(time.time()-start,3))+' s.'
                     print(message)
                     # self.ui.PrintOut.append(message)
                     self.log.write(message)
             except Exception as error:
-                message = "An error occurred, skip the FFT action\n"
-                if getattr(self, "ui_bridge", None) is not None:
-                    try:
-                        self.ui_bridge.status_message.emit(message)
-                    except Exception:
-                        self.ui.statusbar.showMessage(message)
-                else:
-                    self.ui.statusbar.showMessage(message)
+                message = "FFT processing failed. This frame was skipped."
+                self.emit_status(message)
                 # self.ui.PrintOut.append(message)
                 self.log.write(message)
                 print(traceback.format_exc())
             self.item = self.queue.get()
             # print('GPU queue size:', self.queue.qsize())
-        if getattr(self, "ui_bridge", None) is not None:
-            try:
-                self.ui_bridge.status_message.emit(self.exit_message)
-            except Exception:
-                self.ui.statusbar.showMessage(self.exit_message)
-        else:
-            self.ui.statusbar.showMessage(self.exit_message)
+        self.emit_status(self.exit_message)
 
-    def cudaFFT(self, mode, memoryLoc, args):
+    def emit_status(self, message):
+        if message is None:
+            return
+        self.ui_bridge.status_message.emit(str(message))
+
+    def cudaFFT(self, DnS_action, acq_mode, memory_slot, payload):
         # get samples per Aline
         samples = self.ui.NSamples_DH.value()
         # get depth pixels after FFT
         Pixel_start = self.ui.DepthStart.value()
         Pixel_range = self.ui.DepthRange.value()
-        shape = self.Memory[memoryLoc].shape
-        # print('GPU data size: ', shape, ' memoryLoc: ', memoryLoc)
+        shape = self.Memory[memory_slot].shape
+        # print('GPU data size: ', shape, ' memory_slot: ', memory_slot)
         # print('data shape', shape)
         # print('GPU receives:',self.data_CPU[0,0,0:10])
         if not (SIM or self.SIM):
             t_gpu_start = time.time()
-            chunk_frames = self.gpu_fft_chunk_frames(mode, shape[0])
-            dynamic_reference_gpu = self.dynamic_reference_gpu_for_chunks(mode, memoryLoc, shape)
+            chunk_frames = self.gpu_fft_chunk_frames(DnS_action, shape[0])
+            dynamic_reference_gpu = self.dynamic_reference_gpu_for_chunks(DnS_action, memory_slot, shape)
             self.data_CPU = np.empty((shape[0], shape[1], Pixel_range), dtype=np.float32)
             profile = self.new_gpu_profile() if self.gpu_profile_timing else None
             if self.gpu_overlap_transfer and not self.gpu_profile_timing and shape[0] > chunk_frames:
                 self.cudaFFT_chunked_overlapped(
-                    mode,
-                    memoryLoc,
+                    DnS_action,
+                    memory_slot,
                     samples,
                     Pixel_start,
                     Pixel_range,
@@ -173,10 +295,10 @@ class GPUThread(QThread):
             else:
                 for chunk_start in range(0, shape[0], chunk_frames):
                     chunk_end = min(shape[0], chunk_start + chunk_frames)
-                    chunk = self.Memory[memoryLoc][chunk_start:chunk_end, :, :]
+                    chunk = self.Memory[memory_slot][chunk_start:chunk_end, :, :]
                     self.data_CPU[chunk_start:chunk_end, :, :] = self.cudaFFT_chunk(
                         chunk,
-                        mode,
+                        DnS_action,
                         samples,
                         Pixel_start,
                         Pixel_range,
@@ -189,21 +311,21 @@ class GPUThread(QThread):
             t5=time.time()
             if profile is not None:
                 self.print_gpu_profile(profile)
-            if round(t5-t_gpu_start,4) >0.2:
-                print('time for chunked GPU FFT: ', round(t5-t_gpu_start,3))
+            if round(t5-t_gpu_start,4) >0.5:
+                print('time for chunked GPU FFT: ', round(t5-t_gpu_start,3),'sec')
             # print('data_CPU shape', self.data_CPU.shape)
             # print('data_CPU:', self.data_CPU[0,0,0:15])
-            if self.ui.DynCheckBox.isChecked() and mode in [ 'FiniteBline', 'FiniteCscan']:
+            if self.ui.DynCheckBox.isChecked() and DnS_action in [ 'FiniteBline', 'FiniteCscan']:
                 Dyn = self.Dynamic_Processing()
                 # print('dyn:',Dyn[0,0:5])
                 # Dyn = []
             else:
                 Dyn = []
             t6=time.time()
-            if round(t6-t5,4) >0.2:
-                print('time for dynamic calculation: ', round(t6-t5,3))
+            if round(t6-t5,4) >0.1:
+                print('time for dynamic calculation: ', round(t6-t5,3),'sec')
             # display and save data, data type is float32
-            an_action = DnSAction(mode, data = self.data_CPU, raw = False, dynamic = Dyn, args = args) # data in Memory[memoryLoc]
+            an_action = DnSAction(DnS_action, acq_mode=acq_mode, data = self.data_CPU, raw = False, dynamic = Dyn, payload = payload) # data in Memory[memory_slot]
             self.DnSQueue.put(an_action)
 
             
@@ -223,7 +345,7 @@ class GPUThread(QThread):
                 else:
                     self.AlineCount = self.ui.AlinesPerBline.value() * self.ui.Ypixels.value() * self.ui.BlineAVG.value()
             data_CPU = 65535*np.random.random([self.AlineCount, Pixel_range]).reshape(shape[0],shape[1],Pixel_range)
-            an_action = DnSAction(mode, data = data_CPU, raw = False, args = args) # data in Memory[memoryLoc]
+            an_action = DnSAction(DnS_action, acq_mode=acq_mode, data = data_CPU, raw = False, payload = payload) # data in Memory[memory_slot]
             self.DnSQueue.put(an_action)
             # print('send for display')
             # print(self.ui.DSing.isChecked())
@@ -233,70 +355,56 @@ class GPUThread(QThread):
             # print('GPU finish')
  
             
-    def cpuFFT(self, mode, memoryLoc, args):
+    def cpuFFT(self, DnS_action, acq_mode, memory_slot, payload):
         # get samples per Aline
         samples = self.ui.NSamples_DH.value()# - self.ui.DelaySamples.value()
         # get depth pixels after FFT
         Pixel_start = self.ui.DepthStart.value()
         Pixel_range = self.ui.DepthRange.value()
 
-        self.data_CPU = self.Memory[memoryLoc].astype(np.float32, copy=True)
+        t_cpu_start = time.time()
+        self.data_CPU = self.Memory[memory_slot].astype(np.float32, copy=True)
         shape = self.data_CPU.shape
         # print('data shape', shape)
         # print('GPU receives:',self.data_CPU[0,0,0:10])
-        # subtract background
+
         t0=time.time()
-        self.subtract_dynamic_reference_background(mode, shape)
-        # self.data_CPU -= self.background[np.newaxis, :, :]
+        self.subtract_background_after_conversion_cpu(DnS_action, shape, self.data_CPU)
         baseline = uniform_filter1d(self.data_CPU, size=51, axis=2)
         self.data_CPU -= baseline
         del baseline
-        if round(time.time()-t0,4) >1:
-            print('background subtraction took ', round(time.time()-t0,3),'s')
+        if round(time.time()-t0,4) >0.1:
+            print('CPU background/high-pass took ', round(time.time()-t0,3),'sec')
         
         Alines =shape[0]*shape[1]
         self.data_CPU=self.data_CPU.reshape([Alines, samples])
         
-        fftAxis = 1
-        # # zero-padding data before FFT
-        # if data_CPU.shape[1] != self.length_FFT:
-        #     data_padded = np.zeros([Alines, self.length_FFT], dtype = np.float32)
-        #     tmp = np.uint16((self.length_FFT-samples)/2)
-        #     data_padded[:,tmp:samples+tmp] = data_CPU
-        # else:
-        #     data_padded = data_CPU
+        if self.interp:
+            self.data_CPU = self.interpolate_cpu(self.data_CPU)
+            self.data_CPU = np.fft.fft(self.data_CPU * self.dispersion, axis=1) / samples
+        else:
+            self.data_CPU = np.fft.fft(self.data_CPU, axis=1) / samples
         
-        # self.data_CPU = self.data_CPU*self.dispersion
-        # print(self.data_CPU[0:10,0:5])
-        self.data_CPU = np.abs(np.fft.fft(self.data_CPU, axis=fftAxis))/samples
-        # print(self.data_CPU[0:10,0:5])
-        
-        self.data_CPU = self.data_CPU[:,Pixel_start: Pixel_start+Pixel_range ]*self.AMPLIFICATION
-        # data_CPU = data_CPU.reshape([shape[0],Pixel_range * np.uint32(Alines/shape[0])])
+        self.data_CPU = np.abs(self.data_CPU[:, Pixel_start: Pixel_start + Pixel_range]) * self.AMPLIFICATION
+        self.data_CPU = np.float32(self.data_CPU)
         self.data_CPU = self.data_CPU.reshape(shape[0],shape[1],Pixel_range)
         # print('data_CPU:', self.data_CPU[0,0,0:5])
-        if self.ui.DynCheckBox.isChecked() and mode in [ 'FiniteBline', 'FiniteCscan']:
-            Dyn = self.Dynamic_Processing()
-            print('dyn:',Dyn[0,0:5])
+        if self.ui.DynCheckBox.isChecked() and DnS_action in [ 'FiniteBline', 'FiniteCscan']:
+            Dyn = self.Dynamic_Processing_CPU()
         else:
             Dyn = []
+        if round(time.time()-t_cpu_start,4) >0.5:
+            print('time for CPU FFT: ', round(time.time()-t_cpu_start,3),'sec')
         # display and save data, data type is float32
-        an_action = DnSAction(mode, data = self.data_CPU, raw = False, dynamic = Dyn, args = args) # data in Memory[memoryLoc]
+        an_action = DnSAction(DnS_action, acq_mode=acq_mode, data = self.data_CPU, raw = False, dynamic = Dyn, payload = payload) # data in Memory[memory_slot]
         self.DnSQueue.put(an_action)
         
         if self.ui.DSing.isChecked():
             self.GPU2weaverQueue.put(self.data_CPU)
             # print('GPU data to weaver')
-        
-    def subtract_dynamic_reference_background(self, mode, shape):
-        """
-        For dynamic acquisitions, use the first repeated frame in the burst as
-        the local DC/background reference. This tracks slow DC drift better than
-        the pre-measured background when BlineAVG frames are acquired close in time.
-        """
-        if not self.ui.DynCheckBox.isChecked():
-            return False
-        if mode not in [
+
+    def subtract_background_after_conversion_cpu(self, DnS_action, chunk_shape, data_cpu):
+        if self.dynamic_use_first_frame_background and self.ui.DynCheckBox.isChecked() and DnS_action in [
             'ContinuousBline',
             'FiniteBline',
             'ContinuousCscan',
@@ -306,39 +414,63 @@ class GPUThread(QThread):
             'PlateScan',
             'WellScan',
         ]:
-            return False
-        if len(shape) < 3 or shape[0] < 2:
-            return False
-        bline_avg = int(self.ui.BlineAVG.value())
-        if bline_avg < 2:
-            return False
+            bline_avg = int(self.ui.BlineAVG.value())
+            if bline_avg >= 2 and len(chunk_shape) >= 3 and chunk_shape[0] >= 2:
+                self.normalize_dynamic_frames_cpu(data_cpu)
+                if chunk_shape[0] == bline_avg:
+                    dynamic_background = data_cpu[0:1, :, :].copy()
+                    data_cpu -= dynamic_background
+                    del dynamic_background
+                    return True
+                if DnS_action in ['ContinuousCscan', 'FiniteCscan'] and chunk_shape[0] % bline_avg == 0:
+                    y_count = chunk_shape[0] // bline_avg
+                    data_view = data_cpu.reshape([y_count, bline_avg, chunk_shape[1], chunk_shape[2]])
+                    dynamic_background = data_view[:, 0:1, :, :].copy()
+                    data_view -= dynamic_background
+                    del dynamic_background
+                    return True
 
-        if shape[0] == bline_avg:
-            dynamic_background = self.data_CPU[0:1, :, :].copy()
-            self.data_CPU -= dynamic_background
-            del dynamic_background
-            return True
-
-        if mode in ['ContinuousCscan', 'FiniteCscan'] and shape[0] % bline_avg == 0:
-            y_count = shape[0] // bline_avg
-            data_view = self.data_CPU.reshape([y_count, bline_avg, shape[1], shape[2]])
-            dynamic_background = data_view[:, 0:1, :, :].copy()
-            data_view -= dynamic_background
-            del dynamic_background
-            return True
-
+        if self.bg_sub:
+            if self.background.shape == chunk_shape[1:]:
+                data_cpu -= self.background[np.newaxis, :, :]
+                data_cpu /= np.float32(self.static_normalization_mean)
+                return True
+            print(
+                'Background shape mismatch. Background subtraction skipped: ',
+                self.background.shape,
+                'data frame shape:',
+                chunk_shape[1:],
+            )
+        data_cpu /= np.float32(self.static_normalization_mean)
         return False
 
-    def gpu_fft_chunk_frames(self, mode, total_frames):
+    def normalize_dynamic_frames_cpu(self, data_cpu):
+        frame_mean = np.mean(data_cpu, axis=(1, 2), keepdims=True)
+        data_cpu /= frame_mean + np.float32(self.dynamic_normalization_eps)
+        return data_cpu
+
+    def interpolate_cpu(self, data_cpu):
+        idx0 = self.indice[0, :].astype(np.intp, copy=False)
+        idx1 = self.indice[1, :].astype(np.intp, copy=False)
+        x0 = self.intpX[idx0]
+        x1 = self.intpX[idx1]
+        xt = self.intpXp
+        y0 = data_cpu[:, idx0]
+        y1 = data_cpu[:, idx1]
+        return np.float32(y0 + (xt - x0) * (y1 - y0) / (x1 - x0 + 0.00001))
+
+    def gpu_fft_chunk_frames(self, DnS_action, total_frames):
         chunk_frames = max(1, int(self.gpu_chunk_frames))
         if not self.ui.DynCheckBox.isChecked():
+            return min(total_frames, chunk_frames)
+        if not self.dynamic_use_first_frame_background:
             return min(total_frames, chunk_frames)
 
         bline_avg = max(1, int(self.ui.BlineAVG.value()))
         if bline_avg < 2:
             return min(total_frames, chunk_frames)
 
-        if mode in ['ContinuousCscan', 'FiniteCscan'] and total_frames > bline_avg and total_frames % bline_avg == 0:
+        if DnS_action in ['ContinuousCscan', 'FiniteCscan'] and total_frames > bline_avg and total_frames % bline_avg == 0:
             chunk_frames = max(chunk_frames, bline_avg)
             chunk_frames = (chunk_frames // bline_avg) * bline_avg
             return min(total_frames, max(bline_avg, chunk_frames))
@@ -348,7 +480,7 @@ class GPUThread(QThread):
     def cudaFFT_chunk(
         self,
         raw_chunk,
-        mode,
+        DnS_action,
         samples,
         Pixel_start,
         Pixel_range,
@@ -363,34 +495,16 @@ class GPUThread(QThread):
         self.profile_sync_add(profile, 'h2d_uint16', t0)
 
         t0 = time.perf_counter()
-        y_gpu = self.convert_raw_chunk_to_float(raw_gpu)
-        self.profile_sync_add(profile, 'u16_to_f32', t0)
-
-        t0 = time.perf_counter()
-        dynamic_reference_subtracted = self.subtract_dynamic_reference_background_gpu(
-            mode,
+        y_gpu, _ = self.prepare_float_chunk(
+            DnS_action,
             chunk_shape,
-            y_gpu,
+            raw_gpu,
             dynamic_reference_gpu,
         )
-        if self.bg_sub and not dynamic_reference_subtracted:
-            if self.background.shape == chunk_shape[1:]:
-                if self.background_gpu is None or self.background_gpu.shape != self.background.shape:
-                    self.background_gpu = cupy.asarray(self.background, dtype=cupy.float32)
-                y_gpu -= self.background_gpu[cupy.newaxis, :, :]
-            else:
-                print(
-                    'background shape mismatch, skip subtraction: ',
-                    self.background.shape,
-                    'data frame shape:',
-                    chunk_shape[1:],
-                )
-        self.profile_sync_add(profile, 'background', t0)
+        self.profile_sync_add(profile, 'convert_bg', t0)
 
         t0 = time.perf_counter()
-        baseline = self.gpu_uniform_filter1d(y_gpu, size=51, axis=2)
-        y_gpu -= baseline
-        del baseline
+        y_gpu = self.apply_highpass_filter(y_gpu)
         self.profile_sync_add(profile, 'highpass', t0)
 
         t0 = time.perf_counter()
@@ -452,17 +566,82 @@ class GPUThread(QThread):
                 raw_gpu.set(raw_chunk)
         return raw_gpu
 
-    def convert_raw_chunk_to_float(self, raw_gpu, slot=None):
+    def prepare_float_chunk(self, DnS_action, chunk_shape, raw_gpu, dynamic_reference_gpu=None, slot=None):
         y_gpu = self.gpu_float_buffer(raw_gpu.shape, slot=slot)
         y_gpu[...] = raw_gpu
+        background_subtracted = self.subtract_background_after_conversion(
+            DnS_action,
+            chunk_shape,
+            y_gpu,
+            dynamic_reference_gpu,
+        )
+        return y_gpu, background_subtracted
+
+    def subtract_background_after_conversion(self, DnS_action, chunk_shape, y_gpu, dynamic_reference_gpu=None):
+        if self.dynamic_use_first_frame_background and self.ui.DynCheckBox.isChecked() and DnS_action in [
+            'ContinuousBline',
+            'FiniteBline',
+            'ContinuousCscan',
+            'FiniteCscan',
+            'Process_Mosaic',
+            'PlatePreScan',
+            'PlateScan',
+            'WellScan',
+        ]:
+            bline_avg = int(self.ui.BlineAVG.value())
+            if bline_avg >= 2 and len(chunk_shape) >= 3 and chunk_shape[0] >= 2:
+                self.normalize_dynamic_frames(y_gpu)
+                if dynamic_reference_gpu is not None:
+                    y_gpu -= dynamic_reference_gpu
+                    return True
+                if chunk_shape[0] == bline_avg:
+                    dynamic_background = y_gpu[0:1, :, :].copy()
+                    y_gpu -= dynamic_background
+                    del dynamic_background
+                    return True
+                if DnS_action in ['ContinuousCscan', 'FiniteCscan'] and chunk_shape[0] % bline_avg == 0:
+                    y_count = chunk_shape[0] // bline_avg
+                    data_view = y_gpu.reshape([y_count, bline_avg, chunk_shape[1], chunk_shape[2]])
+                    dynamic_background = data_view[:, 0:1, :, :].copy()
+                    data_view -= dynamic_background
+                    del dynamic_background
+                    return True
+
+        if self.bg_sub:
+            if self.background.shape == chunk_shape[1:]:
+                if self.background_gpu is None or self.background_gpu.shape != self.background.shape:
+                    self.background_gpu = cupy.asarray(self.background, dtype=cupy.float32)
+                y_gpu -= self.background_gpu[cupy.newaxis, :, :]
+                y_gpu /= cupy.float32(self.static_normalization_mean)
+                return True
+            print(
+                'Background shape mismatch. Background subtraction skipped: ',
+                self.background.shape,
+                'data frame shape:',
+                chunk_shape[1:],
+            )
+        y_gpu /= cupy.float32(self.static_normalization_mean)
+        return False
+
+    def normalize_dynamic_frames(self, y_gpu):
+        """
+        Normalize each frame by its own mean before dynamic subtraction.
+
+        Dynamic raw data are arranged as (frame, Y/X pixel, spectral pixel) in
+        this processing path, so the per-frame light-source intensity estimate
+        is the mean over the second and third dimensions. A small EPS is added
+        to the denominator, matching Dynamic_Processing(), to avoid excessive
+        gain when the reference intensity is very small.
+        """
+        frame_mean = cupy.mean(y_gpu, axis=(1, 2), keepdims=True)
+        y_gpu /= frame_mean + cupy.float32(self.dynamic_normalization_eps)
         return y_gpu
 
     def new_gpu_profile(self):
         return {
             'chunks': 0,
             'h2d_uint16': 0.0,
-            'u16_to_f32': 0.0,
-            'background': 0.0,
+            'convert_bg': 0.0,
             'highpass': 0.0,
             'reshape': 0.0,
             'interpolation': 0.0,
@@ -493,8 +672,7 @@ class GPUThread(QThread):
             'GPU profile: '
             f"chunks={profile['chunks']}, "
             f"h2d_uint16={profile['h2d_uint16']:.3f}s, "
-            f"u16->f32={profile['u16_to_f32']:.3f}s, "
-            f"background={profile['background']:.3f}s, "
+            f"convert/bg={profile['convert_bg']:.3f}s, "
             f"highpass={profile['highpass']:.3f}s, "
             f"reshape={profile['reshape']:.3f}s, "
             f"interp={profile['interpolation']:.3f}s, "
@@ -506,8 +684,8 @@ class GPUThread(QThread):
 
     def cudaFFT_chunked_overlapped(
         self,
-        mode,
-        memoryLoc,
+        DnS_action,
+        memory_slot,
         samples,
         Pixel_start,
         Pixel_range,
@@ -516,18 +694,18 @@ class GPUThread(QThread):
     ):
         streams = self.gpu_overlap_streams()
         slot_refs = [None, None]
-        for chunk_index, chunk_start in enumerate(range(0, self.Memory[memoryLoc].shape[0], chunk_frames)):
+        for chunk_index, chunk_start in enumerate(range(0, self.Memory[memory_slot].shape[0], chunk_frames)):
             slot = chunk_index % 2
             if slot_refs[slot] is not None:
                 slot_refs[slot]['stream'].synchronize()
                 slot_refs[slot] = None
 
-            chunk_end = min(self.Memory[memoryLoc].shape[0], chunk_start + chunk_frames)
-            chunk = self.Memory[memoryLoc][chunk_start:chunk_end, :, :]
+            chunk_end = min(self.Memory[memory_slot].shape[0], chunk_start + chunk_frames)
+            chunk = self.Memory[memory_slot][chunk_start:chunk_end, :, :]
             host_out = self.data_CPU[chunk_start:chunk_end, :, :]
             slot_refs[slot] = self.cudaFFT_chunk_async(
                 chunk,
-                mode,
+                DnS_action,
                 samples,
                 Pixel_start,
                 Pixel_range,
@@ -545,7 +723,7 @@ class GPUThread(QThread):
     def cudaFFT_chunk_async(
         self,
         raw_chunk,
-        mode,
+        DnS_action,
         samples,
         Pixel_start,
         Pixel_range,
@@ -559,32 +737,17 @@ class GPUThread(QThread):
         with stream:
             raw_gpu = self.load_raw_chunk_to_gpu(raw_chunk, slot=slot, stream=stream)
             keep_alive.append(raw_gpu)
-            y_gpu = self.convert_raw_chunk_to_float(raw_gpu, slot=slot)
+            y_gpu, _ = self.prepare_float_chunk(
+                DnS_action,
+                chunk_shape,
+                raw_gpu,
+                dynamic_reference_gpu,
+                slot=slot,
+            )
             keep_alive.append(y_gpu)
 
-            dynamic_reference_subtracted = self.subtract_dynamic_reference_background_gpu(
-                mode,
-                chunk_shape,
-                y_gpu,
-                dynamic_reference_gpu,
-                keep_alive,
-            )
-            if self.bg_sub and not dynamic_reference_subtracted:
-                if self.background.shape == chunk_shape[1:]:
-                    if self.background_gpu is None or self.background_gpu.shape != self.background.shape:
-                        self.background_gpu = cupy.asarray(self.background, dtype=cupy.float32)
-                    y_gpu -= self.background_gpu[cupy.newaxis, :, :]
-                else:
-                    print(
-                        'background shape mismatch, skip subtraction: ',
-                        self.background.shape,
-                        'data frame shape:',
-                        chunk_shape[1:],
-                    )
-
-            baseline = self.gpu_uniform_filter1d(y_gpu, size=51, axis=2)
-            keep_alive.append(baseline)
-            y_gpu -= baseline
+            y_gpu = self.apply_highpass_filter(y_gpu, slot=slot)
+            keep_alive.append(y_gpu)
 
             alines = chunk_shape[0] * chunk_shape[1]
             y_gpu = y_gpu.reshape([alines, samples])
@@ -663,6 +826,35 @@ class GPUThread(QThread):
             self.float_gpu_stream_buffers[slot] = cupy.empty(shape, dtype=cupy.float32)
         return self.float_gpu_stream_buffers[slot]
 
+    def apply_highpass_filter(self, data_gpu, slot=None):
+        out_gpu = self.gpu_highpass_buffer(data_gpu.shape, slot=slot)
+        threads = 256
+        lines = int(data_gpu.shape[0] * data_gpu.shape[1])
+        samples = int(data_gpu.shape[2])
+        blocks_x = max(1, (samples + threads - 1) // threads)
+        self.highpass51_kernel(
+            (blocks_x, lines),
+            (threads,),
+            (
+                data_gpu,
+                out_gpu,
+                lines,
+                samples,
+            ),
+            shared_mem=(threads + 50) * 4,
+        )
+        return out_gpu
+
+    def gpu_highpass_buffer(self, shape, slot=None):
+        if slot is None:
+            if self.highpass_gpu_buffer is None or self.highpass_gpu_buffer.shape != shape:
+                self.highpass_gpu_buffer = cupy.empty(shape, dtype=cupy.float32)
+            return self.highpass_gpu_buffer
+
+        if self.highpass_gpu_stream_buffers[slot] is None or self.highpass_gpu_stream_buffers[slot].shape != shape:
+            self.highpass_gpu_stream_buffers[slot] = cupy.empty(shape, dtype=cupy.float32)
+        return self.highpass_gpu_stream_buffers[slot]
+
     def gpu_interpolation_buffer(self, shape, slot=None):
         if slot is None:
             if self.yp_gpu_buffer is None or self.yp_gpu_buffer.shape != shape:
@@ -673,10 +865,12 @@ class GPUThread(QThread):
             self.yp_gpu_stream_buffers[slot] = cupy.empty(shape, dtype=cupy.float32)
         return self.yp_gpu_stream_buffers[slot]
 
-    def dynamic_reference_gpu_for_chunks(self, mode, memoryLoc, shape):
+    def dynamic_reference_gpu_for_chunks(self, DnS_action, memory_slot, shape):
+        if not self.dynamic_use_first_frame_background:
+            return None
         if not self.ui.DynCheckBox.isChecked():
             return None
-        if mode not in [
+        if DnS_action not in [
             'ContinuousBline',
             'FiniteBline',
             'ContinuousCscan',
@@ -692,63 +886,10 @@ class GPUThread(QThread):
         bline_avg = int(self.ui.BlineAVG.value())
         if bline_avg < 2:
             return None
-        if mode in ['ContinuousCscan', 'FiniteCscan'] and shape[0] != bline_avg:
+        if DnS_action in ['ContinuousCscan', 'FiniteCscan'] and shape[0] != bline_avg:
             return None
-        return cupy.asarray(self.Memory[memoryLoc][0:1, :, :], dtype=cupy.float32)
-
-    def subtract_dynamic_reference_background_gpu(
-        self,
-        mode,
-        shape,
-        data_gpu,
-        dynamic_reference_gpu=None,
-        keep_alive=None,
-    ):
-        if not self.ui.DynCheckBox.isChecked():
-            return False
-        if mode not in [
-            'ContinuousBline',
-            'FiniteBline',
-            'ContinuousCscan',
-            'FiniteCscan',
-            'Process_Mosaic',
-            'PlatePreScan',
-            'PlateScan',
-            'WellScan',
-        ]:
-            return False
-        if len(shape) < 3 or shape[0] < 2:
-            return False
-        bline_avg = int(self.ui.BlineAVG.value())
-        if bline_avg < 2:
-            return False
-
-        if dynamic_reference_gpu is not None:
-            data_gpu -= dynamic_reference_gpu
-            return True
-
-        if shape[0] == bline_avg:
-            dynamic_background = data_gpu[0:1, :, :].copy()
-            if keep_alive is not None:
-                keep_alive.append(dynamic_background)
-            data_gpu -= dynamic_background
-            return True
-
-        if mode in ['ContinuousCscan', 'FiniteCscan'] and shape[0] % bline_avg == 0:
-            y_count = shape[0] // bline_avg
-            data_view = data_gpu.reshape([y_count, bline_avg, shape[1], shape[2]])
-            dynamic_background = data_view[:, 0:1, :, :].copy()
-            if keep_alive is not None:
-                keep_alive.append(dynamic_background)
-            data_view -= dynamic_background
-            return True
-
-        return False
-
-    def gpu_uniform_filter1d(self, data_gpu, size, axis):
-        if cupy_uniform_filter1d is not None:
-            return cupy_uniform_filter1d(data_gpu, size=size, axis=axis)
-        return cupy.mean(data_gpu, axis=axis, keepdims=True)
+        reference_gpu = cupy.asarray(self.Memory[memory_slot][0:1, :, :], dtype=cupy.float32)
+        return self.normalize_dynamic_frames(reference_gpu)
 
     def ensure_dispersion_gpu_cache(self):
         if self.intpX_gpu is None or self.intpX_gpu.shape != self.intpX.shape:
@@ -775,6 +916,36 @@ class GPUThread(QThread):
         if pinned_pool is not None:
             pinned_pool().free_all_blocks()
 
+    def load_interpolation_indices(self, filename, samples):
+        raw = np.fromfile(filename, dtype=np.uint16)
+        expected = 2 * samples
+        if raw.size != expected:
+            raise ValueError(
+                f"intpIndice.bin has {raw.size} values, expected {expected} "
+                f"for {samples} samples."
+            )
+
+        max_valid = self.intpX.size - 1
+        candidates = [
+            ("2xsamples", raw.reshape([2, samples])),
+            ("samplesx2", raw.reshape([samples, 2]).T),
+        ]
+        diagnostics = []
+        for layout_name, candidate in candidates:
+            min_index = int(candidate.min())
+            max_index = int(candidate.max())
+            diagnostics.append(f"{layout_name}: min={min_index}, max={max_index}")
+            if min_index >= 0 and max_index <= max_valid:
+                if layout_name != "2xsamples":
+                    print(f"Interpolation index table loaded as {layout_name}.")
+                return candidate
+
+        raise ValueError(
+            "Interpolation index table is out of range for intpX. "
+            f"intpX length={self.intpX.size}, valid index=0-{max_valid}; "
+            + "; ".join(diagnostics)
+        )
+
             
     def update_Dispersion(self):
         # get samples per Aline
@@ -790,22 +961,26 @@ class GPUThread(QThread):
                 self.interp = True
                 self.intpX  = np.float32(np.fromfile(dispersion_path+'/intpX.bin', dtype=np.float32))
                 self.intpXp  = np.float32(np.fromfile(dispersion_path+'/intpXp.bin', dtype=np.float32))
-                self.indice = np.uint16(np.fromfile(dispersion_path+'/intpIndice.bin', dtype=np.uint16)).reshape([2,samples])
-                self.dispersion = np.float32(np.fromfile(dispersion_path+'/dspPhase.bin', dtype=np.float32)).reshape([1, samples])
+                if self.intpX.size != samples or self.intpXp.size != samples:
+                    raise ValueError(
+                        f"Interpolation arrays do not match NSamples_DH={samples}: "
+                        f"len(intpX)={self.intpX.size}, len(intpXp)={self.intpXp.size}."
+                    )
+                self.indice = self.load_interpolation_indices(dispersion_path+'/intpIndice.bin', samples)
+                dispersion_raw = np.fromfile(dispersion_path+'/dspPhase.bin', dtype=np.float32)
+                if dispersion_raw.size != samples:
+                    raise ValueError(
+                        f"dspPhase.bin has {dispersion_raw.size} values, expected {samples}."
+                    )
+                self.dispersion = np.float32(dispersion_raw).reshape([1, samples])
                 self.dispersion = np.complex64(np.exp(1j*self.dispersion))
                 if not (SIM or self.SIM):
                     self.clear_dispersion_gpu_cache()
                     self.ensure_dispersion_gpu_cache()
-                if getattr(self, "ui_bridge", None) is not None:
-                    try:
-                        self.ui_bridge.status_message.emit("load disperison compensation success...")
-                    except Exception:
-                        self.ui.statusbar.showMessage("load disperison compensation success...")
-                else:
-                    self.ui.statusbar.showMessage("load disperison compensation success...")
-                # self.ui.PrintOut.append("load disperison compensation success...")
-                self.log.write("load disperison compensation success...")
-                print("load disperison compensation success...")
+                message = "Dispersion compensation loaded."
+                self.emit_status(message)
+                self.log.write(message)
+                print(message)
             except:
                 self.interp = False
                 self.clear_dispersion_gpu_cache()
@@ -814,16 +989,10 @@ class GPUThread(QThread):
                 # self.indice = np.uint16(np.linspace(0,samples-1,samples)).reshape([samples,1])
                 # self.indice = np.tile(self.indice,[1,2])
                 # self.dispersion = np.complex64(np.ones(samples)).reshape([1,samples])
-                if getattr(self, "ui_bridge", None) is not None:
-                    try:
-                        self.ui_bridge.status_message.emit('no disperison compensation found...skip interpolation')
-                    except Exception:
-                        self.ui.statusbar.showMessage('no disperison compensation found...skip interpolation')
-                else:
-                    self.ui.statusbar.showMessage('no disperison compensation found...skip interpolation')
-                # self.ui.PrintOut.append("no disperison compensation found...")
-                self.log.write("no disperison compensation found...skip interpolation")
-                print("no disperison compensation found...skip interpolation")
+                message = "No dispersion compensation file found. Interpolation is disabled."
+                self.emit_status(message)
+                self.log.write(message)
+                print(message)
         else:
             self.interp = False
             self.clear_dispersion_gpu_cache()
@@ -832,16 +1001,10 @@ class GPUThread(QThread):
             # self.indice = np.uint16(np.linspace(0,samples-1,samples)).reshape([samples,1])
             # self.indice = np.tile(self.indice,[1,2])
             # self.dispersion = np.complex64(np.ones(samples)).reshape([1,samples])
-            if getattr(self, "ui_bridge", None) is not None:
-                try:
-                    self.ui_bridge.status_message.emit('no disperison compensation found...skip interpolation')
-                except Exception:
-                    self.ui.statusbar.showMessage('no disperison compensation found...skip interpolation')
-            else:
-                self.ui.statusbar.showMessage('no disperison compensation found...skip interpolation')
-            # self.ui.PrintOut.append("no disperison compensation found...")
-            self.log.write("no disperison compensation found...skip interpolation")
-            print("no disperison compensation found...skip interpolation")
+            message = "No dispersion compensation file found. Interpolation is disabled."
+            self.emit_status(message)
+            self.log.write(message)
+            print(message)
         
     def update_background(self):
         # get samples per Aline
@@ -855,6 +1018,11 @@ class GPUThread(QThread):
         if os.path.isfile(background_path):
             try:
                 self.background  = np.float32(np.fromfile(background_path, dtype=np.float32)).reshape([Xpixels,samples])
+                background_mean = float(np.mean(self.background))
+                if np.isfinite(background_mean) and background_mean > self.static_normalization_eps:
+                    self.static_normalization_mean = background_mean
+                else:
+                    self.static_normalization_mean = self.default_static_normalization_mean
                 if not (SIM or self.SIM):
                     self.background_gpu = cupy.asarray(self.background, dtype=cupy.float32)
                 # print(self.background.shape)
@@ -862,45 +1030,29 @@ class GPUThread(QThread):
                 # plt.figure()
                 # plt.imshow(self.background)
                 # plt.show()
-                if getattr(self, "ui_bridge", None) is not None:
-                    try:
-                        self.ui_bridge.status_message.emit("load background success...")
-                    except Exception:
-                        self.ui.statusbar.showMessage("load background success...")
-                else:
-                    self.ui.statusbar.showMessage("load background success...")
-                # self.ui.PrintOut.append("load disperison compensation success...")
-                self.log.write("load background success...")
-                print("load background success...")
+                message = "Background file loaded."
+                self.emit_status(message)
+                self.log.write(message)
+                print(message)
                 self.bg_sub = True
             except:
                 self.bg_sub = False
                 self.background = np.zeros([Xpixels, samples])
                 self.background_gpu = None
-                if getattr(self, "ui_bridge", None) is not None:
-                    try:
-                        self.ui_bridge.status_message.emit('no background found...using default')
-                    except Exception:
-                        self.ui.statusbar.showMessage('no background found...using default')
-                else:
-                    self.ui.statusbar.showMessage('no background found...using default')
-                # self.ui.PrintOut.append("no disperison compensation found...")
-                self.log.write("no background found...using default")
-                print("no background found...using default")
+                self.static_normalization_mean = self.default_static_normalization_mean
+                message = "No valid background file found. Using zero background."
+                self.emit_status(message)
+                self.log.write(message)
+                print(message)
         else:
             self.bg_sub = False
             self.background = np.zeros([Xpixels, samples])
             self.background_gpu = None
-            if getattr(self, "ui_bridge", None) is not None:
-                try:
-                    self.ui_bridge.status_message.emit('no background found...using default')
-                except Exception:
-                    self.ui.statusbar.showMessage('no background found...using default')
-            else:
-                self.ui.statusbar.showMessage('no background found...using default')
-            # self.ui.PrintOut.append("no disperison compensation found...")
-            self.log.write("no background found...using default")
-            print("no background found...using default2")
+            self.static_normalization_mean = self.default_static_normalization_mean
+            message = "No background file selected. Using zero background."
+            self.emit_status(message)
+            self.log.write(message)
+            print(message)
         self.background_tile = self.background
         
 
@@ -913,7 +1065,7 @@ class GPUThread(QThread):
             self.length_FFT *=2
 
     def display_FFT_actions(self):
-        message = str(self.FFT_actions)+ ' FFT actions taken place\n'
+        message = f"{self.FFT_actions} FFT request(s) processed."
         print(message)
         # self.ui.PrintOut.append(message)
         self.log.write(message)
@@ -922,27 +1074,76 @@ class GPUThread(QThread):
     def Dynamic_Processing(self, EPS=1e-3):
         if not (SIM or self.SIM):
             # only for Bline processing, Cscan processing need to do after all data are saved in disk
-            data_GPU = cupy.array(self.data_CPU) # (T,X,Z)
-            # data_GPU = cupy.moveaxis(data_GPU, 0, -1)  # (Z,X,T)
-            time_mean = cupy.mean(data_GPU, axis=(1, 2), keepdims=True)  # (T,1,1)
-            data_GPU = data_GPU / (time_mean + EPS)
-            data_GPU = uniform_filter1d(data_GPU.get(), size=10, axis=0, mode='nearest')
-        
-            liv = cupy.var(data_GPU, axis=0, ddof=0)  # 1/N（与论文一致）
-            dynamic_GPU = gaussian_filter(liv, sigma=(1, 1))
-            dynamic = cupy.asnumpy(dynamic_GPU)*1000
-            # print(dynamic[0,0:5])
+            dynamic_GPU = self.dynamic_signal_gpu(cupy.asarray(self.data_CPU, dtype=cupy.float32))
+            dynamic = cupy.asnumpy(dynamic_GPU) * self.dynMagnification
+            if self.dynamic_gaussian_smoothing:
+                dynamic = gaussian_filter(dynamic, sigma=(1, 1))
             return dynamic
         else:
             data_CPU = self.data_CPU.copy()# (T,X,Z)
-            time_mean = np.mean(data_CPU, axis=(1, 2), keepdims=True)  # (T,1,1)
-            data_CPU = data_CPU / (time_mean + EPS)
-            data_CPU = uniform_filter1d(data_CPU, size=10, axis=0, mode='nearest')
-            print(data_CPU.shape)
+            data_CPU = uniform_filter1d(data_CPU, size=self.dynamic_uniform_filter_size, axis=0, mode='nearest')
             liv = np.var(data_CPU, axis=0, ddof=0)  # 1/N（与论文一致）
-            dynamic = gaussian_filter(liv, sigma=(1, 1))
-            # print(dynamic[0,0:5])
-            return dynamic
+            if self.dynamic_gaussian_smoothing:
+                liv = gaussian_filter(liv, sigma=(1, 1))
+            return liv
+
+    def Dynamic_Processing_CPU(self):
+        data_cpu = uniform_filter1d(
+            self.data_CPU,
+            size=self.dynamic_uniform_filter_size,
+            axis=0,
+            mode='nearest',
+        )
+        dynamic = np.var(data_cpu, axis=0, ddof=0) * self.dynMagnification
+        if self.dynamic_gaussian_smoothing:
+            dynamic = gaussian_filter(dynamic, sigma=(1, 1))
+        return np.float32(dynamic)
+
+    def dynamic_signal_gpu(self, data_gpu):
+        frames, xpix, zpix = data_gpu.shape
+        filtered_gpu = self.dynamic_filter_buffer(data_gpu.shape)
+        dynamic_gpu = self.dynamic_var_buffer((xpix, zpix))
+        threads = 256
+
+        total = int(frames * xpix * zpix)
+        blocks = max(1, min(65535, (total + threads - 1) // threads))
+        self.dynamic_uniform_axis0_kernel(
+            (blocks,),
+            (threads,),
+            (
+                data_gpu,
+                filtered_gpu,
+                int(frames),
+                int(xpix),
+                int(zpix),
+                int(self.dynamic_uniform_filter_size),
+            ),
+        )
+
+        total = int(xpix * zpix)
+        blocks = max(1, min(65535, (total + threads - 1) // threads))
+        self.dynamic_variance_axis0_kernel(
+            (blocks,),
+            (threads,),
+            (
+                filtered_gpu,
+                dynamic_gpu,
+                int(frames),
+                int(xpix),
+                int(zpix),
+            ),
+        )
+        return dynamic_gpu
+
+    def dynamic_filter_buffer(self, shape):
+        if self.dynamic_filter_gpu_buffer is None or self.dynamic_filter_gpu_buffer.shape != shape:
+            self.dynamic_filter_gpu_buffer = cupy.empty(shape, dtype=cupy.float32)
+        return self.dynamic_filter_gpu_buffer
+
+    def dynamic_var_buffer(self, shape):
+        if self.dynamic_var_gpu_buffer is None or self.dynamic_var_gpu_buffer.shape != shape:
+            self.dynamic_var_gpu_buffer = cupy.empty(shape, dtype=cupy.float32)
+        return self.dynamic_var_gpu_buffer
 
         
    

@@ -12,6 +12,7 @@ Created on Mon Dec 11 19:41:46 2023
 
 import numpy as np
 import os
+from HardwareSpecs import get_objective_spec
 from PyQt5.QtGui import QPixmap, QImage
 from matplotlib import pyplot as plt
 from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor
@@ -42,18 +43,11 @@ class LOG():
 def GenGalvoWave(StepSize = 1, Steps = 1000, AVG = 1, obj = '5X', postclocks = 50, Galvo_bias = 0):
     # total number of steps is the product of steps and aline average number
     # use different angle to mm ratio for different objective
-    if obj == '4X':
-        angle2mmratio = 2.094/1.19*1.25
-    elif obj == '5X':
-        angle2mmratio = 2.094/1.19
-    elif obj == '10X':
-        angle2mmratio = 2.094/2/1.19
-    elif obj == '20X':
-        angle2mmratio = 2.094/1.19/4
-        
-    else:
+    objective = get_objective_spec(obj)
+    if objective is None:
         status = 'objective not calibrated, abort generating Galvo waveform'
         return None, status
+    angle2mmratio = objective.angle_to_mm_ratio
     # X range is product of steps and step size
     Xrange = StepSize*Steps/1000
     # max voltage is converted from half of max X range plus bias divided by angle2mm ratio
@@ -66,13 +60,13 @@ def GenGalvoWave(StepSize = 1, Steps = 1000, AVG = 1, obj = '5X', postclocks = 5
     waveform=np.linspace(Vmin, Vmax, Steps)
     # Bline average
     waveform = np.tile(waveform,(AVG,1)).transpose().flatten()
-    
+
     # print(len(waveform))
     # fly-back waveform
     Postwave = (Vmax-Vmin)/2*np.cos(np.arange(0,np.pi,np.pi/steps2))+(Vmax+Vmin)/2
     # append all waveforms together
     waveform = np.append(waveform, Postwave)
-    
+
     status = 'waveform updated'
     return waveform, status
 
@@ -81,18 +75,18 @@ def GenAODO(mode='ContinuousBline',obj = '5X',postclocks = 50, YStepSize = 1, YS
     # BVG: Bline average
     # bias: Galvo bias voltage
     # postclocks: #Aline triggers for Galvo fly-back
-    
+
     # DO clock is synchronuous with Galvo waveform
-    # DO configure: port0 line 0 
+    # DO configure: port0 line 0
     if mode in ['ContinuousAline', 'FiniteAline', 'ContinuousBline', 'FiniteBline']:
-        
+
         AOwaveform = np.ones(BVG*2) * Galvo_bias
         DOwaveform = np.ones([BVG, 2],dtype = np.uint32)
         DOwaveform[:,1] = 0
         DOwaveform=DOwaveform.flatten()
         status = 'waveform updated'
         return np.uint32(DOwaveform), AOwaveform, status
-    
+
     elif mode in ['FiniteCscan','ContinuousCscan', 'PlateScan','PlatePreScan', 'WellScan']:
         # generate AO waveform for Galvo control for one Bline
         AOwaveform, status = GenGalvoWave(YStepSize, YSteps, BVG*2, obj, postclocks, Galvo_bias)
@@ -101,51 +95,10 @@ def GenAODO(mode='ContinuousBline',obj = '5X',postclocks = 50, YStepSize = 1, YS
         DOwaveform=DOwaveform.flatten()
         status = 'waveform updated'
         return np.uint32(DOwaveform), AOwaveform, status
-    
+
     else:
         status = 'invalid task type! Abort action'
         return None, None, status
-    
-
-def GenMosaic_XYGalvo(Xmin, Xmax, Ymin, Ymax, FOV, overlap=10):
-    # all arguments are with units mm
-    # overlap is with unit %
-    if Xmin > Xmax:
-        status = 'Xmin is larger than Xmax, Mosaic generation failed'
-        return None, status
-    if Ymin > Ymax:
-        status = 'Y min is larger than Ymax, Mosaic generation failed'
-        return None, status
-    # get FOV step size
-    stepsize = FOV*(1-overlap/100)
-    # get how many FOVs in X direction
-    Xsteps = np.ceil((Xmax-Xmin)/stepsize)
-    # get actual X range
-    actualX=Xsteps*stepsize
-    # generate start and stop position in X direction
-    # add or subtract a small number to avoid precision loss
-    startX=Xmin-(actualX-(Xmax-Xmin))/2
-    stopX = Xmax+(actualX-(Xmax-Xmin))/2+0.01
-    # generate X positions
-    Xpositions = np.arange(startX, stopX, stepsize)
-    #print(Xpositions)
-    
-    Ysteps = np.ceil((Ymax-Ymin)/stepsize)
-    actualY=Ysteps*stepsize
-    
-    startY=Ymin-(actualY-(Ymax-Ymin))/2
-    stopY = Ymax+(actualY-(Ymax-Ymin))/2+0.01
-    
-    Ypositions = np.arange(startY, stopY, stepsize)
-    
-    Positions = np.meshgrid(Xpositions, Ypositions)
-    status = 'Mosaic Generation success'
-    return Positions, status
-    
-    
-def GenHeights(start, depth, Nplanes):
-    return np.arange(start, start+Nplanes*depth/1000+0.01, depth/1000)
-
 
 
 def LinePlot(AOwaveform, DOwaveform = None, m=2, M=4):
@@ -218,7 +171,7 @@ def ScatterPlot(mosaic):
     return pixmap
 
 
-    
+
 def RGBImagePlot(matrix1 = [], matrix2 = [], m=0, M=1):
     if len(matrix2)>0:
         scale = 1
@@ -230,17 +183,17 @@ def RGBImagePlot(matrix1 = [], matrix2 = [], m=0, M=1):
     else:
         scale = 2
         matrix2 = np.zeros(matrix1.shape)
-        
+
     matrix1 = np.float32(np.array(matrix1))
     matrix1[matrix1<m] = m
     matrix1[matrix1>M] = M
     matrix1 = np.uint8((matrix1-m+0.01)/np.abs(M-m+0.1)*127*scale)
-    
+
     height, width = matrix1.shape
-    
+
     # Create an empty RGB array
     rgb_array = np.zeros((height, width, 3), dtype=np.uint8)
-    
+
     # plt.figure()
     # plt.imshow(matrix1)
     # plt.show()
@@ -248,14 +201,42 @@ def RGBImagePlot(matrix1 = [], matrix2 = [], m=0, M=1):
     rgb_array[..., 0] = matrix1 + matrix2   # Red channel
     rgb_array[..., 1] = matrix1 # Green channel
     rgb_array[..., 2] = matrix1  # Blue channel
-    
+
     # Convert to QImage
     bytes_per_line = 3 * width
     qimage = QImage(rgb_array.data, width, height, bytes_per_line, QImage.Format_RGB888)
-    
+
     # Convert to QPixmap and display
     pixmap = QPixmap.fromImage(qimage)
     return pixmap
+
+def _normalize_to_uint8(matrix, m=None, M=None):
+    matrix = np.float32(np.array(matrix))
+    if m is None:
+        m = np.nanpercentile(matrix, 1)
+    if M is None:
+        M = np.nanpercentile(matrix, 99)
+    if M <= m:
+        M = m + 1e-5
+    matrix = np.clip(matrix, m, M)
+    return np.uint8((matrix - m) / (M - m + 1e-5) * 255)
+
+def RGBOverlayArray(intensity, dynamic, intensity_min, intensity_max, alpha=0.5, dyn_min=None, dyn_max=None):
+    base = _normalize_to_uint8(intensity, intensity_min, intensity_max)
+    overlay = _normalize_to_uint8(dynamic, dyn_min, dyn_max)
+    alpha = float(np.clip(alpha, 0.0, 0.99))
+
+    rgb_array = np.empty((base.shape[0], base.shape[1], 3), dtype=np.uint8)
+    rgb_array[..., 0] = np.clip(base.astype(np.float32) + overlay.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
+    rgb_array[..., 1] = np.clip(base.astype(np.float32) * (1.0 - 0.5 * alpha), 0, 255).astype(np.uint8)
+    rgb_array[..., 2] = rgb_array[..., 1]
+    return rgb_array
+
+def RGBOverlayPlot(intensity, dynamic, intensity_min, intensity_max, alpha=0.5, dyn_min=None, dyn_max=None):
+    rgb_array = RGBOverlayArray(intensity, dynamic, intensity_min, intensity_max, alpha, dyn_min, dyn_max)
+    height, width, _ = rgb_array.shape
+    qimage = QImage(rgb_array.data, width, height, 3 * width, QImage.Format_RGB888)
+    return QPixmap.fromImage(qimage)
 
 def findchangept(signal, step):
     # python implementation of matlab function findchangepts
@@ -270,4 +251,3 @@ def findchangept(signal, step):
     pts = np.argmin(residual_error)
     # plt.plot(residual_error[2:-2])
     return pts
-        
