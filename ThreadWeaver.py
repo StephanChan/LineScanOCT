@@ -319,7 +319,8 @@ class WeaverThread(QThread):
         # an_action = DnSAction('Clear')
         # self.DnSQueue.put(an_action)
         frame_rate = self.ui.FrameRate_DH.value()
-        self.ui.FrameRate_DH.setValue(10)
+        if acq_mode in ['ContinuousAline','ContinuousBline']:
+            self.ui.FrameRate_DH.setValue(20)
         an_action = DAction('ConfigureBoard')
         self.DQueue.put(an_action)
         # self.DbackQueue.get()
@@ -666,7 +667,7 @@ class WeaverThread(QThread):
         except Exception:
             speed = 1.0
         speed = max(abs(speed), 0.001)
-        return max(20.0, abs(distance) / speed * 3.0 + 10.0)
+        return max(20.0, abs(distance) / speed * 10.0 + 100.0)
 
     def sample_fov_locations(self, sample_id):
         if getattr(self, "CurrentSampleLocations", None):

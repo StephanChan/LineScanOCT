@@ -440,7 +440,7 @@ class DnSThread(QThread):
                 TIFF.imwrite(filename, data[ii], append=True)
                 
         elif acq_mode in ['FiniteBline', 'ContinuousBline']:
-            if self.ui.DynCheckBox.isChecked():
+            if self.ui.DynCheckBox.isChecked() and np.size(dynamic) > 0:
                 filename = self.ui.DIR.toPlainText()+'/'+self.BlineDynFilename([Yrpt,Xpixels,Zpixels])
                 TIFF.imwrite(filename, dynamic, append=True)
                 
@@ -455,8 +455,9 @@ class DnSThread(QThread):
                 for ii in range(Yrpt):
                     TIFF.imwrite(filename, data[ii], append=True)
                 
-                filename = self.ui.DIR.toPlainText()+'/'+CscanDynBlineFileName
-                TIFF.imwrite(filename, dynamic, append=True)
+                if np.size(dynamic) > 0:
+                    filename = self.ui.DIR.toPlainText()+'/'+CscanDynBlineFileName
+                    TIFF.imwrite(filename, dynamic, append=True)
             else:
                 filename = self.ui.DIR.toPlainText()+'/'+self.CscanFilename([Ypixels,Xpixels,Zpixels])
                 for ii in range(Ypixels):

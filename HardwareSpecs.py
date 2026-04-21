@@ -35,13 +35,13 @@ class LaserSpec:
     aline_frequency_hz: int
 
 
-SYSTEM_MAGNIFICATION_4X = 2.5
+SYSTEM_MAGNIFICATION_4X = 2.85
 
 
 OBJECTIVE_SPECS = {
     "4X": ObjectiveSpec(
         name="4X",
-        angle_to_mm_ratio=2.094 / 1.19 * 1.25,
+        angle_to_mm_ratio= 1.44 * 1.25,
         camera_step_divisor=1.0,
     ),
     "5X": ObjectiveSpec(

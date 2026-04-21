@@ -83,16 +83,18 @@ def GenAODO(mode='ContinuousBline',obj = '5X',postclocks = 50, YStepSize = 1, YS
         AOwaveform = np.ones(BVG*2) * Galvo_bias
         DOwaveform = np.ones([BVG, 2],dtype = np.uint32)
         DOwaveform[:,1] = 0
-        DOwaveform=DOwaveform.flatten()
+        DOwaveform = DOwaveform.flatten()
         status = 'waveform updated'
         return np.uint32(DOwaveform), AOwaveform, status
 
     elif mode in ['FiniteCscan','ContinuousCscan', 'PlateScan','PlatePreScan', 'WellScan']:
         # generate AO waveform for Galvo control for one Bline
         AOwaveform, status = GenGalvoWave(YStepSize, YSteps, BVG*2, obj, postclocks, Galvo_bias)
-        DOwaveform = np.ones([AOwaveform.shape[0]//2, 2],dtype = np.uint32)
+        DOwaveform = np.ones([YSteps*BVG, 2],dtype = np.uint32)
         DOwaveform[:,1] = 0
         DOwaveform=DOwaveform.flatten()
+        postDOwave = np.zeros(postclocks, dtype = np.uint32)
+        DOwaveform = np.append(DOwaveform, postDOwave)
         status = 'waveform updated'
         return np.uint32(DOwaveform), AOwaveform, status
 

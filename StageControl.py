@@ -14,7 +14,7 @@ import time
 from devices_zc300 import ZC300  # 你提供的 SDK 封装（已按调试结果修改）
 # XYZ 电机参数，更换电机需手动修改,顺序：X Y Z
 # 电机丝杠导程，单位mm
-PITCH = [4,5,10]
+PITCH = [5,4,10]
 # 电机传动比
 REDUCTION = [1,1,120]
 

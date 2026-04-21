@@ -287,14 +287,26 @@ class AODOThread(QThread):
             try:
                 self.AOtask.wait_until_done(timeout = 0.5)
             except:
-                self.AOtask.stop()
-                self.DOtask.stop()
+                try:
+                    self.AOtask.close()
+                except:
+                    pass
+                try:
+                    self.DOtask.close()
+                except:
+                    pass
 
 
     def CloseTask(self):
         if not (SIM or self.SIM):
-            self.AOtask.close()
-            self.DOtask.close()
+            try:
+                self.AOtask.close()
+            except:
+                pass
+            try:
+                self.DOtask.close()
+            except:
+                pass
         self.StagebackQueue.put(0)
 
 

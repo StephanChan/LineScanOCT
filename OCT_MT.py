@@ -142,10 +142,10 @@ class GPUThread_2(GPUThread):
             self.GPU2weaverQueue = GPU2weaverQueue
             self.log = log
             self.SIM = SIM
-            self.AMPLIFICATION = 1024#AMPLIFICATION
-            self.default_static_normalization_mean = 40.0
+            self.AMPLIFICATION = 40960#AMPLIFICATION
+            self.default_static_normalization_mean = 2048.0
             self.static_normalization_mean = self.default_static_normalization_mean
-            self.dynamic_use_first_frame_background = True
+            self.dynamic_use_first_frame_background = False
             self.ui_bridge = None
             
 # wrap Galvo&Stage control thread with queues
@@ -328,12 +328,37 @@ class GUI(MainWindow):
         render_aodo_waveform_ready(self.ui, payload)
             
     def Stop_allThreads(self):
+        self.ui.RunButton.setChecked(False)
+        self.ui.RunButton.setText('Go')
+        self.ui.PauseButton.setChecked(False)
+        self.ui.PauseButton.setText('Pause')
+
+        # Ask hardware tasks to stop before their worker thread receives exit.
+        AODOQueue.put(AODOAction('tryStopTask'))
+        AODOQueue.put(AODOAction('CloseTask'))
+
         exit_element=EXIT()
         WeaverQueue.put(exit_element)
         AODOQueue.put(exit_element)
         DnSQueue.put(exit_element)
         GPUQueue.put(exit_element)
         DQueue.put(exit_element)
+
+    def _wait_for_threads_to_finish(self, timeout_ms=5000):
+        deadline = time.time() + timeout_ms / 1000.0
+        threads = [
+            ("Weaver", self.Weaver_thread),
+            ("AODO", self.AODO_thread),
+            ("DnS", self.DnS_thread),
+            ("GPU", self.GPU_thread),
+            ("Camera", self.D_thread),
+        ]
+        unfinished = []
+        for name, thread in threads:
+            remaining_ms = max(0, int((deadline - time.time()) * 1000))
+            if not thread.wait(remaining_ms):
+                unfinished.append(name)
+        return unfinished
         
     def run_task(self):
         # RptAline and SingleAline is for checking Aline profile, we don't need to capture each Aline, only acquire and display ~30 Alines per second
@@ -588,11 +613,16 @@ class GUI(MainWindow):
         
     def closeEvent(self, event):
         print('Exiting all threads')
-        self.Stop_allThreads()
-        settings = qc.QSettings("config.ini", qc.QSettings.IniFormat)
+        self.ui.statusbar.showMessage('Closing: stopping acquisition and worker threads...')
         self.SaveSettings()
-        while not self.DnS_thread.isFinished:
+        self.Stop_allThreads()
+        unfinished = self._wait_for_threads_to_finish(timeout_ms=5000)
+        if unfinished:
+            message = "Close delayed: waiting for " + ", ".join(unfinished) + " thread(s)."
+            print(message)
+            self.ui.statusbar.showMessage(message)
             event.ignore()
+            return
         event.accept()
 
                 
