@@ -12,32 +12,118 @@ Created on Mon Dec 11 19:41:46 2023
 
 import numpy as np
 import os
+import sys
+import threading
 from HardwareSpecs import get_objective_spec
 from PyQt5.QtGui import QPixmap, QImage
 from matplotlib import pyplot as plt
 from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor
 from PyQt5.QtCore import Qt, QPointF
 
+class _LogTeeStream:
+    def __init__(self, logger, original_stream):
+        self.logger = logger
+        self.original_stream = original_stream
+
+    def write(self, text):
+        if self.original_stream is not None:
+            self.original_stream.write(text)
+        self.logger.write_stream(text)
+        return len(text)
+
+    def flush(self):
+        if self.original_stream is not None:
+            self.original_stream.flush()
+
+
 class LOG():
     def __init__(self, ui):
         super().__init__()
         import datetime
         current_time = datetime.datetime.now()
-        self.dir = os.getcwd() + '/log_files'
-        if not os.path.exists(self.dir):
-            os.makedirs(self.dir)
-        self.filePath = self.dir +  "/" + 'log_'+\
-            str(current_time.year)+'-'+\
-            str(current_time.month)+'-'+\
-            str(current_time.day)+'-'+\
-            str(current_time.hour)+'-'+\
-            str(current_time.minute)+'-'+\
-            str(current_time.second)+'.txt'
+        self.ui = ui
+        suffix = (
+            str(current_time.year)+'-'+
+            str(current_time.month)+'-'+
+            str(current_time.day)+'-'+
+            str(current_time.hour)+'-'+
+            str(current_time.minute)+'-'+
+            str(current_time.second)
+        )
+        self._suffix = suffix
+        self._lock = threading.Lock()
+        self._stdout_installed = False
+        self._stdout = None
+        self._stderr = None
+        self._suppress_next_newline = False
+        self._suppressed_stream_fragments = (
+            "waiting for camera data...",
+            "time to fetch data:",
+        )
+
+    def _current_log_dir(self):
+        base_dir = os.getcwd()
+        try:
+            candidate_dir = self.ui.DIR.toPlainText().strip()
+            if candidate_dir:
+                base_dir = candidate_dir
+        except Exception:
+            pass
+        log_dir = os.path.join(base_dir, 'log_files')
+        return log_dir
+
+    def _current_file_path(self):
+        return os.path.join(self._current_log_dir(), 'log_' + self._suffix + '.txt')
+
+    def _current_dynamic_file_path(self):
+        return os.path.join(self._current_log_dir(), 'dynamic_log_' + self._suffix + '.txt')
+
+    def _append_text(self, path, text):
+        if text is None or text == "":
+            return
+        with self._lock:
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                fp = open(path, 'a', encoding='utf-8')
+                fp.write(text)
+                fp.close()
+                return
+            except OSError:
+                fallback_dir = os.path.join(os.getcwd(), 'log_files')
+                os.makedirs(fallback_dir, exist_ok=True)
+                fallback_path = os.path.join(fallback_dir, os.path.basename(path))
+                fp = open(fallback_path, 'a', encoding='utf-8')
+                fp.write(text)
+                fp.close()
+
     def write(self, message):
-        fp = open(self.filePath, 'a')
-        fp.write(message+'\n')
-        fp.close()
-        # return 0
+        self._append_text(self._current_file_path(), str(message) + '\n')
+
+    def dynamic_write(self, message):
+        self._append_text(self._current_dynamic_file_path(), str(message) + '\n')
+
+    def write_stream(self, text):
+        if text is None:
+            return
+        text_str = str(text)
+        if self._suppress_next_newline and text_str in ("\n", "\r\n", "\r"):
+            self._suppress_next_newline = False
+            return
+        self._suppress_next_newline = False
+        for fragment in self._suppressed_stream_fragments:
+            if fragment in text_str:
+                self._suppress_next_newline = True
+                return
+        self._append_text(self._current_file_path(), text_str)
+
+    def install_stream_redirects(self):
+        if self._stdout_installed:
+            return
+        self._stdout = sys.stdout
+        self._stderr = sys.stderr
+        sys.stdout = _LogTeeStream(self, self._stdout)
+        sys.stderr = _LogTeeStream(self, self._stderr)
+        self._stdout_installed = True
 
 
 def GenGalvoWave(StepSize = 1, Steps = 1000, AVG = 1, obj = '5X', postclocks = 50, Galvo_bias = 0):
@@ -56,16 +142,18 @@ def GenGalvoWave(StepSize = 1, Steps = 1000, AVG = 1, obj = '5X', postclocks = 5
     Vmin = (-Xrange/2)/angle2mmratio/2+Galvo_bias
     # fly-back time in unit of clocks
     steps2=postclocks
-    # linear waveform
-    waveform=np.linspace(Vmin, Vmax, Steps)
+    # linear waveform: sweep from positive Y toward negative Y
+    waveform=np.linspace(Vmax, Vmin, Steps)
     # Bline average
     waveform = np.tile(waveform,(AVG,1)).transpose().flatten()
 
     # print(len(waveform))
-    # fly-back waveform
-    Postwave = (Vmax-Vmin)/2*np.cos(np.arange(0,np.pi,np.pi/steps2))+(Vmax+Vmin)/2
+    # fly-back waveform returns smoothly to the next sweep start
+    Postwave = (Vmin-Vmax)/2*np.cos(np.arange(0,np.pi,np.pi/steps2))+(Vmax+Vmin)/2
+    # add prewave to avoid galvo big jump at beginning
+    prewave = np.ones(50)*waveform[0]
     # append all waveforms together
-    waveform = np.append(waveform, Postwave)
+    waveform = np.append(np.append(prewave, waveform), Postwave)
 
     status = 'waveform updated'
     return waveform, status
@@ -87,14 +175,15 @@ def GenAODO(mode='ContinuousBline',obj = '5X',postclocks = 50, YStepSize = 1, YS
         status = 'waveform updated'
         return np.uint32(DOwaveform), AOwaveform, status
 
-    elif mode in ['FiniteCscan','ContinuousCscan', 'PlateScan','PlatePreScan', 'WellScan']:
+    elif mode in ['FiniteCscan','ContinuousCscan', 'PlateScan','PlatePreScan', 'WellScan','TimedPlateScan']:
         # generate AO waveform for Galvo control for one Bline
         AOwaveform, status = GenGalvoWave(YStepSize, YSteps, BVG*2, obj, postclocks, Galvo_bias)
         DOwaveform = np.ones([YSteps*BVG, 2],dtype = np.uint32)
         DOwaveform[:,1] = 0
         DOwaveform=DOwaveform.flatten()
         postDOwave = np.zeros(postclocks, dtype = np.uint32)
-        DOwaveform = np.append(DOwaveform, postDOwave)
+        prewave = np.zeros(50, dtype = np.uint32)
+        DOwaveform = np.append(np.append(prewave, DOwaveform), postDOwave)
         status = 'waveform updated'
         return np.uint32(DOwaveform), AOwaveform, status
 

@@ -15,18 +15,27 @@ from matplotlib import pyplot as plt
 global SIM
 # SIM=True
 try:
-    sys.path.append(os.path.join(os.environ['PF_ROOT'],'PFSDK','bin/Python'))
-    os.add_dll_directory(os.path.join(os.environ['PF_ROOT'],'PFSDK','bin'))
+    PFSDK_PYTHON_DIR = os.path.join(os.environ['PF_ROOT'],'PFSDK','bin/Python')
+    PFSDK_DLL_DIR = os.path.join(os.environ['PF_ROOT'],'PFSDK','bin')
+    sys.path.append(PFSDK_PYTHON_DIR)
+    os.add_dll_directory(PFSDK_DLL_DIR)
     if sys.version_info >= (3,8):
-        os.add_dll_directory(os.path.join(os.environ['PF_ROOT'],'DoubleRateSDK','bin'))
+        DOUBLE_RATE_DLL_DIR = os.path.join(os.environ['PF_ROOT'],'DoubleRateSDK','bin')
+        os.add_dll_directory(DOUBLE_RATE_DLL_DIR)
     import PFPyCameraLib as pf
     import colorama
     SIM = False
-except:
-    print('Camera init failed, using simulation')
+except Exception as error:
+    pf_root = os.environ.get('PF_ROOT', '<PF_ROOT not set>')
+    print(
+        "PhotonFocus SDK import failed. PF_ROOT or the SDK directories may be wrong: "
+        f"PF_ROOT={pf_root}, PFSDK Python={locals().get('PFSDK_PYTHON_DIR', '<unresolved>')}, "
+        f"PFSDK DLL={locals().get('PFSDK_DLL_DIR', '<unresolved>')}. "
+        f"Import error: {error}. Using simulation."
+    )
     SIM = True
 
-from Actions import DbackAction, DAction
+from ActionFields import DbackActionField, DActionField
 import traceback
 
 CONTINUOUS = 0x7FFFFFFF
@@ -73,7 +82,7 @@ class Camera(QThread):
             try:
                 self.item = self.queue.get(1)
             except:
-                self.item = DAction('GetTemp')
+                self.item = DActionField('GetTemp')
         if not (SIM or self.SIM):
             self.UninitBoard()
         print(self.exit_message)
@@ -339,7 +348,7 @@ class Camera(QThread):
                 BlinesCount += 1
                 # print(BlinesCount)
                 if BlinesCount % NBlines == 0:
-                    an_action = DbackAction(self.MemoryLoc)
+                    an_action = DbackActionField(self.MemoryLoc)
                     self.DatabackQueue.put(an_action)
                     self.MemoryLoc = (self.MemoryLoc+1) % self.memoryCount
                     # print('MemoryLoc:', self.MemoryLoc)
@@ -398,7 +407,7 @@ class Camera(QThread):
             # print(BlinesCount % NBlines)
             BlinesCount += 1
             if BlinesCount % NBlines == 0:
-                an_action = DbackAction(self.MemoryLoc)
+                an_action = DbackActionField(self.MemoryLoc)
                 self.DatabackQueue.put(an_action)
                 self.MemoryLoc = (self.MemoryLoc+1) % self.memoryCount
                 # print('MemoryLoc:', self.MemoryLoc)

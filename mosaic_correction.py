@@ -21,8 +21,8 @@ def mosaic_polygons_to_stage_mm(
     px_w_mm = x_step_um / 1000.0
     px_h_mm = y_step_um / 1000.0
 
-    xs_orig = [p["x"] for p in current_fov_locations]
-    ys_orig = [p["y"] for p in current_fov_locations]
+    xs_orig = [p.x for p in current_fov_locations]
+    ys_orig = [p.y for p in current_fov_locations]
     anchor_x = min(xs_orig) - (x_fov_mm / 2.0)
     anchor_y = min(ys_orig) - (source_y_length_mm / 2.0)
 
@@ -75,8 +75,8 @@ def build_mosaic_correction_overlay_source(
     px_w_mm = x_step_um / 1000.0
     px_h_mm = y_step_um / 1000.0
 
-    xs_orig = [p["x"] for p in current_fov_locations]
-    ys_orig = [p["y"] for p in current_fov_locations]
+    xs_orig = [p.x for p in current_fov_locations]
+    ys_orig = [p.y for p in current_fov_locations]
     mos_min_x = min(xs_orig) - (x_fov_mm / 2.0)
     mos_min_y = min(ys_orig) - (source_y_length_mm / 2.0)
     mos_max_x = mos_min_x + (orig_w * px_w_mm)
@@ -100,7 +100,7 @@ def build_mosaic_correction_overlay_source(
         "type": "mosaic_correction",
         "mos_img": mos_img,
         "mm_polygons": mm_polygons,
-        "fov_locations": [dict(fov) for fov in new_fov_locations],
+        "fov_locations": list(new_fov_locations),
         "px_w_mm": px_w_mm,
         "px_h_mm": px_h_mm,
         "XFOV": x_fov_mm,

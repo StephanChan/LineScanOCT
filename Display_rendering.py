@@ -28,6 +28,38 @@ def mosaic_label_render_size(label):
     return int(label_w * upscale), int(label_h * upscale)
 
 
+def dynamic_alpha(ui):
+    return ui.DynContrast.value() / 100.0 if hasattr(ui, "DynContrast") else 0.5
+
+
+def render_xz_pixmap(ui, intensity, dynamic=None):
+    ym = ui.XZmin.value()
+    yM = ui.XZmax.value()
+    use_dynamic = ui.DynCheckBox.isChecked()
+    if use_dynamic and dynamic is not None and np.size(dynamic) > 0:
+        return RGBOverlayPlot(intensity, dynamic, ym, yM, alpha=dynamic_alpha(ui))
+    return RGBImagePlot(matrix1=intensity, m=ym, M=yM)
+
+
+def set_xy_projection(ui, intensity, dynamic=None):
+    if intensity is None or getattr(ui, "mosaic_viewer", None) is None:
+        return
+    x_step_size = ui.XStepSize.value()
+    y_step_size = ui.YStepSize.value()
+    use_dynamic = ui.DynCheckBox.isChecked()
+    if use_dynamic and dynamic is not None and np.size(dynamic) > 0:
+        overlay = RGBOverlayArray(
+            intensity,
+            dynamic,
+            ui.Intmin.value(),
+            ui.Intmax.value(),
+            alpha=dynamic_alpha(ui),
+        )
+        ui.mosaic_viewer.set_image(overlay, ui.Intmin.value(), ui.Intmax.value(), x_step_size, y_step_size)
+        return
+    ui.mosaic_viewer.set_image(intensity, ui.Intmin.value(), ui.Intmax.value(), x_step_size, y_step_size)
+
+
 def display_sample_overlay(ui, overlay_images, sample_id, fov_locations_getter):
     source = overlay_images.get(sample_id)
     if source is None:
@@ -90,8 +122,8 @@ def render_usb_roi_overlay(ui, sample_id, raw_img, pixel_polygons, fov_locations
 
     painter.setPen(QPen(QColor(0, 255, 0), 2))
     for fov in fov_locations_getter(sample_id):
-        cx_px, cy_px = stage_to_usb_image(fov['x'], fov['y'], raw_img.shape[1])
-        loc_y_fov = fov.get('y_length_mm', ui.YLength.value())
+        cx_px, cy_px = stage_to_usb_image(fov.x, fov.y, raw_img.shape[1])
+        loc_y_fov = fov.y_length_mm if fov.y_length_mm is not None else ui.YLength.value()
         fov_y_px = loc_y_fov / usb_pixel_size
         tl = to_ui(cx_px - fov_y_px / 2, cy_px - fov_x_px / 2)
         br = to_ui(cx_px + fov_y_px / 2, cy_px + fov_x_px / 2)
@@ -142,11 +174,11 @@ def render_mosaic_correction_overlay(ui, source):
 
     painter.setPen(QPen(QColor(0, 255, 0), 1))
     for fov in new_fov_locations:
-        loc_y_fov = fov.get('y_length_mm', yfov)
-        tl_x = (fov['x'] - xfov / 2 - global_min_x) / px_w_mm
-        tl_y = (fov['y'] - loc_y_fov / 2 - global_min_y) / px_h_mm
-        br_x = (fov['x'] + xfov / 2 - global_min_x) / px_w_mm
-        br_y = (fov['y'] + loc_y_fov / 2 - global_min_y) / px_h_mm
+        loc_y_fov = fov.y_length_mm if fov.y_length_mm is not None else yfov
+        tl_x = (fov.x - xfov / 2 - global_min_x) / px_w_mm
+        tl_y = (fov.y - loc_y_fov / 2 - global_min_y) / px_h_mm
+        br_x = (fov.x + xfov / 2 - global_min_x) / px_w_mm
+        br_y = (fov.y + loc_y_fov / 2 - global_min_y) / px_h_mm
         painter.drawRect(QRectF(dx + tl_x * scale_w, dy + tl_y * scale_h, (br_x - tl_x) * scale_w, (br_y - tl_y) * scale_h))
 
     painter.setPen(QPen(QColor(255, 0, 0), 2))
@@ -168,11 +200,19 @@ def render_aodo_waveform_ready(ui, payload):
     do_waveform = payload.get("do_waveform", None)
     if ao_waveform is None or do_waveform is None:
         return
+    ao_waveform = np.asarray(ao_waveform, dtype=np.float32)
+    do_waveform = np.asarray(do_waveform, dtype=np.float32)
+    wave_min = float(min(np.min(ao_waveform), np.min(do_waveform)))
+    wave_max = float(max(np.max(ao_waveform), np.max(do_waveform)))
+    if wave_max <= wave_min:
+        margin = 1.0
+    else:
+        margin = 0.05 * (wave_max - wave_min)
     pixmap = LinePlot(
         ao_waveform,
         do_waveform,
-        np.min([np.min(ao_waveform), 0]),
-        np.max([np.max(ao_waveform), 1]),
+        wave_min - margin,
+        wave_max + margin,
     )
     ui.XwaveformLabel.setPixmap(pixmap)
 
@@ -192,15 +232,7 @@ def render_bline_ready(ui, payload):
     if bline is None:
         return
     dyn = payload.get("dyn", None)
-    use_dynamic = ui.DynCheckBox.isChecked()
-    dynamic_alpha = ui.DynContrast.value() / 100.0 if hasattr(ui, "DynContrast") else 0.5
-    ym = ui.XZmin.value()
-    yM = ui.XZmax.value()
-    if use_dynamic and dyn is not None and np.size(dyn) > 0:
-        pixmap = RGBOverlayPlot(bline, dyn, ym, yM, alpha=dynamic_alpha)
-    else:
-        pixmap = RGBImagePlot(matrix1=bline, m=ym, M=yM)
-    ui.XZplane.setPixmap(pixmap)
+    ui.XZplane.setPixmap(render_xz_pixmap(ui, bline, dyn))
 
 
 def render_cscan_ready(ui, payload):
@@ -208,37 +240,16 @@ def render_cscan_ready(ui, payload):
     dynb = payload.get("dynb", None)
     aip = payload.get("aip", None)
     dyn = payload.get("dyn", None)
-    use_dynamic = ui.DynCheckBox.isChecked()
-    dynamic_alpha = ui.DynContrast.value() / 100.0 if hasattr(ui, "DynContrast") else 0.5
 
     if bline is not None:
-        ym = ui.XZmin.value()
-        yM = ui.XZmax.value()
-        if use_dynamic and dynb is not None and np.size(dynb) > 0:
-            pixmap = RGBOverlayPlot(bline, dynb, ym, yM, alpha=dynamic_alpha)
-        else:
-            pixmap = RGBImagePlot(matrix1=bline, m=ym, M=yM)
-        ui.XZplane.setPixmap(pixmap)
+        ui.XZplane.setPixmap(render_xz_pixmap(ui, bline, dynb))
 
-    if aip is not None and getattr(ui, "mosaic_viewer", None) is not None:
-        x_step_size = ui.XStepSize.value()
-        y_step_size = ui.YStepSize.value()
-        if use_dynamic and dyn is not None and np.size(dyn) > 0:
-            tmp = RGBOverlayArray(aip, dyn, ui.Intmin.value(), ui.Intmax.value(), alpha=dynamic_alpha)
-            ui.mosaic_viewer.set_image(tmp, ui.Intmin.value(), ui.Intmax.value(), x_step_size, y_step_size)
-        else:
-            ui.mosaic_viewer.set_image(aip, ui.Intmin.value(), ui.Intmax.value(), x_step_size, y_step_size)
+    set_xy_projection(ui, aip, dyn)
 
 
 def render_mosaic_ready(ui, payload):
     mosaic = payload.get("mosaic", None)
     bline = payload.get("bline", None)
     if bline is not None:
-        ym = ui.XZmin.value()
-        yM = ui.XZmax.value()
-        pixmap = RGBImagePlot(matrix1=bline, m=ym, M=yM)
-        ui.XZplane.setPixmap(pixmap)
-    if mosaic is not None and getattr(ui, "mosaic_viewer", None) is not None:
-        x_step_size = ui.XStepSize.value()
-        y_step_size = ui.YStepSize.value()
-        ui.mosaic_viewer.set_image(mosaic, ui.Intmin.value(), ui.Intmax.value(), x_step_size, y_step_size)
+        ui.XZplane.setPixmap(render_xz_pixmap(ui, bline))
+    set_xy_projection(ui, mosaic)

@@ -25,28 +25,28 @@ except Exception:
 
 @dataclass(frozen=True)
 class CalibrationConfig:
-    data_path: Path = Path(r"E:\IOCTData\disperison_compensation")
-    test_path: Path = Path(r"E:\IOCTData\disperison_compensation\test")
+    data_path: Path = Path(r"E:\IOCTData\disperison_compensation\20260506")
+    test_path: Path = Path(r"E:\IOCTData\disperison_compensation\20260506")
     nk: int = 1104
-    nx: int = 1104
+    nx: int = 1264
     ny: int = 1
     highpass_smooth_span: int = 51
     phase_smooth_span: int = 21
     dphase_smooth_span: int = 11
-    phase_column_start: int = 251  # MATLAB columns 701:800
-    phase_column_stop: int = 351
+    phase_column_start: int = 101  # MATLAB columns 701:800
+    phase_column_stop: int = 1000
     file1_left_guard: int = 15
     file1_right_guard: int = 15
-    file2_left_guard: int = 25
-    file2_right_guard: int = 25
+    file2_left_guard: int = 10
+    file2_right_guard: int = 20
     interpolation_epsilon: float = 1.0e-5
     plot: bool = True
     plot_every_n_columns: int = 50
     plot_column_start: int = 1  # MATLAB column 2
-    phase_plot_column_start: int = 251  # MATLAB column 702
-    phase_plot_column_stop: int = 351
+    phase_plot_column_start: int = 101  # MATLAB column 702
+    phase_plot_column_stop: int = 1000
     run_calibration: bool = True
-    run_test: bool = True
+    run_test: bool = False
 
 
 def smooth_moving_mean(values: np.ndarray, span: int = 5, axis: int = 0) -> np.ndarray:
@@ -197,6 +197,30 @@ def plot_alines_from_spectrum(
     plot_columns(rr, title, config, xlim=(0, z_range), linewidth=linewidth)
 
 
+def plot_fft_abs_image_from_spectrum(
+    spectra: np.ndarray,
+    title: str,
+    config: CalibrationConfig,
+    *,
+    z_range: int,
+) -> np.ndarray:
+    if plt is None:
+        raise RuntimeError("matplotlib is unavailable; cannot display FFT absolute image.")
+
+    rr0 = np.fft.ifft(spectra, axis=0)
+    rr = np.abs(rr0[:z_range, :])
+
+    if config.plot:
+        plt.figure()
+        plt.imshow(rr.T, aspect="auto", cmap="gray", origin="upper")
+        plt.title(title)
+        plt.xlabel("Depth pixel")
+        plt.ylabel("A-line")
+        plt.colorbar()
+
+    return rr
+
+
 def clean_reflector_peak_complex(
     spectra: np.ndarray,
     z: int,
@@ -278,7 +302,7 @@ def phase_for_file2(data: np.ndarray, config: CalibrationConfig) -> tuple[np.nda
     rrb = np.abs(rr0[:z_range, :])
     plot_columns(rrb, "file2 raw Alines", config, xlim=(0, z_range), linewidth=2.0)
 
-    search_start = 10
+    search_start = nk//6
     z = int(np.argmax(np.mean(rrb[search_start:, :], axis=1)) + search_start)
     rr0_clean = clean_reflector_peak_complex(
         data_hp,
@@ -411,6 +435,12 @@ def apply_generated_compensation(
     peak_value = float(final_profile[peak_index])
 
     plot_columns(final_alines, f"{title_prefix} final Alines", config, xlim=(0, z_range), linewidth=2.0)
+    final_fft_abs_image = plot_fft_abs_image_from_spectrum(
+        data_compensated,
+        f"{title_prefix} FFT absolute image",
+        config,
+        z_range=z_range,
+    )
     plot_line(final_profile, f"{title_prefix} final mean profile, peak={peak_index}", config)
 
     print(f"{title_prefix}: final peak index={peak_index}, value={peak_value:.6g}")
@@ -420,6 +450,7 @@ def apply_generated_compensation(
         "interpolated": data_interp,
         "compensated": data_compensated,
         "final_alines": final_alines,
+        "final_fft_abs_image": final_fft_abs_image,
         "final_profile": final_profile,
         "peak_index": peak_index,
         "peak_value": peak_value,
@@ -530,6 +561,18 @@ def calibrate(config: CalibrationConfig = CalibrationConfig()) -> dict[str, np.n
     dat_b_dispersion = dat_b_interp * np.exp(1j * dphase1[:, np.newaxis])
     plot_alines_from_spectrum(dat_a_dispersion, "file1 Alines", config, z_range=z_range)
     plot_alines_from_spectrum(dat_b_dispersion, "file2 Alines", config, z_range=z_range)
+    file1_fft_abs_image = plot_fft_abs_image_from_spectrum(
+        dat_a_dispersion,
+        "file1 FFT absolute image",
+        config,
+        z_range=z_range,
+    )
+    file2_fft_abs_image = plot_fft_abs_image_from_spectrum(
+        dat_b_dispersion,
+        "file2 FFT absolute image",
+        config,
+        z_range=z_range,
+    )
 
     write_outputs(config.data_path, dphase, lin_phase, indices, dphase1)
 
@@ -542,6 +585,8 @@ def calibrate(config: CalibrationConfig = CalibrationConfig()) -> dict[str, np.n
         "intpIndice": indices,
         "dspPhase": dphase1,
         "file2_residual_dispersion": dphase2,
+        "file1_fft_abs_image": file1_fft_abs_image,
+        "file2_fft_abs_image": file2_fft_abs_image,
     }
 
 

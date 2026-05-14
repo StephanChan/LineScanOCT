@@ -17,10 +17,11 @@ from mosaic_scan_planner import (
     ROI_OCCUPANCY_TARGET,
     plan_mosaic_scan,
 )
+from ScanModels import FOVLocation, SampleCenter
 
 USB_PIXEL_SIZE_MM = 0.0474
 USB_X_DISPLACEMENT_MM = 16.5
-USB_Y_DISPLACEMENT_MM = 60.5
+USB_Y_DISPLACEMENT_MM = 61.5
 USB_CAMERA_INDEX = 0
 USB_FRAME_WIDTH = 3840
 USB_FRAME_HEIGHT = 2160
@@ -230,8 +231,8 @@ class UnifiedSampleScanner(QDialog):
         if self.is_finalized:
             painter.setPen(QPen(QColor(255, 255, 0), 1))
             for loc in self.generated_locations:
-                cx, cy = self.stage_to_image(loc['x'], loc['y'])
-                loc_y_fov = loc.get('y_length_mm', self.fov_h_mm)
+                cx, cy = self.stage_to_image(loc.x, loc.y)
+                loc_y_fov = loc.y_length_mm if loc.y_length_mm is not None else self.fov_h_mm
                 h_half = (self.fov_w_mm / 2) / self.pixel_size_mm
                 w_half = (loc_y_fov / 2) / self.pixel_size_mm
                 tl = to_ui((cx - w_half, cy - h_half))
@@ -314,23 +315,22 @@ class UnifiedSampleScanner(QDialog):
                 center_mode=self.center_mode,
             )
             self.sample_centers.append(
-                {
-                    'sample_id': sample_id,
-                    'x': scan_plan.center_x,
-                    'y': scan_plan.center_y,
-                    'z': self.current_zpos,
-                }
+                SampleCenter(
+                    sample_id=sample_id,
+                    x=scan_plan.center_x,
+                    y=scan_plan.center_y,
+                    z=self.current_zpos,
+                )
             )
             for loc in scan_plan.fov_locations:
                 self.generated_locations.append(
-                    {
-                        'sample_id': sample_id,
-                        'x': loc['x'],
-                        'y': loc['y'],
-                        'z': self.current_zpos,
-                        'y_length_mm': scan_plan.y_length_mm,
-                        'y_pixels': scan_plan.y_pixels,
-                    }
+                    FOVLocation(
+                        sample_id=sample_id,
+                        x=loc.x,
+                        y=loc.y,
+                        z=self.current_zpos,
+                        y_length_mm=scan_plan.y_length_mm,
+                    )
                 )
             if self.debug_scan_planner:
                 print(

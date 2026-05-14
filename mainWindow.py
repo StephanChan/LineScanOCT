@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import  QMainWindow, QFileDialog, QWidget, QVBoxLayout
 from Dialogs import  StageDialog
 import PyQt5.QtCore as qc
 import numpy as np
-from Actions import *
+from ActionFields import *
 from Generaic_functions import *
 from HardwareSpecs import camera_step_size_um, get_camera_spec, get_laser_spec, get_objective_spec
 import traceback
@@ -162,52 +162,50 @@ class MainWindow(QMainWindow):
     def LoadSettings(self, config_filepath):
         settings = qc.QSettings(config_filepath, qc.QSettings.IniFormat)
         for ii in dir(self.ui):
+            widget = getattr(self.ui, ii)
             # print(ii, type(self.ui.__getattribute__(ii)) )
             if ii == 'ACQMode':
                 pass
-            elif type(self.ui.__getattribute__(ii)) == QW.QComboBox:
+            elif isinstance(widget, QW.QComboBox):
                 try:
-                    self.ui.__getattribute__(ii).setCurrentText(settings.value(ii))
+                    widget.setCurrentText(settings.value(ii))
                 except:
                     print(ii, ' setting missing, using default...')
-            elif type(self.ui.__getattribute__(ii)) == QW.QDoubleSpinBox:
+            elif isinstance(widget, QW.QDoubleSpinBox):
                 try:
-                    self.ui.__getattribute__(ii).setValue(np.float32(settings.value(ii)))
+                    widget.setValue(np.float32(settings.value(ii)))
                 except:
                     print(ii, ' setting missing, using default...')
-            elif type(self.ui.__getattribute__(ii)) == QW.QSpinBox:
+            elif isinstance(widget, QW.QSpinBox):
                 try:
-                    self.ui.__getattribute__(ii).setValue(np.int16(settings.value(ii)))
+                    widget.setValue(np.int16(settings.value(ii)))
                 except:
                     print(ii, ' setting missing, using default...')
-            elif type(self.ui.__getattribute__(ii)) == QW.QTextEdit:
+            elif isinstance(widget, QW.QTextEdit):
                 try:
-                    self.ui.__getattribute__(ii).setText(settings.value(ii))
+                    widget.setText(settings.value(ii))
                 except:
                     print(ii, ' setting missing, using default...')
-            elif type(self.ui.__getattribute__(ii)) == QW.QLineEdit:
+            elif isinstance(widget, QW.QLineEdit):
                 try:
-                    self.ui.__getattribute__(ii).setText(settings.value(ii))
+                    widget.setText(settings.value(ii))
                 except:
                     print(ii, ' setting missing, using default...')
-            elif type(self.ui.__getattribute__(ii)) == QW.QSlider:
+            elif isinstance(widget, QW.QSlider):
                 # print(ii, int(settings.value(ii)))
                 try:
-                    self.ui.__getattribute__(ii).setValue(int(settings.value(ii)))
+                    widget.setValue(int(settings.value(ii)))
                 except:
                     print(ii, ' setting missing, using default...')
-            elif type(self.ui.__getattribute__(ii)) == QW.QScrollBar:
+            elif isinstance(widget, QW.QScrollBar):
                 try:
-                    self.ui.__getattribute__(ii).setValue(int(settings.value(ii)))
+                    widget.setValue(int(settings.value(ii)))
                 except:
                     print(ii, ' setting missing, using default...')
-            elif type(self.ui.__getattribute__(ii)) == QW.QPushButton:
-                if settings.value(ii) in ['true', 'True']:
-                    status = True
-                else:
-                    status = False
+            elif isinstance(widget, (QW.QPushButton, QW.QCheckBox)):
                 try:
-                    self.ui.__getattribute__(ii).setChecked(status)
+                    value = settings.value(ii)
+                    widget.setChecked(str(value).lower() == 'true')
                 except:
                     print(ii, ' setting missing, using default...')
 
@@ -272,23 +270,24 @@ class MainWindow(QMainWindow):
     def SaveSettings(self):
         settings = qc.QSettings("config.ini", qc.QSettings.IniFormat)
         for ii in dir(self.ui):
+            widget = getattr(self.ui, ii)
             # print(ii, type(self.ui.__getattribute__(ii)) )
-            if type(self.ui.__getattribute__(ii)) == QW.QComboBox:
-                settings.setValue(ii,self.ui.__getattribute__(ii).currentText())
-            elif type(self.ui.__getattribute__(ii)) == QW.QDoubleSpinBox:
-                settings.setValue(ii,self.ui.__getattribute__(ii).value())
-            elif type(self.ui.__getattribute__(ii)) == QW.QSpinBox:
-                settings.setValue(ii,self.ui.__getattribute__(ii).value())
-            elif type(self.ui.__getattribute__(ii)) == QW.QTextEdit:
-                settings.setValue(ii,self.ui.__getattribute__(ii).toPlainText())
-            elif type(self.ui.__getattribute__(ii)) == QW.QLineEdit:
-                settings.setValue(ii,self.ui.__getattribute__(ii).text())
-            elif type(self.ui.__getattribute__(ii)) == QW.QPushButton:
-                settings.setValue(ii,self.ui.__getattribute__(ii).isChecked())
-            elif type(self.ui.__getattribute__(ii)) == QW.QSlider:
-                settings.setValue(ii,self.ui.__getattribute__(ii).value())
-            elif type(self.ui.__getattribute__(ii)) == QW.QScrollBar:
-                settings.setValue(ii,self.ui.__getattribute__(ii).value())
+            if isinstance(widget, QW.QComboBox):
+                settings.setValue(ii, widget.currentText())
+            elif isinstance(widget, QW.QDoubleSpinBox):
+                settings.setValue(ii, widget.value())
+            elif isinstance(widget, QW.QSpinBox):
+                settings.setValue(ii, widget.value())
+            elif isinstance(widget, QW.QTextEdit):
+                settings.setValue(ii, widget.toPlainText())
+            elif isinstance(widget, QW.QLineEdit):
+                settings.setValue(ii, widget.text())
+            elif isinstance(widget, (QW.QPushButton, QW.QCheckBox)):
+                settings.setValue(ii, widget.isChecked())
+            elif isinstance(widget, QW.QSlider):
+                settings.setValue(ii, widget.value())
+            elif isinstance(widget, QW.QScrollBar):
+                settings.setValue(ii, widget.value())
                 # print(ii,self.ui.__getattribute__(ii).value())
 
     def connectActions(self):
@@ -457,7 +456,13 @@ class MainWindow(QMainWindow):
         # current_message = self.ui.statusbar.currentMessage()
         # self.ui.statusbar.showMessage(current_message+status)
         if np.any(AOwaveform):
-            pixmap = LinePlot(AOwaveform, DOwaveform, np.min(AOwaveform),np.max(AOwaveform))
+            wave_min = float(min(np.min(AOwaveform), np.min(DOwaveform)))
+            wave_max = float(max(np.max(AOwaveform), np.max(DOwaveform)))
+            if wave_max <= wave_min:
+                margin = 1.0
+            else:
+                margin = 0.05 * (wave_max - wave_min)
+            pixmap = LinePlot(AOwaveform, DOwaveform, wave_min - margin, wave_max + margin)
             # clear content on the waveformLabel
             self.ui.XwaveformLabel.clear()
             # update iamge on the waveformLabel

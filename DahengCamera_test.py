@@ -11,8 +11,15 @@ Created on Mon Jul  7 18:17:06 2025
 @author: admin
 """
 import sys
-sys.path.append(r"D:\\GalaxySDK\\Development\\Samples\\Python\\")
-import gxipy as gx 
+GALAXY_SDK_PYTHON_DIR = r"D:\\GalaxySDK\\Development\\Samples\\Python\\"
+sys.path.append(GALAXY_SDK_PYTHON_DIR)
+try:
+    import gxipy as gx
+except Exception as error:
+    raise ImportError(
+        "Daheng camera SDK import failed. The configured Galaxy SDK directory may be wrong: "
+        f"{GALAXY_SDK_PYTHON_DIR}. Import error: {error}"
+    ) from error
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt

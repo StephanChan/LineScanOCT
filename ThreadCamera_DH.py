@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Main camera control thread using Amcam SDK with PyQt GUI integration.
 Includes functionality for live preview, snap image, exposure control,
@@ -11,23 +11,27 @@ import queue
 from PyQt5.QtCore import QThread
 import numpy as np
 import traceback
-from Generaic_functions import *  # 閼奉亜鐣炬稊澶婂毐閺佷即娉﹂崥鍫礉閸欘垵鍏橀崠鍛儓閸ユ儳鍎氭径鍕倞閹存牞娴嗛幑銏℃煙濞?
+from Generaic_functions import *  # Shared plotting and waveform helpers used by the camera thread.
 import matplotlib.pyplot as plt
-from Actions import DbackAction, DAction
+from ActionFields import DbackActionField, DActionField
 import matplotlib.pyplot as plt
 global SIM
-# 鐏忔繆鐦€电厧鍙?amcam 濡€虫健閿涘苯顩ч弸婊冦亼鐠愩儱鍨潻娑樺弳娴犺法婀″Ο鈥崇础閿涘牊膩閹风喓骞嗘晶鍐跨礆
+# Fall back to simulation when the Daheng SDK cannot be imported.
 try:
     import sys
-    sys.path.append(r"D:\\GalaxySDK\\Development\\Samples\\Python\\")
+    GALAXY_SDK_PYTHON_DIR = r"D:\\GalaxySDK\\Development\\Samples\\Python\\"
+    sys.path.append(GALAXY_SDK_PYTHON_DIR)
     import gxipy as gx 
     import DahengCamera_init
     from ctypes import *
     from gxipy.gxidef import *
     from gxipy.ImageFormatConvert import *
     SIM = False
-except:
-    print('no camera driver, using simulation')
+except Exception as error:
+    print(
+        "Daheng camera SDK import failed. The configured Galaxy SDK directory may be wrong: "
+        f"{GALAXY_SDK_PYTHON_DIR}. Import error: {error}. Using simulation."
+    )
     SIM = True
 
 CONTINUOUS = 0x7FFFFFFF
@@ -77,8 +81,8 @@ def get_best_valid_bits(pixel_format):
 class PackedPixelFormatConverter(object):
     """
     Reuses ImageFormatConvert destination/valid-bits settings and a single output buffer
-    while width/height/source pixel format (and dest) stay the same 閳?avoids per-frame alloc
-    and redundant SDK configuration.
+    while width, height, source pixel format, and destination format stay the same.
+    This avoids per-frame allocation and redundant SDK configuration.
     """
     def __init__(self, image_convert_obj):
         self._image_convert = image_convert_obj
@@ -116,15 +120,15 @@ class PackedPixelFormatConverter(object):
         return self._out_buf, self._buf_size
 
 
-# 娑撹崵娴夐張铏瑰殠缁嬪琚敍宀€鎴烽幍鑳殰 QThread閿涘瞼鏁ゆ禍搴＄磽濮濄儳娴夐張鐑樻惙娴?
+# Daheng camera worker thread.
 class Camera(QThread):
     def __init__(self):
-        #鐎规矮绠烠amera缁崵娈戦崚婵嗩潗閸栨牕鍤遍弫甯礉娴犮儱寮锋稉鈧禍娑⑩偓姘辨暏閸欐﹢鍣?
+        # Initialize thread state and camera handles.
         super().__init__()
         self.MemoryLoc = 0
         self.exit_message = 'Camera thread exited.'
-        self.hcam = None       # 閻╁憡婧€閸欍儲鐒?
-        self.hcam_fr = None    # 閻╁憡婧€婢舵牠鍎撮悧鐟扮窙閸欍儲鐒?
+        self.hcam = None       # Daheng camera handle
+        self.hcam_fr = None    # Remote feature-control handle
         self.device_manager = None
         self.memory_write_method = DAHENG_MEMORY_WRITE_METHOD
 
@@ -137,9 +141,9 @@ class Camera(QThread):
             self.GetPixelDepth()
         self.QueueOut()
 
-    # 瀵倹顒炴禒璇插婢跺嫮鎮婃稉璇叉儕閻滎垽绱欓悽銊ょ艾閹笛嗩攽 UI 娑撳褰傞惃鍕嚒娴犮倧绱?
+    # Main queue dispatcher. GUI updates are sent through the UI bridge.
     def QueueOut(self):
-        self.item = self.queue.get()  # 閼惧嘲褰囧☉鍫熶紖闂冪喎鍨稉顓犳畱缁楊兛绔存稉顏冩崲閸?
+        self.item = self.queue.get()  # Wait for the next camera command.
         while self.item.action != 'exit':
             try:
                 if self.item.action == 'ConfigureBoard':
@@ -167,13 +171,13 @@ class Camera(QThread):
                 else:
                     message = f"Unknown camera command: {self.item.action}"
                     self.emit_status(message)
-                    self.log.write(message)
+                    print(message)
             except Exception as error:
                 message = "Camera command failed. This action was skipped: " + str(error)
                 self.emit_status(message)
-                self.log.write(message)
+                print(message)
                 print(traceback.format_exc())
-            self.item = self.queue.get()  # 閼惧嘲褰囨稉瀣╃娑擃亙鎹㈤崝?
+            self.item = self.queue.get()  # Wait for the next camera command.
         self.Close()
         print(self.exit_message)
         self.emit_status(self.exit_message)
@@ -183,10 +187,10 @@ class Camera(QThread):
             return
         self.ui_bridge.status_message.emit(str(message))
         
-    # 閸掓繂顫愰崠鏍ц嫙閹垫挸绱戦惇鐔风杽閻╁憡婧€
+    # Open the camera and apply persistent stream settings.
     def initCamera(self):
-        # 瀹歌弓鎱ㄩ弨鐟扮暚濮?
-        # 閸掋倖鏌囬弰顖氭儊娴ｈ法鏁ら惇鐔风杽閻╁憡婧€閵嗗倸顩ч弸婊冾嚤閸?amcam 閹存劕濮涢敍瀹慳mera_sim 娑?None閿涘奔鍞悰銊ゅ▏閻劎婀＄€圭偟鈥栨禒?
+        # Open the device manager, then open the first camera if one is present.
+        # If no hardware is available, leave self.hcam as None and let simulation handle acquisition.
         if not (SIM or self.SIM):
             self.device_manager = gx.DeviceManager()  # Open device manager
             if self.device_manager.update_all_device_list()[0] == 0:
@@ -195,7 +199,7 @@ class Camera(QThread):
             else:
                 self.hcam = self.device_manager.open_device_by_index(1)
                 try:
-                    self.hcam_fr = self.hcam.get_remote_device_feature_control() # 鏉╂柨娲栫拋鎯ь槵鐏炵偞鈧冾嚠鐠?
+                    self.hcam_fr = self.hcam.get_remote_device_feature_control()  # Remote device feature control
                     self.hcam_fr.get_enum_feature("GainAuto").set("Off")
                     self.hcam_fr.get_enum_feature("ExposureAuto").set("Off")
                     # self.hcam_fr.get_enum_feature("PixelFormat").set(self.ui.PixelFormat_DH.currentText())
@@ -204,11 +208,11 @@ class Camera(QThread):
                     # self.hcam_fr.feature_save("export_config_file.txt")
                     # self.hcam_fr.get_enum_feature("TriggerSource").set(self.ui.TriggerSource_DH.currentText())
                     
-                    self.hcam_s = self.hcam.get_stream(1).get_feature_control()  # 鏉╂柨娲栧ù浣哥潣閹冾嚠鐠?
+                    self.hcam_s = self.hcam.get_stream(1).get_feature_control()  # Stream feature control
                     self.hcam_s.get_enum_feature("StreamBufferHandlingMode").set("OldestFirst")
                     self.hcam.data_stream[0].set_acquisition_buffer_number(1000)
                 except Exception as ex:
-                    # 閹垫挸绱戞径杈Е閿涘本澧﹂崡浼存晩鐠?
+                    # Keep startup running even if optional stream tuning fails.
                     print(ex)
     
     def ConfigureBoard(self):
@@ -218,7 +222,7 @@ class Camera(QThread):
             self.BlinesPerAcq = self.ui.BlineAVG.value() 
         elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousAline','ContinuousCscan']:
             self.BlinesPerAcq = CONTINUOUS
-        elif self.ui.ACQMode.currentText() in ['FiniteCscan','PlateScan','PlatePreScan', 'WellScan']:
+        elif self.ui.ACQMode.currentText() in ['FiniteCscan','PlateScan','PlatePreScan', 'WellScan','TimedPlateScan']:
             self.BlinesPerAcq = self.ui.Ypixels.value() * self.ui.BlineAVG.value()
             
         if self.hcam is not None:
@@ -285,7 +289,7 @@ class Camera(QThread):
                     while next_block_to_emit[0] in completed_block_ids:
                         emit_block_id = next_block_to_emit[0]
                         memory_slot = (start_memory_slot + emit_block_id) % self.memoryCount
-                        self.DatabackQueue.put(DbackAction(memory_slot))
+                        self.DatabackQueue.put(DbackActionField(memory_slot))
                         with profile_lock:
                             profile["max_databack_queue"] = max(
                                 profile["max_databack_queue"],
@@ -439,18 +443,18 @@ class Camera(QThread):
             pixelformat = self.hcam_fr.get_enum_feature("PixelFormat").get()
             self.ui.PixelFormat_display_DH.setText(pixelformat[1])
 
-    # 鐠佸墽鐤嗛弴婵嗗帨閺冨爼妫块敍鍫滅矤閻ｅ矂娼伴懢宄板絿閸婄》绱?
+    # Set exposure time from the UI.
     def SetExposure(self):
         if self.hcam is not None:
             self.hcam_fr.get_float_feature("ExposureTime").set(self.ui.Exposure_DH.value()*1000.0)
             self.ui.Exposure_display_DH.setValue(self.hcam_fr.get_float_feature("ExposureTime").get()/1000.0)
         
-    # 閼惧嘲褰囬弴婵嗗帨閺冨爼妫?
+    # Read exposure time from the camera back into the UI.
     def GetExposure(self):
         if self.hcam is not None:
             self.ui.Exposure_display_DH.setValue(self.hcam_fr.get_float_feature("ExposureTime").get()/1000.0)
 
-    # 閹貉冨煑閼奉亜濮╅弴婵嗗帨瀵偓閸?
+    # Toggle auto-exposure.
     def AutoExposure(self):
         if self.hcam is not None:
             if self.ui.AutoExpo.isChecked():
@@ -464,12 +468,12 @@ class Camera(QThread):
             self.hcam_fr.get_float_feature("Gain").set(self.ui.DGain_DH.value()*1.0)
             self.ui.DGain_display_DH.setValue(self.hcam_fr.get_float_feature("Gain").get()/1.0)
         
-    # 閼惧嘲褰囬弴婵嗗帨閺冨爼妫?
+    # Read gain from the camera back into the UI.
     def GetGain(self):
         if self.hcam is not None:
            self.ui.DGain_display_DH.setValue(self.hcam_fr.get_float_feature("Gain").get()/1.0)
 
-    # 閹貉冨煑閼奉亜濮╅弴婵嗗帨瀵偓閸?
+    # Toggle auto-gain.
     def AutoGain(self):
         if self.hcam is not None:
             if self.ui.AutoGain.isChecked():
@@ -479,7 +483,7 @@ class Camera(QThread):
                 self.ui.DGain_DH.setValue(self.ui.DGain_display_DH.value())
 
     
-    # 閸忔娊妫撮惄鍛婃簚楠炲爼鍣撮弨鎹愮カ濠?
+    # Close the Daheng device.
     def Close(self):
         if self.hcam is not None:
             self.hcam.close_device()
@@ -491,7 +495,7 @@ class Camera(QThread):
         # print(self.Memory[self.MemoryLoc].shape)
         NBlines = self.Memory[0].shape[0]
         # print(NBlines)
-        #瀵偓婵鍣伴梿鍡曟崲閸?
+        # Number of frames written into the current memory slot.
         BlinesCount = 0
         self.DbackQueue.put(0)
         # print('start dbackqueue size:', self.DbackQueue.qsize())
@@ -499,9 +503,11 @@ class Camera(QThread):
             # t0=time.time()
             
             if self.ui.PixelFormat_display_DH.text() in ['Mono8']:
-                Bline = np.uint8(np.random.rand(self.ui.AlinesPerBline.value(), self.NSamples_DH)*np.random.randint(255))
+                # Bline = np.uint8(np.random.rand(self.ui.AlinesPerBline.value(), self.NSamples_DH)*np.random.randint(255))
+                Bline = np.uint8(np.zeros([self.ui.AlinesPerBline.value(), self.NSamples_DH]))
             else:
-                Bline = np.uint16(np.random.rand(self.ui.AlinesPerBline.value(), self.NSamples_DH)*np.random.randint(4096))
+                # Bline = np.uint16(np.random.rand(self.ui.AlinesPerBline.value(), self.NSamples_DH)*np.random.randint(4096))
+                Bline = np.uint16(np.zeros([self.ui.AlinesPerBline.value(), self.NSamples_DH]))
             # print('camera outputs:', Bline[0,0:20])
             # print(BlinesCount, self.BlinesPerAcq)
             self.Memory[self.MemoryLoc][BlinesCount % NBlines] = Bline
@@ -509,7 +515,7 @@ class Camera(QThread):
             # print(BlinesCount % NBlines)
             BlinesCount += 1
             if BlinesCount % NBlines == 0:
-                an_action = DbackAction(self.MemoryLoc)
+                an_action = DbackActionField(self.MemoryLoc)
                 self.DatabackQueue.put(an_action)
                 self.MemoryLoc = (self.MemoryLoc+1) % self.memoryCount
                 # print('MemoryLoc:', self.MemoryLoc)

@@ -4,10 +4,11 @@ from dataclasses import dataclass
 import numpy as np
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
+from ScanModels import FOVLocation
 
 
 ROI_OCCUPANCY_TARGET = 0.80
-FOV_OVERLAP = 0.10
+FOV_OVERLAP = 0.01
 MAX_Y_FOV_MM = 5.0
 CENTER_MODE = "bounds"  # "bounds" or "centroid"
 DEBUG_SCAN_PLANNER = False
@@ -73,7 +74,7 @@ def _clamp(value, low, high):
 def _dedupe_locations(locations):
     unique = {}
     for loc in locations:
-        key = (loc["sample_id"], round(loc["x"], 3), round(loc["y"], 3))
+        key = (loc.sample_id, round(loc.x, 3), round(loc.y, 3))
         unique[key] = loc
     return list(unique.values())
 
@@ -171,17 +172,21 @@ def plan_mosaic_scan(
                 )
             if intersects:
                 new_locations.append(
-                    {"sample_id": sample_id, "x": round(safe_x, 3), "y": round(safe_y, 3)}
+                    FOVLocation(
+                        sample_id=sample_id,
+                        x=round(safe_x, 3),
+                        y=round(safe_y, 3),
+                    )
                 )
 
     new_locations = _dedupe_locations(new_locations)
     if not new_locations:
         new_locations = [
-            {
-                "sample_id": sample_id,
-                "x": round(_clamp(center_x, x_min, x_max), 3),
-                "y": round(_clamp(center_y, y_min, y_max), 3),
-            }
+            FOVLocation(
+                sample_id=sample_id,
+                x=round(_clamp(center_x, x_min, x_max), 3),
+                y=round(_clamp(center_y, y_min, y_max), 3),
+            )
         ]
         if DEBUG_SCAN_PLANNER:
             print("Scan planner fallback: no intersecting FOV after clamping; using clamped ROI center.")

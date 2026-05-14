@@ -19,10 +19,17 @@ Created on Tue Dec 26 10:40:19 2023
 @author: admin
 """
 import sys
-sys.path.append(r"C:\\Program Files (x86)\\ART Technology\\ART-DAQ\\Samples\\Python\\LIB\\")
-import artdaq as ni
-from artdaq.constants import AcquisitionType as Atype
-from artdaq.constants import Edge, ProductCategory, RegenerationMode, Signal
+ARTDAQ_PYTHON_LIB_DIR = r"C:\\Program Files (x86)\\ART Technology\\ART-DAQ\\Samples\\Python\\LIB\\"
+sys.path.append(ARTDAQ_PYTHON_LIB_DIR)
+try:
+    import artdaq as ni
+    from artdaq.constants import AcquisitionType as Atype
+    from artdaq.constants import Edge, ProductCategory, RegenerationMode, Signal
+except Exception as error:
+    raise ImportError(
+        "ART-DAQ SDK import failed. The configured ART-DAQ Python library directory may be wrong: "
+        f"{ARTDAQ_PYTHON_LIB_DIR}. Import error: {error}"
+    ) from error
 # from nidaqmx.constants import RegenerationMode as Rmode
 # from nidaqmx.constants import Edge as Edge
 # from nidaqmx.errors import DaqWarning as warnings
