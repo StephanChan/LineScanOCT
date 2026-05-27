@@ -11,6 +11,12 @@ from Generaic_functions import RGBImagePlot, RGBOverlayArray, RGBOverlayPlot, fa
 from SampleLocator import USB_PIXEL_SIZE_MM, stage_to_usb_image
 
 
+def display_array(array):
+    if isinstance(array, np.ndarray) and array.dtype.kind == 'c':
+        return np.abs(array)
+    return array
+
+
 def mosaic_label_render_size(label):
     QApplication.processEvents()
     label_w = label.width()
@@ -33,6 +39,8 @@ def dynamic_alpha(ui):
 
 
 def render_xz_pixmap(ui, intensity, dynamic=None):
+    intensity = display_array(intensity)
+    dynamic = display_array(dynamic)
     ym = ui.XZmin.value()
     yM = ui.XZmax.value()
     use_dynamic = ui.DynCheckBox.isChecked()
@@ -44,6 +52,8 @@ def render_xz_pixmap(ui, intensity, dynamic=None):
 def set_xy_projection(ui, intensity, dynamic=None):
     if intensity is None or getattr(ui, "mosaic_viewer", None) is None:
         return
+    intensity = display_array(intensity)
+    dynamic = display_array(dynamic)
     x_step_size = ui.XStepSize.value()
     y_step_size = ui.YStepSize.value()
     use_dynamic = ui.DynCheckBox.isChecked()
@@ -221,6 +231,7 @@ def render_aline_ready(ui, payload):
     aline = payload.get("aline", None)
     if aline is None:
         return
+    aline = display_array(aline)
     ym = ui.XZmin.value()
     yM = ui.XZmax.value()
     pixmap = fastLinePlot(aline, width=ui.XZplane.width(), height=ui.XZplane.height(), m=ym, M=yM)

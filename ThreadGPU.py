@@ -13,6 +13,7 @@ import os
 import time
 import traceback
 from ActionTypes import DnSActions, EXIT_ACTION, GPUActions
+from CameraUi import effective_camera_sample_count
 from HardwareSpecs import (
     GPU_BACKGROUND_X_NORMALIZATION_EPS,
     GPU_BACKGROUND_X_NORMALIZATION_ROOT_ORDER,
@@ -302,7 +303,7 @@ class GPUThread(QThread):
         return max(1, int(self.ui.BlineAVG.value()))
 
     def current_nsamples(self):
-        return int(self.ui.NSamples_DH.value())
+        return effective_camera_sample_count(self.ui)
 
     def current_depth_start(self):
         return int(self.ui.DepthStart.value())
@@ -315,6 +316,11 @@ class GPUThread(QThread):
 
     def current_y_pixels(self):
         return max(1, int(self.ui.Ypixels.value()))
+
+    def current_fft_result_mode(self):
+        if hasattr(self.ui, "FFTresults"):
+            return self.ui.FFTresults.currentText()
+        return "AMP"
 
     def should_run_realtime_dynamic(self):
         return self.current_dynamic_enabled() and self.ui.RealtimeDynCheckBox.isChecked()
@@ -393,8 +399,10 @@ class GPUThread(QThread):
         # print('GPU receives:',self.data_CPU[0,0,0:10])
         chunk_frames = self.gpu_fft_chunk_frames(effective_frames)
         background_reference_gpu = self.determine_background_gpu(memory_slot)
-        # Allocate output with effective frame count
-        self.data_CPU = np.empty((effective_frames, shape[1], Pixel_range), dtype=np.float32)
+        # Allocate output with effective frame count. In AMP+PHASE mode, keep the
+        # complex FFT result through the device-to-host transfer.
+        output_dtype = np.complex64 if self.current_fft_result_mode() == "AMP+PHASE" else np.float32
+        self.data_CPU = np.empty((effective_frames, shape[1], Pixel_range), dtype=output_dtype)
         log_filename = self.current_log_filename()
         y_slice_index = self.item.dynamic_bline_idx if DnS_action == DnSActions.PROCESS_MOSAIC else None
         self.cudaFFT_chunked_overlapped(
@@ -419,7 +427,7 @@ class GPUThread(QThread):
             Dyn = []
         if self.should_run_realtime_dynamic():
             self.write_deviation_log_entries(
-                np.mean(self.data_CPU, axis=(1, 2)),
+                np.mean(np.abs(self.data_CPU), axis=(1, 2)),
                 "dynamic_processing_input",
                 log_filename,
                 frame_offset=0,
@@ -489,8 +497,12 @@ class GPUThread(QThread):
         else:
             self.data_CPU = np.fft.fft(self.data_CPU, axis=1) / samples
 
-        self.data_CPU = np.abs(self.data_CPU[:, pixel_start: pixel_start + pixel_range])
-        self.data_CPU = np.float32(self.data_CPU)
+        if self.current_fft_result_mode() == "AMP+PHASE":
+            self.data_CPU = self.data_CPU[:, pixel_start: pixel_start + pixel_range]
+            self.data_CPU = np.asarray(self.data_CPU, dtype=np.complex64)
+        else:
+            self.data_CPU = np.abs(self.data_CPU[:, pixel_start: pixel_start + pixel_range])
+            self.data_CPU = np.float32(self.data_CPU)
         self.data_CPU = self.data_CPU.reshape(processed_shape[0], processed_shape[1], pixel_range)
         if self.current_dynamic_enabled():
             self.apply_post_fft_dynamic_normalization_cpu(self.data_CPU)
@@ -505,7 +517,7 @@ class GPUThread(QThread):
 
         if self.should_run_realtime_dynamic():
             self.write_deviation_log_entries(
-                np.mean(self.data_CPU, axis=(1, 2)),
+                np.mean(np.abs(self.data_CPU), axis=(1, 2)),
                 "dynamic_processing_input",
                 log_filename,
                 frame_offset=0,
@@ -598,13 +610,13 @@ class GPUThread(QThread):
         return False
 
     def apply_post_fft_dynamic_normalization_cpu(self, data_cpu):
-        frame_mean = np.mean(data_cpu, axis=(1, 2), keepdims=True, dtype=np.float32)
+        frame_mean = np.mean(np.abs(data_cpu), axis=(1, 2), keepdims=True, dtype=np.float32)
         data_cpu /= frame_mean + np.float32(self.dynamic_normalization_eps)
         data_cpu *= np.float32(self.AMPLIFICATION)
         return data_cpu
 
     def apply_post_fft_dynamic_normalization_gpu(self, data_gpu):
-        frame_mean = cupy.mean(data_gpu, axis=(1, 2), keepdims=True)
+        frame_mean = cupy.mean(cupy.absolute(data_gpu), axis=(1, 2), keepdims=True)
         data_gpu /= frame_mean + cupy.float32(self.dynamic_normalization_eps)
         data_gpu *= cupy.float32(self.AMPLIFICATION)
         return data_gpu
@@ -838,7 +850,10 @@ class GPUThread(QThread):
         else:
             data_gpu = cupy.fft.fft(yp_gpu, axis=1) / samples
 
-        data_gpu = cupy.absolute(data_gpu[:, Pixel_start:Pixel_start + Pixel_range])
+        if self.current_fft_result_mode() == "AMP+PHASE":
+            data_gpu = data_gpu[:, Pixel_start:Pixel_start + Pixel_range]
+        else:
+            data_gpu = cupy.absolute(data_gpu[:, Pixel_start:Pixel_start + Pixel_range])
         data_gpu = data_gpu.reshape(output_frames, chunk_shape[1], Pixel_range)
         if self.current_dynamic_enabled():
             self.apply_post_fft_dynamic_normalization_gpu(data_gpu)
@@ -1028,7 +1043,7 @@ class GPUThread(QThread):
 
     def update_Dispersion(self):
         # get samples per Aline
-        samples = self.ui.NSamples_DH.value()# - self.ui.DelaySamples.value()
+        samples = self.current_nsamples()
         # print('GPU dispersion samples: ',samples)
 
         # self.window = np.float32(np.hanning(samples))
@@ -1042,7 +1057,7 @@ class GPUThread(QThread):
                 self.intpXp  = np.float32(np.fromfile(dispersion_path+'/intpXp.bin', dtype=np.float32))
                 if self.intpX.size != samples or self.intpXp.size != samples:
                     raise ValueError(
-                        f"Interpolation arrays do not match NSamples_DH={samples}: "
+                        f"Interpolation arrays do not match effective NSamples={samples}: "
                         f"len(intpX)={self.intpX.size}, len(intpXp)={self.intpXp.size}."
                     )
                 self.indice = self.load_interpolation_indices(dispersion_path+'/intpIndice.bin', samples)
@@ -1090,7 +1105,7 @@ class GPUThread(QThread):
 
     def update_background(self):
         # get samples per Aline
-        samples = self.ui.NSamples_DH.value()# - self.ui.DelaySamples.value()
+        samples = self.current_nsamples()
         # print('GPU dispersion samples: ',samples)
         Xpixels = self.ui.AlinesPerBline.value()
         # self.window = np.float32(np.hanning(samples))
@@ -1195,7 +1210,7 @@ class GPUThread(QThread):
     def update_FFTlength(self):
         self.length_FFT = 2
         # get samples per Aline
-        samples = self.ui.NSamples_DH.value()# - self.ui.DelaySamples.value()
+        samples = self.current_nsamples()
         # print('GPU dispersion samples: ',samples)
         while self.length_FFT < samples:
             self.length_FFT *=2
@@ -1321,6 +1336,3 @@ class GPUThread(QThread):
         cupy.mean(y_reshaped, axis=1, out=out_gpu)
 
         return out_gpu, new_frame_count
-
-
-

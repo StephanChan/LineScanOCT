@@ -15,6 +15,7 @@ import numpy as np
 from ActionFields import *
 from Generaic_functions import *
 from HardwareSpecs import camera_step_size_um, get_camera_spec, get_laser_spec, get_objective_spec
+from CameraUi import effective_camera_sample_count
 import traceback
 from InteractiveWidget import InteractiveMosaicWidget
 # try:
@@ -119,9 +120,7 @@ class MainWindow(QMainWindow):
         # self.Update_laser()
         # self.update_galvoXwaveform()
         # self.update_Mosaic()
-        self.ui.DepthStartBar.setMaximum(self.ui.NSamples_DH.value())
-        # self.ui.DepthStartBar.setValue(self.ui.NSamples_DH.value())
-        self.ui.DepthEndBar.setMaximum(self.ui.NSamples_DH.value())
+        self.update_depth_bar_limits()
         # self.ui.DepthEndBar.setValue(0)
         self.Adjust_Bline_Height()
         self.connectActions()
@@ -264,8 +263,27 @@ class MainWindow(QMainWindow):
         self.ui.GalvoBias.setValue(self.ui.Yoffsetlength.value()/angle2mmratio)
 
     def Adjust_Bline_Height(self):
-        self.ui.DepthStart.setValue(self.ui.NSamples_DH.value() - self.ui.DepthStartBar.value())
+        try:
+            samples = effective_camera_sample_count(self.ui)
+        except ValueError as error:
+            self.ui.statusbar.showMessage(str(error))
+            return
+        self.ui.DepthStart.setValue(samples - self.ui.DepthStartBar.value())
         self.ui.DepthRange.setValue(np.max([self.ui.DepthStartBar.value() - self.ui.DepthEndBar.value(),1]))
+
+    def update_depth_bar_limits(self):
+        try:
+            samples = effective_camera_sample_count(self.ui)
+        except ValueError as error:
+            self.ui.statusbar.showMessage(str(error))
+            return
+        self.ui.DepthStartBar.setMaximum(samples)
+        self.ui.DepthEndBar.setMaximum(samples)
+        if self.ui.DepthStartBar.value() > samples:
+            self.ui.DepthStartBar.setValue(samples)
+        if self.ui.DepthEndBar.value() > samples:
+            self.ui.DepthEndBar.setValue(samples)
+        self.Adjust_Bline_Height()
 
     def SaveSettings(self):
         settings = qc.QSettings("config.ini", qc.QSettings.IniFormat)
@@ -294,6 +312,7 @@ class MainWindow(QMainWindow):
         self.ui.Objective.currentTextChanged.connect(self.Calculate_CameraWidth_settings)
         self.ui.Objective.currentTextChanged.connect(self.Calculate_Galvo_settings)
         self.ui.Camera.currentTextChanged.connect(self.Calculate_CameraWidth_settings)
+        self.ui.Camera.currentTextChanged.connect(self.update_depth_bar_limits)
 
         self.ui.XLength.valueChanged.connect(self.Calculate_CameraWidth_settings)
         self.ui.Xoffsetlength.valueChanged.connect(self.Calculate_CameraWidth_settings)
@@ -303,6 +322,10 @@ class MainWindow(QMainWindow):
         self.ui.BlineAVG.valueChanged.connect(self.Calculate_Galvo_settings)
         self.ui.DepthStartBar.valueChanged.connect(self.Adjust_Bline_Height)
         self.ui.DepthEndBar.valueChanged.connect(self.Adjust_Bline_Height)
+        self.ui.NSamples_DH.valueChanged.connect(self.update_depth_bar_limits)
+        self.ui.NSamples_PF.valueChanged.connect(self.update_depth_bar_limits)
+        self.ui.SpectralDS_DH.valueChanged.connect(self.update_depth_bar_limits)
+        self.ui.SpectralDS_PF.valueChanged.connect(self.update_depth_bar_limits)
 
         # self.ui.Objective.currentTextChanged.connect(self.update_galvoXwaveform)
         # self.ui.PreClock.valueChanged.connect(self.update_galvoXwaveform)

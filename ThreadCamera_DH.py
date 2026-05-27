@@ -14,6 +14,12 @@ import traceback
 from Generaic_functions import *  # Shared plotting and waveform helpers used by the camera thread.
 import matplotlib.pyplot as plt
 from ActionFields import DbackActionField, DActionField
+from CameraUi import (
+    downsample_spectral_axis,
+    effective_camera_sample_count,
+    raw_camera_sample_count,
+    spectral_downsample,
+)
 import matplotlib.pyplot as plt
 global SIM
 # Fall back to simulation when the Daheng SDK cannot be imported.
@@ -36,6 +42,7 @@ except Exception as error:
 
 CONTINUOUS = 0x7FFFFFFF
 DAHENG_MEMORY_WRITE_METHOD = "assign_transpose"
+DAHENG_PRINT_CAMERA_CONFIG = False
 # Packed conversion and transpose-write are the long pole for long dynamic scans.
 # Increase this cautiously: block completion is still emitted in frame order below.
 DAHENG_CONSUMER_WORKERS = 4
@@ -217,7 +224,9 @@ class Camera(QThread):
     
     def ConfigureBoard(self):
         self.AlinesPerBline = self.ui.AlinesPerBline.value()
-        self.NSamples_DH = self.ui.NSamples_DH.value()
+        self.NSamples_DH = raw_camera_sample_count(self.ui)
+        self.SpectralDS = spectral_downsample(self.ui)
+        self.ProcessedSamples = effective_camera_sample_count(self.ui)
         if self.ui.ACQMode.currentText() in ['FiniteBline', 'FiniteAline']:
             self.BlinesPerAcq = self.ui.BlineAVG.value() 
         elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousAline','ContinuousCscan']:
@@ -238,7 +247,49 @@ class Camera(QThread):
             self.hcam_fr.get_int_feature("Width").set(self.AlinesPerBline )
             self.hcam_fr.get_int_feature("OffsetY").set(self.ui.offsetW_DH.value())
             self.hcam_fr.get_int_feature("OffsetX").set(self.ui.offsetH.value())
+        if DAHENG_PRINT_CAMERA_CONFIG:
+            self.print_configuration_readback()
         # self.DbackQueue.put(0)
+
+    def print_configuration_readback(self):
+        print("Daheng camera configuration:")
+        print("  Camera selection: %s" % self.ui.Camera.currentText())
+        print("  ROI raw camera Height/NSamples_DH: %d" % int(self.NSamples_DH))
+        print("  ROI raw camera Width/AlinesPerBline: %d" % int(self.AlinesPerBline))
+        print("  SpectralDS: %d" % int(self.SpectralDS))
+        print("  Processed samples in memory: %d" % int(self.ProcessedSamples))
+        print("  OffsetY/offsetW_DH: %d" % int(self.ui.offsetW_DH.value()))
+        print("  OffsetX/offsetH: %d" % int(self.ui.offsetH.value()))
+        print("  PixelFormat_DH: %s" % self.ui.PixelFormat_DH.currentText())
+        print("  PixelFormat_display_DH: %s" % self.ui.PixelFormat_display_DH.text())
+        print("  TriggerMode UI: %s" % self.ui.TriggerON_DH.currentText())
+        print("  TriggerSource UI: %s" % self.ui.TriggerSource_DH.currentText())
+        print("  TriggerActivation UI: %s" % self.ui.TriggerActivation_DH.currentText())
+        print("  TriggerDelay_DH UI ms: %.6g" % float(self.ui.TriggerDelay_DH.value()))
+        print("  ACQMode: %s" % self.ui.ACQMode.currentText())
+        print("  BlinesPerAcq: %s" % str(self.BlinesPerAcq))
+        try:
+            print("  Memory[0].shape: %s dtype=%s" % (str(self.Memory[0].shape), self.Memory[0].dtype))
+        except Exception as error:
+            print("  Memory[0].shape: unavailable (%s)" % error)
+        if self.hcam is not None:
+            for name in ("Width", "Height", "OffsetX", "OffsetY"):
+                try:
+                    feature = self.hcam_fr.get_int_feature(name).get()
+                    print("  Camera %s readback: %s" % (name, str(feature)))
+                except Exception as error:
+                    print("  Camera %s readback unavailable: %s" % (name, error))
+            for name in ("TriggerMode", "TriggerSource", "TriggerActivation"):
+                try:
+                    feature = self.hcam_fr.get_enum_feature(name).get()
+                    print("  Camera %s readback: %s" % (name, str(feature)))
+                except Exception as error:
+                    print("  Camera %s readback unavailable: %s" % (name, error))
+            try:
+                feature = self.hcam_fr.get_float_feature("TriggerDelay").get()
+                print("  Camera TriggerDelay readback: %s" % str(feature))
+            except Exception as error:
+                print("  Camera TriggerDelay readback unavailable: %s" % error)
             
     def Acquire(self):
         NBlines = self.Memory[0].shape[0]
@@ -320,7 +371,7 @@ class Camera(QThread):
                             print("camera time out...")
                             increment_profile("timeouts")
                             Bline = np.zeros(
-                                [self.NSamples_DH, self.AlinesPerBline],
+                                [self.ProcessedSamples, self.AlinesPerBline],
                                 dtype=self.Memory[memory_slot].dtype,
                             )
                         else:
@@ -338,6 +389,7 @@ class Camera(QThread):
                                 t_view = time.perf_counter()
                                 Bline = buf.get_numpy_array()
                                 add_profile("numpy_view", time.perf_counter() - t_view)
+                            Bline = downsample_spectral_axis(Bline, self.SpectralDS, axis=0)
 
                         t_write = time.perf_counter()
                         self.write_bline_to_memory(Bline, memory_slot, frame_index)
@@ -503,11 +555,9 @@ class Camera(QThread):
             # t0=time.time()
             
             if self.ui.PixelFormat_display_DH.text() in ['Mono8']:
-                # Bline = np.uint8(np.random.rand(self.ui.AlinesPerBline.value(), self.NSamples_DH)*np.random.randint(255))
-                Bline = np.uint8(np.zeros([self.ui.AlinesPerBline.value(), self.NSamples_DH]))
+                Bline = np.uint8(np.zeros([self.ui.AlinesPerBline.value(), effective_camera_sample_count(self.ui)]))
             else:
-                # Bline = np.uint16(np.random.rand(self.ui.AlinesPerBline.value(), self.NSamples_DH)*np.random.randint(4096))
-                Bline = np.uint16(np.zeros([self.ui.AlinesPerBline.value(), self.NSamples_DH]))
+                Bline = np.uint16(np.zeros([self.ui.AlinesPerBline.value(), effective_camera_sample_count(self.ui)]))
             # print('camera outputs:', Bline[0,0:20])
             # print(BlinesCount, self.BlinesPerAcq)
             self.Memory[self.MemoryLoc][BlinesCount % NBlines] = Bline

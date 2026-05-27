@@ -46,6 +46,7 @@ from DynamicPostprocessing import (
     update_timer_readout,
     write_stitched_idle_outputs,
 )
+from CameraUi import effective_camera_sample_count, camera_pixel_format
 from ScanSession import (
     load_session_data,
     populate_sample_selector,
@@ -298,7 +299,7 @@ class WeaverThread(QThread):
         return max(1, int(self.ui.AlinesPerBline.value()))
 
     def current_nsamples(self):
-        return int(self.ui.NSamples_DH.value())
+        return effective_camera_sample_count(self.ui)
 
     def current_depth_range(self):
         return int(self.ui.DepthRange.value())
@@ -489,7 +490,7 @@ class WeaverThread(QThread):
         configured_dynamic = self.current_dynamic_enabled()
         configured_acq_mode = self.current_acq_mode()
         # print(self.ui.PixelFormat_display.text())
-        if self.ui.PixelFormat_display_DH.text() in ['Mono8']:
+        if camera_pixel_format(self.ui) in ['Mono8']:
             data_type =  np.uint8
         else:
             data_type =  np.uint16
@@ -664,44 +665,44 @@ class WeaverThread(QThread):
                 memory_slot = an_action.memory_slot
                 # print(memory_slot)
                 data_backs += 1
-                if memory_slot < self.ui.DisplayRatio.value():
-                    ######################################### display data
-                    if fft_device in ['None']:
-                        filename_bundle = self.build_filename_bundle(DnS_action, acq_mode, memory_slot, raw=True)
-                        # put raw spectrum data into memory for dipersion compensation and background subtraction usage
-                        self.data = self.Memory[memory_slot].copy()
-                        # In None mode, directly do display and save
-                        if np.sum(self.data)<10:
-                            message = "No usable spectral data received."
-                            print(message)
-                        else:
-                            an_action = DnSActionField(
-                                DnS_action,
-                                acq_mode=acq_mode,
-                                data=self.data,
-                                raw=True,
-                                filename_bundle=filename_bundle,
-                                skip_save=False,
-                            )
-                            self.DnSQueue.put(an_action)
-                            message = f"{DnS_action} completed."
+                
+                ######################################### display data
+                if fft_device in ['None']:
+                    filename_bundle = self.build_filename_bundle(DnS_action, acq_mode, memory_slot, raw=True)
+                    # put raw spectrum data into memory for dipersion compensation and background subtraction usage
+                    self.data = self.Memory[memory_slot].copy()
+                    # In None mode, directly do display and save
+                    if np.sum(self.data)<10:
+                        message = "No usable spectral data received."
+                        print(message)
                     else:
-                        # In other modes, do FFT first
-                        if self.GPUQueue.qsize() == 0:
-                            filename_bundle = self.build_filename_bundle(DnS_action, acq_mode, memory_slot, raw=False)
-                            an_action = GPUActionField(
-                                fft_device,
-                                DnS_action=DnS_action,
-                                acq_mode=acq_mode,
-                                memory_slot=memory_slot,
-                                filename_bundle=filename_bundle,
-                                skip_save=False,
-                            )
-                            self.GPUQueue.put(an_action)
-                        else:
-                            skipped_fft_actions += 1
+                        an_action = DnSActionField(
+                            DnS_action,
+                            acq_mode=acq_mode,
+                            data=self.data,
+                            raw=True,
+                            filename_bundle=filename_bundle,
+                            skip_save=False,
+                        )
+                        self.DnSQueue.put(an_action)
                         message = f"{DnS_action} completed."
-                    ######################################## check if Pause or Stop button is clicked
+                else:
+                    # In other modes, do FFT first
+                    if self.GPUQueue.qsize() == 0:
+                        filename_bundle = self.build_filename_bundle(DnS_action, acq_mode, memory_slot, raw=False)
+                        an_action = GPUActionField(
+                            fft_device,
+                            DnS_action=DnS_action,
+                            acq_mode=acq_mode,
+                            memory_slot=memory_slot,
+                            filename_bundle=filename_bundle,
+                            skip_save=False,
+                        )
+                        self.GPUQueue.put(an_action)
+                    else:
+                        skipped_fft_actions += 1
+                    message = f"{DnS_action} completed."
+                ######################################## check if Pause or Stop button is clicked
             except:
                 pass
                 # print('camera stopped')
@@ -1403,7 +1404,7 @@ class WeaverThread(QThread):
         #######################################################################
         Xpixels = self.ui.AlinesPerBline.value()
         Yrpt = self.ui.BlineAVG.value()
-        BLINE = self.data.reshape([Yrpt, Xpixels, self.ui.NSamples_DH.value()])
+        BLINE = self.data.reshape([Yrpt, Xpixels, self.current_nsamples()])
         
         background = np.float32(np.mean(BLINE,0))
         # plt.figure()

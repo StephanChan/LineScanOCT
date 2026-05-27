@@ -202,6 +202,22 @@ class DnSThread(QThread):
         for ii in range(frame_count):
             self.write_tiff_frame(filename, stack[ii], append_if_exists=True)
 
+    @staticmethod
+    def display_data(data):
+        if isinstance(data, np.ndarray) and data.dtype.kind == 'c':
+            return np.abs(data)
+        return data
+
+    @staticmethod
+    def save_data(data):
+        if not (isinstance(data, np.ndarray) and data.dtype.kind == 'c'):
+            return data
+        z_pixels = data.shape[-1]
+        interleaved = np.empty(data.shape[:-1] + (z_pixels * 2,), dtype=np.float32)
+        interleaved[..., :z_pixels] = np.abs(data).astype(np.float32, copy=False)
+        interleaved[..., z_pixels:] = np.angle(data).astype(np.float32, copy=False)
+        return interleaved
+
     def reset_tiff_output(self, filename):
         path = Path(filename)
         try:
@@ -288,14 +304,15 @@ class DnSThread(QThread):
         self.display_actions = 0
         
     def Process_aline(self, data, raw = False, acq_mode=None, gpu_avg_count=1):
-        shape = data_shape(self.ui, data, raw, acq_mode, gpu_avg_count)
+        display_data = self.display_data(data)
+        shape = data_shape(self.ui, display_data, raw, acq_mode, gpu_avg_count)
         Zpixels = shape.z_pixels
         Xpixels = shape.x_pixels
         # Bline averaging
-        if data.shape[0] > 1:
-            Ascan = np.mean(data,0)
+        if display_data.shape[0] > 1:
+            Ascan = np.mean(display_data,0)
         else:
-            Ascan = data[0]
+            Ascan = display_data[0]
         # Aline averaging if needed
         aline_avg = self.current_aline_avg()
         if aline_avg > 1:
@@ -309,16 +326,17 @@ class DnSThread(QThread):
             
     
     def Process_bline(self, data, raw = False, dynamic = [], acq_mode=None, gpu_avg_count=1):
-        shape = data_shape(self.ui, data, raw, acq_mode, gpu_avg_count)
+        display_data = self.display_data(data)
+        shape = data_shape(self.ui, display_data, raw, acq_mode, gpu_avg_count)
         Zpixels = shape.z_pixels
         Xpixels = shape.x_pixels
         if self.current_dynamic_enabled() or raw:
-            if data.shape[0] > 1:
-                Bline=np.mean(data,0)
+            if display_data.shape[0] > 1:
+                Bline=np.mean(display_data,0)
             else:
-                Bline = data[0]
+                Bline = display_data[0]
         else:
-            Bline = data[0]
+            Bline = display_data[0]
         # Aline averaging if needed
         aline_avg = self.current_aline_avg()
         if aline_avg > 1:
@@ -339,16 +357,17 @@ class DnSThread(QThread):
             
     def Process_Cscan_Dynamic(self, data, dynamic=[], acq_mode=None, gpu_avg_count=1):
         # print(dynamic.shape)
-        shape = data_shape(self.ui, data, False, acq_mode, gpu_avg_count)
+        display_data = self.display_data(data)
+        shape = data_shape(self.ui, display_data, False, acq_mode, gpu_avg_count)
         Zpixels = shape.z_pixels
         Xpixels = shape.x_pixels
         Ypixels = self.current_y_pixels()
         dynamic_bline_idx = int(self.item.dynamic_bline_idx or 0)
         # Bline averaging
-        if data.shape[0] > 1:
-            Bline=np.mean(data,0)
+        if display_data.shape[0] > 1:
+            Bline=np.mean(display_data,0)
         else:
-            Bline = data[0]
+            Bline = display_data[0]
         # Aline averaging if needed
         aline_avg = self.current_aline_avg()
         if aline_avg > 1:
@@ -381,7 +400,8 @@ class DnSThread(QThread):
         
         
     def Process_Cscan(self, data, raw = False, acq_mode=None, gpu_avg_count=1):
-        shape = data_shape(self.ui, data, raw, acq_mode, gpu_avg_count)
+        display_data = self.display_data(data)
+        shape = data_shape(self.ui, display_data, raw, acq_mode, gpu_avg_count)
         Zpixels = shape.z_pixels
         Xpixels = shape.x_pixels
         Ypixels = shape.y_pixels
@@ -389,10 +409,10 @@ class DnSThread(QThread):
         bline_avg = self.current_bline_avg()
         if raw and bline_avg > 1:
             # reshape into Ypixels x Xpixels x Zpixels
-            Cscan = data.reshape([Ypixels, bline_avg, Xpixels,Zpixels])
+            Cscan = display_data.reshape([Ypixels, bline_avg, Xpixels,Zpixels])
             Cscan=np.mean(Cscan,1)
         else:
-            Cscan = data.copy()
+            Cscan = display_data.copy()
         # Aline averaging if needed
         aline_avg = self.current_aline_avg()
         if aline_avg > 1:
@@ -409,16 +429,17 @@ class DnSThread(QThread):
             self.Save(data=data, raw=raw, acq_mode=acq_mode, gpu_avg_count=gpu_avg_count)
 
     def Process_Cscan_RealtimeDynamic(self, data, dynamic=[], acq_mode=None, gpu_avg_count=1):
-        shape = data_shape(self.ui, data, False, acq_mode, gpu_avg_count)
+        display_data = self.display_data(data)
+        shape = data_shape(self.ui, display_data, False, acq_mode, gpu_avg_count)
         zpixels = shape.z_pixels
         xpixels = shape.x_pixels
         ypixels = self.current_y_pixels()
         dynamic_bline_idx = int(self.item.dynamic_bline_idx or 0)
 
-        if data.shape[0] > 1:
-            bline = np.mean(data, 0)
+        if display_data.shape[0] > 1:
+            bline = np.mean(display_data, 0)
         else:
-            bline = data[0]
+            bline = display_data[0]
 
         dyn_slice = np.asarray(dynamic, dtype=np.float32)
         aline_avg = self.current_aline_avg()
@@ -546,16 +567,17 @@ class DnSThread(QThread):
         # 5. Update UI
 
     def Process_Mosaic_RealtimeDynamic(self, data, dynamic, acq_mode=None, gpu_avg_count=1):
-        shape = data_shape(self.ui, data, False, acq_mode, gpu_avg_count)
+        display_data = self.display_data(data)
+        shape = data_shape(self.ui, display_data, False, acq_mode, gpu_avg_count)
         Zpixels = shape.z_pixels
         Xpixels = shape.x_pixels
         Ypixels = int(self.mosaic_y_pixels or self.current_y_pixels())
         dynamic_bline_idx = int(self.item.dynamic_bline_idx or 0)
 
-        if data.shape[0] > 1:
-            Bline = np.mean(data, 0)
+        if display_data.shape[0] > 1:
+            Bline = np.mean(display_data, 0)
         else:
-            Bline = data[0]
+            Bline = display_data[0]
 
         DynSlice = np.asarray(dynamic, dtype=np.float32)
         aline_avg = self.current_aline_avg()
@@ -634,6 +656,7 @@ class DnSThread(QThread):
         if getattr(self.item, "skip_save", False):
             return
         shape = data_shape(self.ui, data, raw, acq_mode, gpu_avg_count)
+        data_to_save = self.save_data(data)
         Zpixels = shape.z_pixels
         Xpixels = shape.x_pixels
         Yrpt = shape.repeat_count
@@ -643,7 +666,7 @@ class DnSThread(QThread):
             filename = bundle.get("filename")
             if not filename:
                 raise RuntimeError("Missing aline filename bundle.")
-            self.write_stack_tiff(filename, data, Yrpt)
+            self.write_stack_tiff(filename, data_to_save, Yrpt)
                 
         elif acq_mode in BLINE_MODES:
             filename = bundle.get("filename")
@@ -652,7 +675,7 @@ class DnSThread(QThread):
                 raise RuntimeError("Missing bline filename bundle.")
             if dyn_filename is not None and np.size(dynamic) > 0:
                 self.write_tiff_frame(dyn_filename, dynamic, append_if_exists=False)
-            self.write_stack_tiff(filename, data, Yrpt)
+            self.write_stack_tiff(filename, data_to_save, Yrpt)
                 
         elif acq_mode in CSCAN_MODES:
             if self.current_dynamic_enabled():
@@ -662,25 +685,25 @@ class DnSThread(QThread):
                 dyn_filename = bundle.get("dynamic_filename")
                 if not bline_filename or not dyn_filename:
                     raise RuntimeError("Missing cscan dynamic filename bundle.")
-                self.write_stack_tiff(bline_filename, data, Yrpt)
+                self.write_stack_tiff(bline_filename, data_to_save, Yrpt)
                 if np.size(dynamic) > 0:
                     self.write_tiff_frame(dyn_filename, dynamic, append_if_exists=True)
             else:
                 filename = bundle.get("filename")
                 if not filename:
                     raise RuntimeError("Missing cscan filename bundle.")
-                self.write_stack_tiff(filename, data, Ypixels)
+                self.write_stack_tiff(filename, data_to_save, Ypixels)
         elif acq_mode in MOSAIC_DISPLAY_MODES:
             if self.current_dynamic_enabled():
                 filename = bundle.get("filename")
                 if not filename:
                     raise RuntimeError("Missing mosaic dynamic filename bundle.")
-                self.write_stack_tiff(filename, data, Yrpt)
+                self.write_stack_tiff(filename, data_to_save, Yrpt)
             else:
                 filename = bundle.get("filename")
                 if not filename:
                     raise RuntimeError("Missing mosaic filename bundle.")
-                self.write_stack_tiff(filename, data, Ypixels)
+                self.write_stack_tiff(filename, data_to_save, Ypixels)
 
     def WriteData(self, data, filename):
         filePath = self.ui.DIR.toPlainText()

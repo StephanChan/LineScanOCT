@@ -21,7 +21,6 @@ class CameraSpec:
     name: str
     pixel_size_um: float
     max_height_px: int
-    frame_rate_multiplier: float = 2.0
 
 
 @dataclass(frozen=True)

@@ -253,9 +253,9 @@ class AODOThread(QThread):
             camera_name = self.ui.Camera.currentText()
             camera = get_camera_spec(camera_name)
             if camera_name == 'Daheng' and camera is not None:
-                frameRate = self.ui.FrameRate_DH.value() * camera.frame_rate_multiplier
+                frameRate = self.ui.FrameRate_DH.value() * 2
             elif camera_name == 'PhotonFocus' and camera is not None:
-                frameRate = self.ui.FrameRate.value() * camera.frame_rate_multiplier
+                frameRate = self.ui.FrameRate_PF.value() * 2
             else:
                 frameRate = AODO_DEFAULT_FRAME_RATE
             ######################################################################################

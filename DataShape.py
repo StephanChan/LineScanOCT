@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from ActionTypes import AcqTypes
+from CameraUi import effective_camera_sample_count
 
 
 CSCAN_MODES = (
@@ -29,7 +30,7 @@ def depth_pixels(ui, data=None, raw=False):
     if data is not None and getattr(data, "ndim", 0) >= 3:
         return int(data.shape[2])
     if raw:
-        return int(ui.NSamples_DH.value())
+        return effective_camera_sample_count(ui)
     return int(ui.DepthRange.value())
 
 
