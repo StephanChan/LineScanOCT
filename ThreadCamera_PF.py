@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sat Aug  9 15:32:10 2025
-
-@author: shuaibin
+PhotonFocus camera control thread.
+Keeps the same shared-memory contract as the Daheng camera thread while using
+the PhotonFocus SDK-specific grab path.
 """
 
 from PyQt5.QtCore import  QThread
 import time
+import threading
+import queue
 import ctypes
 import os, sys
 import numpy as np
@@ -46,30 +48,33 @@ import traceback
 
 CONTINUOUS = 0x7FFFFFFF
 PHOTONFOCUS_PRINT_CAMERA_CONFIG = False
+PHOTONFOCUS_CONSUMER_WORKERS = 4
 
 class Camera(QThread):
     def __init__(self):
         super().__init__()
         self.MemoryLoc = 0
-        self.exit_message = 'Digitizer thread exited.'
+        self.exit_message = 'Camera thread exited.'
+        self.SIM = False
+        self._memory_write_mode = None
+        self._spectral_axis_mode = None
 
     def run(self):
-        if not SIM:
+        if not (SIM or self.SIM):
+            print('initializing camera...')
             self.InitBoard()
-            # self.ConfigureBoard()
             self.GetTemp()
         self.QueueOut()
         
     def QueueOut(self):
         self.item = self.queue.get(1)
-        # start = time.time()
         while self.item.action != 'exit':
             try:
                 if self.item.action == 'ConfigureBoard':
                     self.ConfigureBoard()
                 elif self.item.action == 'Acquire':
                     if not (SIM or self.SIM):
-                        self.Acquire()
+                        self.Acquire_producer_consumer()
                     else:
                         self.simData()         
                 elif self.item.action == 'UninitBoard':
@@ -79,13 +84,14 @@ class Camera(QThread):
                 elif self.item.action == 'GetTemp':
                     self.GetTemp()
                 else:
-                    self.emit_status(f"Unknown digitizer command: {self.item.action}")
+                    message = f"Unknown camera command: {self.item.action}"
+                    self.emit_status(message)
+                    print(message)
             except Exception as error:
-                self.emit_status("Digitizer command failed. This action was skipped.")
+                message = "Camera command failed. This action was skipped: " + str(error)
+                self.emit_status(message)
+                print(message)
                 print(traceback.format_exc())
-            # message = 'DIGITIZER spent: '+ str(round(time.time()-start,3))+'s'
-            # print(message)
-            # self.log.write(message)
             try:
                 self.item = self.queue.get(1)
             except:
@@ -93,6 +99,7 @@ class Camera(QThread):
         if not (SIM or self.SIM):
             self.UninitBoard()
         print(self.exit_message)
+        self.emit_status(self.exit_message)
 
     def emit_status(self, message):
         if message is None:
@@ -159,7 +166,7 @@ class Camera(QThread):
                     self.ExitWithErrorPrompt(["Could not connect to the selected camera", pfResult])
                     print('Camera init failed, using simulation')
                     self.SIM = True
-                print('camera init success')
+                print('PhotonFocus camera init success')
                 # return copy_cam_info
                 # self.log.write(message)
         
@@ -172,7 +179,7 @@ class Camera(QThread):
             self.BlinesPerAcq = self.ui.BlineAVG.value() 
         elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousAline','ContinuousCscan']:
             self.BlinesPerAcq = CONTINUOUS
-        elif self.ui.ACQMode.currentText() in ['FiniteCscan']:
+        elif self.ui.ACQMode.currentText() in ['FiniteCscan','PlateScan','PlatePreScan', 'WellScan','TimedPlateScan']:
             self.BlinesPerAcq = self.ui.Ypixels.value() * self.ui.BlineAVG.value()
         if not (SIM or self.SIM):
             # get all camera features
@@ -183,7 +190,7 @@ class Camera(QThread):
             #     print(elem.Name)
             # print('\r')
             
-            if self.ui.ACQMode.currentText() in ['FiniteBline', 'FiniteAline','FiniteCscan']:
+            if self.ui.ACQMode.currentText() in ['FiniteBline', 'FiniteAline','FiniteCscan','PlateScan','PlatePreScan', 'WellScan','TimedPlateScan']:
                 pfResult = self.pfCam.SetFeatureEnum("AcquisitionMode", "MultiFrame")
                 if pfResult != pf.Error.NONE:
                     self.ExitWithErrorPrompt("Could not set acquisitionMode", pfResult)
@@ -358,8 +365,8 @@ class Camera(QThread):
         if pfResult != pf.Error.NONE:
             self.ExitWithErrorPrompt("Could not start grab process", pfResult)
 
-        
-        
+        self._memory_write_mode = None
+        self._spectral_axis_mode = None
         pfBuffer = 0
         pfImage = pf.PFImage()
         
@@ -389,8 +396,8 @@ class Camera(QThread):
                 # print(Bline[0:10,0:5])
 
                 t3=time.time()
-                Bline = downsample_spectral_axis(Bline, self.SpectralDS, axis=1)
-                self.Memory[self.MemoryLoc][BlinesCount % NBlines] = Bline
+                Bline = self.prepare_bline(Bline)
+                self.write_bline_to_memory(Bline, self.MemoryLoc, BlinesCount % NBlines)
                 t4=time.time()
                 # fig = plt.figure()
                 # plt.imshow(imageData)
@@ -431,6 +438,209 @@ class Camera(QThread):
             
             
     
+    def Acquire_producer_consumer(self):
+        pfResult = self.pfCam.Grab()
+        if pfResult != pf.Error.NONE:
+            self.ExitWithErrorPrompt("Could not start grab process", pfResult)
+
+        self._memory_write_mode = None
+        self._spectral_axis_mode = None
+        NBlines = self.Memory[0].shape[0]
+        start_memory_slot = self.MemoryLoc
+        mono8 = self.ui.PixelFormat_display_PF.text() in ['Mono8']
+        worker_count = PHOTONFOCUS_CONSUMER_WORKERS
+        grab_q = queue.Queue(maxsize=128)
+        grab_stop = object()
+        consumer_error = []
+        profile = {
+            "get_next_buffer": 0.0,
+            "queue_put": 0.0,
+            "queue_get": 0.0,
+            "get_image": 0.0,
+            "convert": 0.0,
+            "prepare": 0.0,
+            "memory_write": 0.0,
+            "release_buffer": 0.0,
+            "grabbed": 0,
+            "processed": 0,
+            "timeouts": 0,
+            "max_processing_queue": 0,
+            "max_databack_queue": 0,
+        }
+        profile_lock = threading.Lock()
+        completion_lock = threading.Lock()
+        completed_blocks = {}
+        completed_block_ids = set()
+        next_block_to_emit = [0]
+        total_t0 = time.perf_counter()
+
+        def add_profile(key, value):
+            with profile_lock:
+                profile[key] += value
+
+        def increment_profile(key, value=1):
+            with profile_lock:
+                profile[key] += value
+
+        def mark_frame_complete(frame_number):
+            block_id = frame_number // NBlines
+            with completion_lock:
+                completed = completed_blocks.get(block_id, 0) + 1
+                completed_blocks[block_id] = completed
+                if completed == NBlines:
+                    completed_block_ids.add(block_id)
+                    del completed_blocks[block_id]
+                    while next_block_to_emit[0] in completed_block_ids:
+                        emit_block_id = next_block_to_emit[0]
+                        memory_slot = (start_memory_slot + emit_block_id) % self.memoryCount
+                        self.DatabackQueue.put(DbackActionField(memory_slot))
+                        with profile_lock:
+                            profile["max_databack_queue"] = max(
+                                profile["max_databack_queue"],
+                                self.DatabackQueue.qsize(),
+                            )
+                        completed_block_ids.remove(emit_block_id)
+                        next_block_to_emit[0] += 1
+
+        def consumer(worker_id):
+            pf_image = pf.PFImage()
+            pf_image_unpacked = None
+            if not mono8:
+                pf_image_unpacked = pf.PFImage()
+                if not pf_image_unpacked.IsMemAllocated():
+                    reserve_result = pf_image_unpacked.ReserveImage(
+                        pf.GetPixelType("Mono16"),
+                        self.NSamples,
+                        self.AlinesPerBline,
+                    )
+                    if reserve_result != pf.Error.NONE:
+                        raise RuntimeError(
+                            f"Worker {worker_id} failed to reserve unpack image: {reserve_result}"
+                        )
+            try:
+                while True:
+                    t_get = time.perf_counter()
+                    item = grab_q.get()
+                    add_profile("queue_get", time.perf_counter() - t_get)
+                    if item is grab_stop:
+                        break
+                    pf_buffer, frame_number = item
+                    block_id = frame_number // NBlines
+                    memory_slot = (start_memory_slot + block_id) % self.memoryCount
+                    frame_index = frame_number % NBlines
+                    try:
+                        t_image = time.perf_counter()
+                        pf_buffer.GetImage(pf_image)
+                        add_profile("get_image", time.perf_counter() - t_image)
+                        if mono8:
+                            bline = np.array(pf_image, copy=False)
+                        else:
+                            t_convert = time.perf_counter()
+                            pf_result = pf_image.ConvertTo(pf_image_unpacked)
+                            add_profile("convert", time.perf_counter() - t_convert)
+                            if pf_result != pf.Error.NONE:
+                                raise RuntimeError(f"Error unpacking image: {pf_result}")
+                            bline = np.array(pf_image_unpacked, copy=False)
+
+                        t_prepare = time.perf_counter()
+                        bline = self.prepare_bline(bline)
+                        add_profile("prepare", time.perf_counter() - t_prepare)
+
+                        t_write = time.perf_counter()
+                        self.write_bline_to_memory(bline, memory_slot, frame_index)
+                        add_profile("memory_write", time.perf_counter() - t_write)
+                        increment_profile("processed")
+                        mark_frame_complete(frame_number)
+                    finally:
+                        t_release = time.perf_counter()
+                        self.pfStream.ReleaseBuffer(pf_buffer)
+                        add_profile("release_buffer", time.perf_counter() - t_release)
+            except Exception:
+                consumer_error.append(f"Worker {worker_id} failed:\n" + traceback.format_exc())
+                print(traceback.format_exc())
+
+        workers = [
+            threading.Thread(
+                target=consumer,
+                args=(worker_id,),
+                name=f"PFGrabConvert{worker_id}",
+                daemon=True,
+            )
+            for worker_id in range(worker_count)
+        ]
+        for worker in workers:
+            worker.start()
+
+        self.DbackQueue.put(0)
+        blines_count = 0
+        try:
+            while blines_count < self.BlinesPerAcq and self.ui.RunButton.isChecked():
+                t_buffer = time.perf_counter()
+                [pfResult, pfBuffer] = self.pfStream.GetNextBuffer()
+                add_profile("get_next_buffer", time.perf_counter() - t_buffer)
+                if pfResult != pf.Error.NONE:
+                    increment_profile("timeouts")
+                    continue
+
+                t_put = time.perf_counter()
+                grab_q.put((pfBuffer, blines_count))
+                add_profile("queue_put", time.perf_counter() - t_put)
+                with profile_lock:
+                    profile["max_processing_queue"] = max(
+                        profile["max_processing_queue"],
+                        grab_q.qsize(),
+                    )
+                blines_count += 1
+                increment_profile("grabbed")
+
+                if blines_count % NBlines == 0 and self.ui.PauseButton.isChecked():
+                    pfResult = self.pfCam.Freeze()
+                    if pfResult != pf.Error.NONE:
+                        self.ExitWithErrorPrompt("Error stopping grab process", pfResult)
+                    while self.ui.PauseButton.isChecked() and self.ui.RunButton.isChecked():
+                        time.sleep(0.5)
+                    pfResult = self.pfCam.Grab()
+                    if pfResult != pf.Error.NONE:
+                        self.ExitWithErrorPrompt("Could not start grab process", pfResult)
+        finally:
+            pfResult = self.pfCam.Freeze()
+            if pfResult != pf.Error.NONE:
+                self.ExitWithErrorPrompt("Error stopping grab process", pfResult)
+            for _ in workers:
+                grab_q.put(grab_stop)
+
+        for worker in workers:
+            worker.join()
+
+        self.MemoryLoc = (start_memory_slot + next_block_to_emit[0]) % self.memoryCount
+        total = time.perf_counter() - total_t0
+        queue_put_fraction = profile["queue_put"] / max(total, 1e-9)
+        if blines_count > 1000:
+            print(
+                "PhotonFocus acquisition summary: \n"
+                f"consumer_workers={worker_count}, \n"
+                f"frames_grabbed={profile['grabbed']}, \n"
+                f"frames_processed={profile['processed']}, \n"
+                f"total_time={total:.3f}s, \n"
+                f"camera_wait={profile['get_next_buffer']:.3f}s (longer better), \n"
+                f"max_processing_queue_size={profile['max_processing_queue']}/128\n"
+            )
+        if profile["max_processing_queue"] > 100:
+            print(
+                "PhotonFocus acquire warning: processing queue was nearly full \n"
+                f"({profile['max_processing_queue']}/128). \n"
+                "The conversion/write thread is close to falling behind the camera stream.\n"
+            )
+        if profile["max_processing_queue"] > 100 and queue_put_fraction > 0.05:
+            print(
+                "PhotonFocus acquire warning: producer waited \n"
+                f"{profile['queue_put']:.3f}s while handing frames to the conversion thread. \n"
+                "The camera readout path is close to falling behind; consider reducing trigger rate \n"
+                "or optimizing unpack / memory transpose-write.\n"
+            )
+        if consumer_error:
+            raise RuntimeError("Acquire consumer failed:\n" + consumer_error[0])
+
     def UninitBoard(self):
         if not (SIM or self.SIM):
             #Disconnect camera
@@ -443,7 +653,8 @@ class Camera(QThread):
         
                     
     def simData(self):
-        
+        self._memory_write_mode = None
+        self._spectral_axis_mode = None
         # print('D using memory loc: ',self.MemoryLoc)
         # print(self.Memory[self.MemoryLoc].shape)
         NBlines = self.Memory[0].shape[0]
@@ -461,7 +672,7 @@ class Camera(QThread):
                 Bline = np.uint16(np.random.rand(self.ui.AlinesPerBline.value(), effective_camera_sample_count(self.ui))*65535)
             # print('camera outputs:', Bline[0,0:20])
             # print(BlinesCount, self.BlinesPerAcq)
-            self.Memory[self.MemoryLoc][BlinesCount % NBlines] = Bline
+            self.write_bline_to_memory(Bline, self.MemoryLoc, BlinesCount % NBlines)
 
             # print(BlinesCount % NBlines)
             BlinesCount += 1
@@ -476,4 +687,53 @@ class Camera(QThread):
             if self.ui.PauseButton.isChecked():
                 while self.ui.PauseButton.isChecked() and self.ui.RunButton.isChecked():
                     time.sleep(0.5)
+
+    def prepare_bline(self, bline):
+        bline = np.asarray(bline)
+        if bline.ndim != 2:
+            raise ValueError(f"PhotonFocus frame must be 2D, got shape {bline.shape}")
+
+        expected_raw_a = (self.NSamples, self.AlinesPerBline)
+        expected_raw_b = (self.AlinesPerBline, self.NSamples)
+
+        if bline.shape == expected_raw_a:
+            spectral_axis = 0
+        elif bline.shape == expected_raw_b:
+            spectral_axis = 1
+        else:
+            raise ValueError(
+                "PhotonFocus raw frame shape does not match expected camera ROI: "
+                f"frame={bline.shape}, expected={expected_raw_a} or {expected_raw_b}"
+            )
+
+        bline = downsample_spectral_axis(bline, self.SpectralDS, axis=spectral_axis)
+
+        if self._spectral_axis_mode is None:
+            self._spectral_axis_mode = spectral_axis
+            print(
+                "PhotonFocus spectral axis selected: "
+                f"axis={spectral_axis} (raw frame={expected_raw_a if spectral_axis == 0 else expected_raw_b})"
+            )
+        return bline
+
+    def write_bline_to_memory(self, bline, memory_slot, frame_index):
+        dest = self.Memory[memory_slot][frame_index]
+        if bline.shape == dest.shape:
+            write_mode = "direct"
+            dest[...] = bline
+        elif bline.T.shape == dest.shape:
+            write_mode = "transpose"
+            dest[...] = bline.T
+        else:
+            raise ValueError(
+                "PhotonFocus frame shape does not match destination memory slice: "
+                f"frame={bline.shape}, frame_T={bline.T.shape}, dest={dest.shape}"
+            )
+
+        if self._memory_write_mode is None:
+            self._memory_write_mode = write_mode
+            print(
+                "PhotonFocus memory write mode selected: "
+                f"{write_mode} (frame={bline.shape}, dest={dest.shape})"
+            )
                     

@@ -41,7 +41,6 @@ except Exception as error:
     SIM = True
 
 CONTINUOUS = 0x7FFFFFFF
-DAHENG_MEMORY_WRITE_METHOD = "assign_transpose"
 DAHENG_PRINT_CAMERA_CONFIG = False
 # Packed conversion and transpose-write are the long pole for long dynamic scans.
 # Increase this cautiously: block completion is still emitted in frame order below.
@@ -137,7 +136,7 @@ class Camera(QThread):
         self.hcam = None       # Daheng camera handle
         self.hcam_fr = None    # Remote feature-control handle
         self.device_manager = None
-        self.memory_write_method = DAHENG_MEMORY_WRITE_METHOD
+        self._memory_write_mode = None
 
     def run(self):
         if not (SIM or self.SIM):
@@ -293,6 +292,7 @@ class Camera(QThread):
             
     def Acquire(self):
         NBlines = self.Memory[0].shape[0]
+        self._memory_write_mode = None
         grab_q = queue.Queue(maxsize=128)
         grab_stop = object()
         use_packed = self.ui.PixelFormat_DH.currentText() in ["Mono12Packed"]
@@ -467,14 +467,24 @@ class Camera(QThread):
 
     def write_bline_to_memory(self, bline, memory_slot, frame_index):
         dest = self.Memory[memory_slot][frame_index]
-        if self.memory_write_method == "copyto_transpose":
-            np.copyto(dest, bline.T)
-        elif self.memory_write_method == "swapaxes_copyto":
-            np.copyto(dest, np.swapaxes(bline, 0, 1))
-        elif self.memory_write_method == "assign_transpose":
+        if bline.shape == dest.shape:
+            write_mode = "direct"
+            dest[...] = bline
+        elif bline.T.shape == dest.shape:
+            write_mode = "transpose"
             dest[...] = bline.T
         else:
-            raise ValueError(f"Unknown Daheng memory write method: {self.memory_write_method}")
+            raise ValueError(
+                "Daheng frame shape does not match destination memory slice: "
+                f"frame={bline.shape}, frame_T={bline.T.shape}, dest={dest.shape}"
+            )
+
+        if self._memory_write_mode is None:
+            self._memory_write_mode = write_mode
+            print(
+                "Daheng memory write mode selected: "
+                f"{write_mode} (frame={bline.shape}, dest={dest.shape})"
+            )
 
     def Stream_on(self):
         if self.hcam is not None:

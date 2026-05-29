@@ -22,6 +22,8 @@ Created on Tue Dec 12 16:51:20 2023
 
 global SIM
 SIM = False
+ARTDAQ_SIM = False
+STAGE_SIM = False
 ###########################################
 from PyQt5.QtCore import QThread
 
@@ -30,34 +32,28 @@ try:
     ARTDAQ_PYTHON_LIB_DIR = r"C:\\Program Files (x86)\\ART Technology\\ART-DAQ\\Samples\\Python\\LIB\\"
     sys.path.append(ARTDAQ_PYTHON_LIB_DIR)
 
-    if "ni" not in sys.modules:
-        import artdaq as ni
-        from artdaq.constants import AcquisitionType as Atype
-        from artdaq.constants import Edge, ProductCategory, RegenerationMode, Signal
-        try:
-            from artdaq.constants import LineGrouping
-        except Exception:
-            LineGrouping = None
-    else:
-        # Module already loaded; you can safely use it.
-        try:
-            from artdaq.constants import LineGrouping
-        except Exception:
-            LineGrouping = None
+    import artdaq as ni
+    from artdaq.constants import AcquisitionType as Atype
+    from artdaq.constants import Edge, ProductCategory, RegenerationMode, Signal
+    try:
+        from artdaq.constants import LineGrouping
+    except Exception:
+        LineGrouping = None
 except Exception as error:
     print(
         "ART-DAQ SDK import failed. The configured ART-DAQ Python library directory may be wrong: "
         f"{ARTDAQ_PYTHON_LIB_DIR}. Import error: {error}. Using simulation."
     )
-    SIM = True
+    ARTDAQ_SIM = True
     LineGrouping = None
 
 try:
     from StageControl import ZC300MotorController
     motors = ZC300MotorController()
-except:
-    print('stage init failed, using simulation')
-    SIM = True
+except Exception as error:
+    print(f"stage init failed, using stage simulation. Import/init error: {error}")
+    STAGE_SIM = True
+    motors = None
 
 from Generaic_functions import GenAODO
 from HardwareSpecs import (
@@ -192,7 +188,7 @@ class AODOThread(QThread):
         self.ui.Xcurrent.setValue(self.ui.XPosition.value())
         self.ui.Ycurrent.setValue(self.ui.YPosition.value())
         self.ui.Zcurrent.setValue(self.ui.ZPosition.value())
-        if not (SIM or self.SIM):
+        if not (STAGE_SIM or self.SIM):
             # initialize stages
             x_axis = get_stage_axis_spec('X')
             y_axis = get_stage_axis_spec('Y')
@@ -226,7 +222,7 @@ class AODOThread(QThread):
         self.StagebackQueue.put(0)
 
     def Uninit(self):
-        if not (SIM or self.SIM):
+        if not (STAGE_SIM or self.SIM):
             motors.set_enable(get_stage_axis_spec('X').axis_index, False)
             motors.set_enable(get_stage_axis_spec('Y').axis_index, False)
             motors.set_enable(get_stage_axis_spec('Z').axis_index, False)
@@ -249,7 +245,7 @@ class AODOThread(QThread):
                 "ao_waveform": self.AOwaveform,
                 "do_waveform": self.DOwaveform,
             })
-        if not (SIM or self.SIM): # if not running simulation mode
+        if not (ARTDAQ_SIM or self.SIM): # if not running DAQ simulation mode
             camera_name = self.ui.Camera.currentText()
             camera = get_camera_spec(camera_name)
             if camera_name == 'Daheng' and camera is not None:
@@ -305,7 +301,7 @@ class AODOThread(QThread):
         return 'AODO configuration success'
 
     def StartTask(self):
-        if not (SIM or self.SIM):
+        if not (ARTDAQ_SIM or self.SIM):
             self.AOtask.write(self.AOwaveform, auto_start = False)
             self.DOtask.write(self.DOwaveform, auto_start = False)
             self.DOtask.start()
@@ -313,13 +309,13 @@ class AODOThread(QThread):
         self.StagebackQueue.put(0)
 
     def StopTask(self):
-        if not (SIM or self.SIM):
+        if not (ARTDAQ_SIM or self.SIM):
             # self.AOtask.wait_until_done(timeout = 60)
             self.AOtask.stop()
             self.DOtask.stop()
 
     def tryStopTask(self):
-        if not (SIM or self.SIM):
+        if not (ARTDAQ_SIM or self.SIM):
             try:
                 self.AOtask.wait_until_done(timeout = 0.5)
             except:
@@ -334,7 +330,7 @@ class AODOThread(QThread):
 
 
     def CloseTask(self):
-        if not (SIM or self.SIM):
+        if not (ARTDAQ_SIM or self.SIM):
             try:
                 self.AOtask.close()
             except:
@@ -347,7 +343,7 @@ class AODOThread(QThread):
 
 
     def centergalvo(self):
-        if not (SIM or self.SIM):
+        if not (ARTDAQ_SIM or self.SIM):
             with ni.Task('AOtask') as AOtask:
                 AOtask.ao_channels.add_ao_voltage_chan(physical_channel=self.GalvoAO, \
                                                       min_val=AODO_AO_VOLTAGE_MIN, max_val=AODO_AO_VOLTAGE_MAX, \
@@ -407,7 +403,7 @@ class AODOThread(QThread):
 
     def rotate_servo_out(self):
         target_angle_deg = self.servo_target_angle_deg()
-        if SIM or self.SIM:
+        if ARTDAQ_SIM or self.SIM:
             time.sleep(SERVO_MOVE_TIME_S)
         else:
             task = ni.Task("ServoPWM")
@@ -419,7 +415,7 @@ class AODOThread(QThread):
         self.StagebackQueue.put(0)
 
     def rotate_servo_back(self):
-        if SIM or self.SIM:
+        if ARTDAQ_SIM or self.SIM:
             time.sleep(SERVO_MOVE_TIME_S)
         else:
             task = ni.Task("ServoPWM")
@@ -469,7 +465,7 @@ class AODOThread(QThread):
         return True
 
     def SetSpeed(self, axis = 'X'):
-        if not (SIM or self.SIM):
+        if not (STAGE_SIM or self.SIM):
             if axis =='X':
                 x_axis = get_stage_axis_spec('X')
                 motors.set_move_speed(x_axis.axis_index, self.ui.XSpeed.value())
@@ -482,7 +478,7 @@ class AODOThread(QThread):
             # print('done')
             
     def SetAcc(self, axis = 'X'):
-        if not (SIM or self.SIM):
+        if not (STAGE_SIM or self.SIM):
             if axis =='X':
                 x_axis = get_stage_axis_spec('X')
                 motors.set_acceleration(x_axis.axis_index, self.ui.XAccelerate.value())
@@ -565,7 +561,7 @@ class AODOThread(QThread):
         # self.log.write(message)
 
     def DirectMove(self, axis):
-        if not (SIM or self.SIM):
+        if not (STAGE_SIM or self.SIM):
             self.Move(axis)
         else:
             time.sleep(1)
@@ -574,7 +570,7 @@ class AODOThread(QThread):
         self.StagebackQueue.put(0)
 
     def StepMove(self, axis, Direction):
-        if not (SIM or self.SIM):
+        if not (STAGE_SIM or self.SIM):
             if axis == 'X':
                 distance = self.ui.Xstagestepsize.value() if Direction == 'UP' else -self.ui.Xstagestepsize.value()
                 self.ui.XPosition.setValue(self.ui.Xcurrent.value()+distance)
@@ -594,7 +590,7 @@ class AODOThread(QThread):
         self.StagebackQueue.put(0)
 
     def Home(self, axis):
-        if not (SIM or self.SIM):
+        if not (STAGE_SIM or self.SIM):
             if axis == 'X':
                 # self.ui.XPosition.setValue(0)
                 # self.DirectMove(axis)
@@ -645,7 +641,7 @@ class AODOThread(QThread):
                 # self.StagebackQueue.get()
         else:
             time.sleep(2)
-        if not (SIM or self.SIM):
+        if not (STAGE_SIM or self.SIM):
             if axis == 'X':
                 home_completed = locals().get("home_completed", True)
                 prefix = "Stage home complete" if home_completed else "Stage home timed out but was assumed complete"
