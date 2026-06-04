@@ -2815,7 +2815,7 @@
             </widget>
             <widget class="QWidget" name="tab_4">
              <attribute name="title">
-              <string>Page</string>
+              <string>HiK</string>
              </attribute>
              <layout class="QGridLayout" name="gridLayout_16">
               <item row="0" column="0">

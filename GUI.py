@@ -1629,7 +1629,7 @@ class Ui_MainWindow(object):
         self.label_68.setText(_translate("MainWindow", "TriggerSelector"))
         self.TriggerSelector_HK.setItemText(0, _translate("MainWindow", "LineStart"))
         self.TriggerSelector_HK.setItemText(1, _translate("MainWindow", "FrameBurstStart"))
-        self.tabWidget.setTabText(self.tabWidget.indexOf(self.tab_4), _translate("MainWindow", "Page"))
+        self.tabWidget.setTabText(self.tabWidget.indexOf(self.tab_4), _translate("MainWindow", "HiK"))
         self.Tabs.setTabText(self.Tabs.indexOf(self.DigitizerTab), _translate("MainWindow", "相机参数"))
         self.LoadSurface.setText(_translate("MainWindow", "Load surface"))
         self.LoadBG.setText(_translate("MainWindow", "Load Background files"))

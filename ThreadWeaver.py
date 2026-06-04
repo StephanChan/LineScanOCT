@@ -570,7 +570,7 @@ class WeaverThread(QThread):
             # print('waiting for camera data...')
             while self.ui.RunButton.isChecked():
                 try:
-                    an_action = self.DatabackQueue.get(timeout = 5)
+                    an_action = self.DatabackQueue.get(timeout = 2)
                     # print('camera queue size:', self.DatabackQueue.qsize())
                     # print('time to fetch data: '+str(round(time.time()-start,3))+'sec')
                     memory_slot = an_action.memory_slot
@@ -660,7 +660,7 @@ class WeaverThread(QThread):
             ######################################### collect data
             try: # use try-except in cases where Stop button clicked and camera stopped prior to while loop
                 start = time.time()
-                an_action = self.DatabackQueue.get(timeout=5) # never time out
+                an_action = self.DatabackQueue.get(timeout=2) # never time out
                 # print('time to fetch data: '+str(round(time.time()-start,3)))
                 memory_slot = an_action.memory_slot
                 # print(memory_slot)

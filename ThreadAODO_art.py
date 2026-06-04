@@ -88,6 +88,95 @@ class AODOThread(QThread):
         self.AOtask = None
         self.DOtask = None
 
+    def configure_stage_controller_from_ui(self):
+        x_axis = get_stage_axis_spec('X')
+        y_axis = get_stage_axis_spec('Y')
+        z_axis = get_stage_axis_spec('Z')
+
+        motors.configure_axis(x_axis.axis_index)
+        motors.configure_axis(y_axis.axis_index)
+        motors.configure_axis(z_axis.axis_index)
+
+        motors.set_init_speed(x_axis.axis_index, x_axis.init_speed_mm_s)
+        motors.set_move_speed(x_axis.axis_index, self.ui.XSpeed.value())
+        motors.set_acceleration(x_axis.axis_index, self.ui.XAccelerate.value())
+        motors.set_home_speed(x_axis.axis_index, self.ui.XSpeed.value())
+        motors.set_position(x_axis.axis_index, -self.ui.Xcurrent.value())
+
+        motors.set_init_speed(y_axis.axis_index, y_axis.init_speed_mm_s)
+        motors.set_move_speed(y_axis.axis_index, self.ui.YSpeed.value())
+        motors.set_acceleration(y_axis.axis_index, self.ui.YAccelerate.value())
+        motors.set_home_speed(y_axis.axis_index, self.ui.YSpeed.value())
+        motors.set_position(y_axis.axis_index, -self.ui.Ycurrent.value())
+
+        motors.set_init_speed(z_axis.axis_index, z_axis.init_speed_mm_s)
+        motors.set_move_speed(z_axis.axis_index, self.ui.ZSpeed.value())
+        motors.set_acceleration(z_axis.axis_index, self.ui.ZAccelerate.value())
+        motors.set_home_speed(z_axis.axis_index, self.ui.ZSpeed.value())
+        motors.set_position(z_axis.axis_index, -self.ui.Zcurrent.value())
+
+    def reset_stage_controller(self, reason):
+        global motors
+        if STAGE_SIM or self.SIM:
+            return False
+
+        message = f"Resetting stage controller after timeout: {reason}"
+        print(message)
+        self.emit_status(message)
+        try:
+            try:
+                if motors is not None:
+                    motors.close()
+            except Exception as close_error:
+                print(f"Stage controller close during reset failed: {close_error}")
+
+            motors = ZC300MotorController()
+            self.configure_stage_controller_from_ui()
+            self.rehome_stages_after_reset()
+            message = "Stage controller reset and reinitialized."
+            print(message)
+            self.emit_status(message)
+            return True
+        except Exception as reset_error:
+            message = f"Stage controller reset failed: {reset_error}"
+            print(message)
+            self.emit_status(message)
+            print(traceback.format_exc())
+            raise
+
+    def rehome_stages_after_reset(self):
+        x_axis = get_stage_axis_spec('X')
+        y_axis = get_stage_axis_spec('Y')
+        z_axis = get_stage_axis_spec('Z')
+
+        message = "Rehoming stages after controller reset."
+        print(message)
+        self.emit_status(message)
+
+        motors.set_home_speed(x_axis.axis_index, self.ui.XSpeed.value())
+        motors.home(x_axis.axis_index)
+        self.ui.XPosition.setValue(0)
+        self.ui.Xcurrent.setValue(0)
+
+        motors.set_home_speed(y_axis.axis_index, self.ui.YSpeed.value())
+        motors.home(y_axis.axis_index)
+        self.ui.YPosition.setValue(0)
+        self.ui.Ycurrent.setValue(0)
+
+        # Z homing is unreliable on this hardware, so recover it by moving to -1 mm
+        # and then redefining that location as zero.
+        motors.move_absolute(z_axis.axis_index, -1.0)
+        motors.set_position(z_axis.axis_index, 0)
+        self.ui.ZPosition.setValue(0)
+        self.ui.Zcurrent.setValue(0)
+
+        message = (
+            f"Stage reset recovery complete: X={self.ui.Xcurrent.value()}, "
+            f"Y={round(self.ui.Ycurrent.value(), 2)}, Z={self.ui.Zcurrent.value()}."
+        )
+        print(message)
+        self.emit_status(message)
+
 
     def run(self):
         self.Init_all_termial()
@@ -189,30 +278,7 @@ class AODOThread(QThread):
         self.ui.Ycurrent.setValue(self.ui.YPosition.value())
         self.ui.Zcurrent.setValue(self.ui.ZPosition.value())
         if not (STAGE_SIM or self.SIM):
-            # initialize stages
-            x_axis = get_stage_axis_spec('X')
-            y_axis = get_stage_axis_spec('Y')
-            z_axis = get_stage_axis_spec('Z')
-            motors.configure_axis(x_axis.axis_index)
-            motors.configure_axis(y_axis.axis_index)
-            motors.configure_axis(z_axis.axis_index)
-            motors.set_init_speed(x_axis.axis_index, x_axis.init_speed_mm_s)
-            motors.set_move_speed(x_axis.axis_index, self.ui.XSpeed.value())
-            motors.set_acceleration(x_axis.axis_index, self.ui.XAccelerate.value())
-            motors.set_home_speed(x_axis.axis_index, self.ui.XSpeed.value())
-            motors.set_position(x_axis.axis_index,-self.ui.XPosition.value())
-
-            motors.set_init_speed(y_axis.axis_index, y_axis.init_speed_mm_s)
-            motors.set_move_speed(y_axis.axis_index, self.ui.YSpeed.value())
-            motors.set_acceleration(y_axis.axis_index, self.ui.YAccelerate.value())
-            motors.set_home_speed(y_axis.axis_index, self.ui.YSpeed.value())
-            motors.set_position(y_axis.axis_index,-self.ui.YPosition.value())
-
-            motors.set_init_speed(z_axis.axis_index, z_axis.init_speed_mm_s)
-            motors.set_move_speed(z_axis.axis_index, self.ui.ZSpeed.value())
-            motors.set_acceleration(z_axis.axis_index, self.ui.ZAccelerate.value())
-            motors.set_home_speed(z_axis.axis_index, self.ui.ZSpeed.value())
-            motors.set_position(z_axis.axis_index,-self.ui.ZPosition.value())
+            self.configure_stage_controller_from_ui()
 
         message = "Stage position updated."
 
@@ -455,10 +521,11 @@ class AODOThread(QThread):
         if not finished.wait(timeout):
             message = (
                 f"Warning: {description} timed out after {timeout:.1f}s. "
-                "Assuming motion completed and continuing."
+                "Assuming motion completed, resetting stage control, and continuing."
             )
             print(message)
             self.emit_status(message)
+            self.reset_stage_controller(description)
             return False
         if error_box:
             raise error_box[0]
