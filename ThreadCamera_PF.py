@@ -48,7 +48,28 @@ import traceback
 
 CONTINUOUS = 0x7FFFFFFF
 PHOTONFOCUS_PRINT_CAMERA_CONFIG = False
+PHOTONFOCUS_SPECTRAL_DIMENSION = "horizontal"
+# Set PHOTONFOCUS_SPECTRAL_DIMENSION to:
+#   "horizontal" -> camera Width = NSamples, camera Height = AlinesPerBline
+#   "vertical"   -> camera Height = NSamples, camera Width = AlinesPerBline
 PHOTONFOCUS_CONSUMER_WORKERS = 4
+
+
+def photonfocus_spectral_axis():
+    dimension = PHOTONFOCUS_SPECTRAL_DIMENSION.lower()
+    if dimension == "vertical":
+        return 0
+    if dimension == "horizontal":
+        return 1
+    raise ValueError(
+        "PHOTONFOCUS_SPECTRAL_DIMENSION must be 'vertical' or 'horizontal', "
+        f"got {PHOTONFOCUS_SPECTRAL_DIMENSION!r}"
+    )
+
+
+def photonfocus_spectral_is_horizontal():
+    return photonfocus_spectral_axis() == 1
+
 
 class Camera(QThread):
     def __init__(self):
@@ -169,12 +190,29 @@ class Camera(QThread):
                 print('PhotonFocus camera init success')
                 # return copy_cam_info
                 # self.log.write(message)
+
+    def camera_roi_shape(self):
+        if photonfocus_spectral_is_horizontal():
+            return int(self.NSamples), int(self.AlinesPerBline)
+        return int(self.AlinesPerBline), int(self.NSamples)
+
+    def camera_roi_offsets(self):
+        if photonfocus_spectral_is_horizontal():
+            return int(self.ui.offsetW_PF.value()), int(self.ui.offsetH.value())
+        return int(self.ui.offsetH.value()), int(self.ui.offsetW_PF.value())
+
+    def expected_raw_frame_shape(self):
+        if photonfocus_spectral_is_horizontal():
+            return (int(self.AlinesPerBline), int(self.NSamples))
+        return (int(self.NSamples), int(self.AlinesPerBline))
         
     def ConfigureBoard(self):
         self.AlinesPerBline = self.ui.AlinesPerBline.value()
         self.NSamples = raw_camera_sample_count(self.ui)
         self.SpectralDS = spectral_downsample(self.ui)
         self.ProcessedSamples = effective_camera_sample_count(self.ui)
+        self.CameraWidth, self.CameraHeight = self.camera_roi_shape()
+        self.CameraOffsetX, self.CameraOffsetY = self.camera_roi_offsets()
         if self.ui.ACQMode.currentText() in ['FiniteBline', 'FiniteAline']:
             self.BlinesPerAcq = self.ui.BlineAVG.value() 
         elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousAline','ContinuousCscan']:
@@ -255,20 +293,20 @@ class Camera(QThread):
             self.ui.PixelFormat_display_PF.setText(pfFeatureParam)
     
     
-            pfResult = self.pfCam.SetFeatureInt("Width", self.NSamples)
+            pfResult = self.pfCam.SetFeatureInt("Width", self.CameraWidth)
             if pfResult != pf.Error.NONE:
                 self.ExitWithErrorPrompt("Error setting width", pfResult)
             
-            pfResult = self.pfCam.SetFeatureInt("OffsetX", self.ui.offsetW_PF.value())
+            pfResult = self.pfCam.SetFeatureInt("OffsetX", self.CameraOffsetX)
             if pfResult != pf.Error.NONE:
                 self.ExitWithErrorPrompt("Error setting X offset", pfResult)
     
     
-            pfResult = self.pfCam.SetFeatureInt("Height", self.ui.AlinesPerBline.value())
+            pfResult = self.pfCam.SetFeatureInt("Height", self.CameraHeight)
             if pfResult != pf.Error.NONE:
                 self.ExitWithErrorPrompt("Error setting Height", pfResult)
             
-            pfResult = self.pfCam.SetFeatureInt("OffsetY", self.ui.offsetH.value())
+            pfResult = self.pfCam.SetFeatureInt("OffsetY", self.CameraOffsetY)
             if pfResult != pf.Error.NONE:
                 self.ExitWithErrorPrompt("Error setting Y offset", pfResult)
             
@@ -294,12 +332,20 @@ class Camera(QThread):
     def print_configuration_readback(self):
         print("PhotonFocus camera configuration:")
         print("  Camera selection: %s" % self.ui.Camera.currentText())
-        print("  ROI raw camera Width/NSamples: %d" % int(self.NSamples))
-        print("  ROI raw camera Height/AlinesPerBline: %d" % int(self.AlinesPerBline))
+        print("  Spectral dimension: %s" % PHOTONFOCUS_SPECTRAL_DIMENSION)
+        print("  Spectral array axis: %d" % photonfocus_spectral_axis())
+        if photonfocus_spectral_is_horizontal():
+            print("  ROI raw camera Width/NSamples: %d" % int(self.NSamples))
+            print("  ROI raw camera Height/AlinesPerBline: %d" % int(self.AlinesPerBline))
+            print("  OffsetX/offsetW_PF: %d" % int(self.ui.offsetW_PF.value()))
+            print("  OffsetY/offsetH: %d" % int(self.ui.offsetH.value()))
+        else:
+            print("  ROI raw camera Height/NSamples: %d" % int(self.NSamples))
+            print("  ROI raw camera Width/AlinesPerBline: %d" % int(self.AlinesPerBline))
+            print("  OffsetY/offsetW_PF: %d" % int(self.ui.offsetW_PF.value()))
+            print("  OffsetX/offsetH: %d" % int(self.ui.offsetH.value()))
         print("  SpectralDS: %d" % int(self.SpectralDS))
         print("  Processed samples in memory: %d" % int(self.ProcessedSamples))
-        print("  OffsetX/offsetW_PF: %d" % int(self.ui.offsetW_PF.value()))
-        print("  OffsetY/offsetH: %d" % int(self.ui.offsetH.value()))
         print("  PixelFormat_PF: %s" % self.ui.PixelFormat_PF.currentText())
         print("  PixelFormat_display_PF: %s" % self.ui.PixelFormat_display_PF.text())
         print("  AcquisitionStatusSelector_PF UI: %s" % self.ui.AcquisitionStatusSelector_PF.currentText())
@@ -510,8 +556,8 @@ class Camera(QThread):
                 if not pf_image_unpacked.IsMemAllocated():
                     reserve_result = pf_image_unpacked.ReserveImage(
                         pf.GetPixelType("Mono16"),
-                        self.NSamples,
-                        self.AlinesPerBline,
+                        self.CameraWidth,
+                        self.CameraHeight,
                     )
                     if reserve_result != pf.Error.NONE:
                         raise RuntimeError(
@@ -667,9 +713,9 @@ class Camera(QThread):
             # t0=time.time()
             
             if self.ui.PixelFormat_display_PF.text() in ['Mono8']:
-                Bline = np.uint8(np.random.rand(self.ui.AlinesPerBline.value(), effective_camera_sample_count(self.ui))*255)
+                Bline = np.uint8(np.random.rand(self.ui.AlinesPerBline.value(), self.ProcessedSamples)*255)
             else:
-                Bline = np.uint16(np.random.rand(self.ui.AlinesPerBline.value(), effective_camera_sample_count(self.ui))*65535)
+                Bline = np.uint16(np.random.rand(self.ui.AlinesPerBline.value(), self.ProcessedSamples)*65535)
             # print('camera outputs:', Bline[0,0:20])
             # print(BlinesCount, self.BlinesPerAcq)
             self.write_bline_to_memory(Bline, self.MemoryLoc, BlinesCount % NBlines)
@@ -693,17 +739,13 @@ class Camera(QThread):
         if bline.ndim != 2:
             raise ValueError(f"PhotonFocus frame must be 2D, got shape {bline.shape}")
 
-        expected_raw_a = (self.NSamples, self.AlinesPerBline)
-        expected_raw_b = (self.AlinesPerBline, self.NSamples)
-
-        if bline.shape == expected_raw_a:
-            spectral_axis = 0
-        elif bline.shape == expected_raw_b:
-            spectral_axis = 1
-        else:
+        expected_raw = self.expected_raw_frame_shape()
+        spectral_axis = photonfocus_spectral_axis()
+        if bline.shape != expected_raw:
             raise ValueError(
                 "PhotonFocus raw frame shape does not match expected camera ROI: "
-                f"frame={bline.shape}, expected={expected_raw_a} or {expected_raw_b}"
+                f"frame={bline.shape}, expected={expected_raw}, "
+                f"spectral_dimension={PHOTONFOCUS_SPECTRAL_DIMENSION}"
             )
 
         bline = downsample_spectral_axis(bline, self.SpectralDS, axis=spectral_axis)
@@ -712,7 +754,7 @@ class Camera(QThread):
             self._spectral_axis_mode = spectral_axis
             print(
                 "PhotonFocus spectral axis selected: "
-                f"axis={spectral_axis} (raw frame={expected_raw_a if spectral_axis == 0 else expected_raw_b})"
+                f"axis={spectral_axis} (raw frame={expected_raw})"
             )
         return bline
 

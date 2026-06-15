@@ -8,6 +8,8 @@ and mosaic image stitching.
 import time
 import threading
 import queue
+import os
+import sys
 from PyQt5.QtCore import QThread
 import numpy as np
 import traceback
@@ -24,7 +26,6 @@ import matplotlib.pyplot as plt
 global SIM
 # Fall back to simulation when the Daheng SDK cannot be imported.
 try:
-    import sys
     GALAXY_SDK_ROOT = r"D:\GalaxySDK"
 
     GALAXY_PYTHON_DIR = os.path.join(
@@ -51,15 +52,36 @@ try:
 except Exception as error:
     print(
         "Daheng camera SDK import failed. The configured Galaxy SDK directory may be wrong: "
-        f"{GALAXY_SDK_PYTHON_DIR}. Import error: {error}. Using simulation."
+        f"{locals().get('GALAXY_PYTHON_DIR', '<unresolved>')}. "
+        f"Import error: {error}. Using simulation."
     )
     SIM = True
 
 CONTINUOUS = 0x7FFFFFFF
 DAHENG_PRINT_CAMERA_CONFIG = False
+DAHENG_SPECTRAL_DIMENSION = "vertical"
+# Set DAHENG_SPECTRAL_DIMENSION to:
+#   "vertical"   -> camera Height = NSamples_DH, camera Width = AlinesPerBline
+#   "horizontal" -> camera Width = NSamples_DH, camera Height = AlinesPerBline
 # Packed conversion and transpose-write are the long pole for long dynamic scans.
 # Increase this cautiously: block completion is still emitted in frame order below.
 DAHENG_CONSUMER_WORKERS = 4
+
+
+def daheng_spectral_axis():
+    dimension = DAHENG_SPECTRAL_DIMENSION.lower()
+    if dimension == "vertical":
+        return 0
+    if dimension == "horizontal":
+        return 1
+    raise ValueError(
+        "DAHENG_SPECTRAL_DIMENSION must be 'vertical' or 'horizontal', "
+        f"got {DAHENG_SPECTRAL_DIMENSION!r}"
+    )
+
+
+def daheng_spectral_is_horizontal():
+    return daheng_spectral_axis() == 1
 
 def get_best_valid_bits(pixel_format):
     valid_bits = DxValidBit.BIT0_7
@@ -256,11 +278,22 @@ class Camera(QThread):
             self.hcam_fr.get_enum_feature("TriggerSource").set(self.ui.TriggerSource_DH.currentText())
             self.hcam_fr.get_enum_feature("TriggerActivation").set(self.ui.TriggerActivation_DH.currentText())
             # self.hcam_fr.get_enum_feature("TriggerDelay").set(int(self.ui.TriggerDelay_DH.value()*1000.0))
-            
-            self.hcam_fr.get_int_feature("Height").set(self.NSamples_DH )
-            self.hcam_fr.get_int_feature("Width").set(self.AlinesPerBline )
-            self.hcam_fr.get_int_feature("OffsetY").set(self.ui.offsetW_DH.value())
-            self.hcam_fr.get_int_feature("OffsetX").set(self.ui.offsetH.value())
+
+            if daheng_spectral_is_horizontal():
+                camera_width = self.NSamples_DH
+                camera_height = self.AlinesPerBline
+                offset_x = self.ui.offsetW_DH.value()
+                offset_y = self.ui.offsetH.value()
+            else:
+                camera_width = self.AlinesPerBline
+                camera_height = self.NSamples_DH
+                offset_x = self.ui.offsetH.value()
+                offset_y = self.ui.offsetW_DH.value()
+
+            self.hcam_fr.get_int_feature("Width").set(camera_width)
+            self.hcam_fr.get_int_feature("Height").set(camera_height)
+            self.hcam_fr.get_int_feature("OffsetX").set(offset_x)
+            self.hcam_fr.get_int_feature("OffsetY").set(offset_y)
         if DAHENG_PRINT_CAMERA_CONFIG:
             self.print_configuration_readback()
         # self.DbackQueue.put(0)
@@ -268,12 +301,20 @@ class Camera(QThread):
     def print_configuration_readback(self):
         print("Daheng camera configuration:")
         print("  Camera selection: %s" % self.ui.Camera.currentText())
-        print("  ROI raw camera Height/NSamples_DH: %d" % int(self.NSamples_DH))
-        print("  ROI raw camera Width/AlinesPerBline: %d" % int(self.AlinesPerBline))
+        print("  Spectral dimension: %s" % DAHENG_SPECTRAL_DIMENSION)
+        print("  Spectral array axis: %d" % daheng_spectral_axis())
+        if daheng_spectral_is_horizontal():
+            print("  ROI raw camera Width/NSamples_DH: %d" % int(self.NSamples_DH))
+            print("  ROI raw camera Height/AlinesPerBline: %d" % int(self.AlinesPerBline))
+            print("  OffsetX/offsetW_DH: %d" % int(self.ui.offsetW_DH.value()))
+            print("  OffsetY/offsetH: %d" % int(self.ui.offsetH.value()))
+        else:
+            print("  ROI raw camera Height/NSamples_DH: %d" % int(self.NSamples_DH))
+            print("  ROI raw camera Width/AlinesPerBline: %d" % int(self.AlinesPerBline))
+            print("  OffsetY/offsetW_DH: %d" % int(self.ui.offsetW_DH.value()))
+            print("  OffsetX/offsetH: %d" % int(self.ui.offsetH.value()))
         print("  SpectralDS: %d" % int(self.SpectralDS))
         print("  Processed samples in memory: %d" % int(self.ProcessedSamples))
-        print("  OffsetY/offsetW_DH: %d" % int(self.ui.offsetW_DH.value()))
-        print("  OffsetX/offsetH: %d" % int(self.ui.offsetH.value()))
         print("  PixelFormat_DH: %s" % self.ui.PixelFormat_DH.currentText())
         print("  PixelFormat_display_DH: %s" % self.ui.PixelFormat_display_DH.text())
         print("  TriggerMode UI: %s" % self.ui.TriggerON_DH.currentText())
@@ -385,10 +426,11 @@ class Camera(QThread):
                         if buf is None:
                             print("camera time out...")
                             increment_profile("timeouts")
-                            Bline = np.zeros(
-                                [self.ProcessedSamples, self.AlinesPerBline],
-                                dtype=self.Memory[memory_slot].dtype,
-                            )
+                            if daheng_spectral_is_horizontal():
+                                fallback_shape = [self.AlinesPerBline, self.ProcessedSamples]
+                            else:
+                                fallback_shape = [self.ProcessedSamples, self.AlinesPerBline]
+                            Bline = np.zeros(fallback_shape, dtype=self.Memory[memory_slot].dtype)
                         else:
                             if use_packed:
                                 t_convert = time.perf_counter()
@@ -396,15 +438,22 @@ class Camera(QThread):
                                     buf, GxPixelFormatEntry.MONO12)
                                 add_profile("packed_convert", time.perf_counter() - t_convert)
                                 t_view = time.perf_counter()
+                                if daheng_spectral_is_horizontal():
+                                    raw_shape = (self.AlinesPerBline, self.NSamples_DH)
+                                else:
+                                    raw_shape = (self.NSamples_DH, self.AlinesPerBline)
                                 Bline = np.frombuffer(
-                                    mono_image_array, dtype=np.uint16).reshape(
-                                   self.NSamples_DH, self.AlinesPerBline)
+                                    mono_image_array, dtype=np.uint16).reshape(raw_shape)
                                 add_profile("numpy_view", time.perf_counter() - t_view)
                             else:
                                 t_view = time.perf_counter()
                                 Bline = buf.get_numpy_array()
                                 add_profile("numpy_view", time.perf_counter() - t_view)
-                            Bline = downsample_spectral_axis(Bline, self.SpectralDS, axis=0)
+                            Bline = downsample_spectral_axis(
+                                Bline,
+                                self.SpectralDS,
+                                axis=daheng_spectral_axis(),
+                            )
 
                         t_write = time.perf_counter()
                         self.write_bline_to_memory(Bline, memory_slot, frame_index)
