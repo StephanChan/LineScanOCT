@@ -1,28 +1,43 @@
 import argparse
 import gc
-import os
 import re
+from statistics import NormalDist
 from pathlib import Path
 
 # import matplotlib
 # matplotlib.use("Qt5Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.path import Path as MplPath
+from matplotlib.widgets import PolygonSelector
 from matplotlib.widgets import Slider
 from scipy.ndimage import uniform_filter1d
 import tifffile as TIFF
 
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+
 
 # Spyder/default run settings. Edit these values, then press Run.
-DEFAULT_INPUT_DIR = r"E:\IOCTData\Lung Cancer mice 260601\AMP Phase"
+DEFAULT_INPUT_DIR = r"E:\IOCTData\Lung Cancer mice 260601\260608\200Hz 2seconds Blines"
+DEFAULT_BACKGROUND_INPUT_PATH = r"E:\IOCTData\Lung Cancer mice 260601\260608\100Hz 10seconds Blines\noise\Noise-Yrpt1001-X1264-Z276.tif"  # Optional separate noise/background AMP+PHASE TIFF stack or directory.
 DEFAULT_FRAME_RATE_HZ = 200.0
+DEFAULT_TISSUE_DURATION_SECONDS = 2.0
+DEFAULT_BACKGROUND_DURATION_SECONDS = 2.0
 DEFAULT_CENTER_WAVELENGTH_NM = 840.0
 DEFAULT_PROFILE_START_DEPTH = 0
 DEFAULT_MAX_AUTOCORR_LAG = 200
-DEFAULT_SPECTRUM_MIN_HZ = 2.0
-DEFAULT_NOTCH_BAND_HZ = (46.0, 48.0)
-DEFAULT_DYNAMIC_UNIFORM_FILTER_SIZE = 10
-DEFAULT_DYNAMIC_CHUNK_X = 96
+DEFAULT_NOTCH_BAND_HZ = None
+DEFAULT_AMPLITUDE_SCALE_LIMIT = 1000.0
+DEFAULT_PHASE_NOISE_REFERENCE_START_DEPTH = None  # None uses the deepest quarter of the B-line.
+DEFAULT_PHASE_NOISE_VARIANCE_COEFFICIENT = 0.6284  # Fit coefficient C in sigma_phase^2 = C*10^(-SNR/10) + floor^2.
+DEFAULT_PHASE_NOISE_VARIANCE_FLOOR_RAD2 = 0.0  # Residual phase-variance floor (rad^2).
+DEFAULT_PHASE_NOISE_CENTRAL_PERCENTILE = 99.0  # Draw the central percentile band of the expected Gaussian phase noise.
+
+DEFAULT_DYNAMIC_UNIFORM_FILTER_SIZE = 1
+DEFAULT_DYNAMIC_CHUNK_X = 200
 
 # Keep False for Spyder/IPython. Set True only when running from a terminal and
 # passing command-line arguments.
@@ -60,6 +75,14 @@ def natural_bline_sort_key(path):
 
 
 def read_amp_phase_tiff_stack(path):
+    """
+    Read complex OCT data saved by ThreadDnS.save_data().
+
+    Each saved TIFF frame stores amplitude in the first half of the depth axis
+    and phase in radians in the second half:
+        saved[..., :Z] = abs(E)
+        saved[..., Z:] = angle(E)
+    """
     with TIFF.TiffFile(path) as tif:
         stack = np.stack([page.asarray() for page in tif.pages], axis=0)
 
@@ -87,6 +110,256 @@ def reconstruct_complex_data(amplitude, phase):
     amplitude = np.asarray(amplitude, dtype=np.float32)
     phase = np.asarray(phase, dtype=np.float32)
     return (amplitude * np.exp(1j * phase)).astype(np.complex64, copy=False)
+
+
+def limit_stack_duration(complex_stack, frame_rate_hz, duration_seconds):
+    complex_stack = np.asarray(complex_stack, dtype=np.complex64)
+    if duration_seconds is None:
+        return complex_stack
+
+    duration_seconds = float(duration_seconds)
+    if not np.isfinite(duration_seconds) or duration_seconds <= 0:
+        return complex_stack
+
+    max_frames = int(np.floor(duration_seconds * float(frame_rate_hz)))
+    if max_frames < 1:
+        return complex_stack[:1].copy()
+    if complex_stack.shape[0] <= max_frames:
+        return complex_stack
+    return np.ascontiguousarray(complex_stack[:max_frames], dtype=np.complex64)
+
+
+def format_notch_band(notch_band_hz):
+    if notch_band_hz is None:
+        return "None"
+    return f"{float(notch_band_hz[0]):g}-{float(notch_band_hz[1]):g} Hz"
+
+
+def resolve_noise_start_depth(z_pixels, configured_start_depth):
+    if configured_start_depth is None:
+        return int(np.clip(np.floor(0.75 * z_pixels), 0, max(0, z_pixels - 1)))
+    return int(np.clip(configured_start_depth, 0, max(0, z_pixels - 1)))
+
+
+def estimate_sigma_q_from_complex_samples(complex_samples):
+    complex_samples = np.asarray(complex_samples, dtype=np.complex64)
+    if complex_samples.size == 0:
+        return np.nan
+
+    real_part = np.real(complex_samples).astype(np.float32, copy=False)
+    imag_part = np.imag(complex_samples).astype(np.float32, copy=False)
+    real_centered = real_part - np.mean(real_part, axis=0, keepdims=True, dtype=np.float32)
+    imag_centered = imag_part - np.mean(imag_part, axis=0, keepdims=True, dtype=np.float32)
+    sigma_q2 = 0.5 * (
+        np.var(real_centered, axis=0, dtype=np.float32)
+        + np.var(imag_centered, axis=0, dtype=np.float32)
+    )
+    sigma_q = float(np.sqrt(np.mean(sigma_q2, dtype=np.float32)))
+    if not np.isfinite(sigma_q) or sigma_q <= 0:
+        return np.nan
+    return sigma_q
+
+
+def polygon_mask_for_image_shape(vertices, image_shape):
+    if vertices is None or len(vertices) < 3:
+        raise ValueError("ROI needs at least three points.")
+
+    x_pixels, z_pixels = image_shape
+    x_grid, z_grid = np.meshgrid(np.arange(x_pixels), np.arange(z_pixels), indexing="ij")
+    points = np.column_stack([x_grid.reshape(-1), z_grid.reshape(-1)])
+    mask = MplPath(vertices).contains_points(points).reshape(image_shape)
+    if not np.any(mask):
+        raise ValueError("ROI mask is empty. Please draw a larger region.")
+    return mask
+
+
+def select_polygon_roi(image, title):
+    vertices = []
+    accepted = {"done": False}
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.imshow(image.T, aspect="auto", origin="upper", cmap="gray")
+    ax.set_title(title)
+    ax.set_xlabel("X pixel")
+    ax.set_ylabel("Depth index")
+    instruction = ax.text(
+        0.01,
+        0.99,
+        "Click ROI vertices. Press Enter to accept, Esc to reset.",
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=10,
+        color="white",
+        bbox={"facecolor": "black", "alpha": 0.55, "edgecolor": "none"},
+    )
+
+    def on_select(selected_vertices):
+        vertices[:] = selected_vertices
+
+    try:
+        selector = PolygonSelector(
+            ax,
+            on_select,
+            useblit=True,
+            props={"color": "yellow", "linewidth": 1.5, "alpha": 0.9},
+            handle_props={"markerfacecolor": "yellow", "markeredgecolor": "black", "markersize": 5},
+        )
+    except TypeError:
+        selector = PolygonSelector(
+            ax,
+            on_select,
+            useblit=True,
+            lineprops={"color": "yellow", "linewidth": 1.5, "alpha": 0.9},
+            markerprops={"markerfacecolor": "yellow", "markeredgecolor": "black", "markersize": 5},
+        )
+
+    def on_key(event):
+        if event.key == "enter":
+            accepted["done"] = True
+            plt.close(fig)
+        elif event.key == "escape":
+            vertices.clear()
+            try:
+                selector.verts = []
+            except Exception:
+                pass
+            instruction.set_text("ROI reset. Click ROI vertices. Press Enter to accept.")
+            fig.canvas.draw_idle()
+
+    fig.canvas.mpl_connect("key_press_event", on_key)
+    plt.show(block=True)
+    selector.disconnect_events()
+
+    if not accepted["done"]:
+        raise RuntimeError("ROI selection window was closed before pressing Enter.")
+    return polygon_mask_for_image_shape(vertices, image.shape)
+
+
+def normalize_roi_key(value):
+    text = str(value).strip().lower()
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def load_saved_tissue_vertices(stack_path):
+    stack_path = Path(stack_path)
+    stack_stem = stack_path.stem
+    workbook_candidates = [
+        stack_path.parent / "dynamic_timepoint_sufficiency" / f"{stack_stem}_dynamic_timepoint_metrics.xlsx",
+        stack_path.parent / "frequency_band_power_analysis" / f"{stack_stem}_frequency_domain_metrics.xlsx",
+    ]
+
+    if pd is None:
+        return None
+
+    for workbook_path in workbook_candidates:
+        if not workbook_path.exists():
+            continue
+        try:
+            dataframe = pd.read_excel(workbook_path, sheet_name="roi_vertices")
+            records = dataframe.to_dict("records")
+        except Exception as error:
+            print(f"Could not read ROI workbook {workbook_path} ({error}); trying next fallback.")
+            continue
+
+        if not records:
+            continue
+
+        if "source_stack" in records[0]:
+            source_keys = {normalize_roi_key(stack_path.name), normalize_roi_key(stack_stem)}
+            subset = [
+                record
+                for record in records
+                if str(record.get("roi", "")).strip().lower() == "tissue"
+                and normalize_roi_key(record.get("source_stack", "")) in source_keys
+            ]
+        else:
+            label_keys = {normalize_roi_key(stack_path.name), normalize_roi_key(stack_stem)}
+            subset = [
+                record
+                for record in records
+                if str(record.get("roi", "")).strip().lower() == "tissue"
+                and normalize_roi_key(record.get("label", "")) in label_keys
+            ]
+
+        if not subset:
+            continue
+
+        subset.sort(key=lambda record: int(record["vertex_index"]))
+        vertices = np.asarray(
+            [[float(record["x_pixel"]), float(record["depth_pixel"])] for record in subset],
+            dtype=np.float32,
+        )
+        if vertices.shape[0] >= 3:
+            print(f"Loaded tissue ROI from {workbook_path}")
+            return vertices
+
+    return None
+
+
+def expected_phase_variance_from_snr_db(
+    snr_db,
+    coefficient=DEFAULT_PHASE_NOISE_VARIANCE_COEFFICIENT,
+    variance_floor_rad2=DEFAULT_PHASE_NOISE_VARIANCE_FLOOR_RAD2,
+):
+    snr_db = float(snr_db)
+    coefficient = float(coefficient)
+    variance_floor_rad2 = float(variance_floor_rad2)
+    return coefficient * np.power(10.0, -snr_db / 10.0) + variance_floor_rad2
+
+
+def percentile_band_sigma_multiplier(central_percentile):
+    central_percentile = float(central_percentile)
+    central_percentile = min(max(central_percentile, 0.0), 99.999)
+    tail_probability = 0.5 + 0.5 * (central_percentile / 100.0)
+    return float(NormalDist().inv_cdf(tail_probability))
+
+
+def load_external_noise_sigma_q(
+    background_input_path,
+    frame_rate_hz,
+    background_duration_seconds,
+    notch_band_hz,
+    chunk_x,
+):
+    if background_input_path is None or str(background_input_path).strip() == "":
+        return np.nan, None
+
+    try:
+        background_paths = iter_tiff_stacks(background_input_path)
+        background_path = background_paths[0]
+        print(f"Loading background AMP+PHASE stack for sigma_q: {background_path}")
+        background_complex_stack = read_amp_phase_tiff_stack(background_path)
+        background_complex_stack = limit_stack_duration(
+            background_complex_stack,
+            frame_rate_hz=frame_rate_hz,
+            duration_seconds=background_duration_seconds,
+        )
+        if notch_band_hz is not None:
+            background_complex_stack = notch_filter_complex_stack_amp_phase(
+                background_complex_stack,
+                frame_rate_hz=frame_rate_hz,
+                notch_band_hz=notch_band_hz,
+                chunk_x=chunk_x,
+            )
+        top_half_depth = max(1, background_complex_stack.shape[2] // 2)
+        sigma_q = estimate_sigma_q_from_complex_samples(
+            np.asarray(background_complex_stack[:, :, :top_half_depth], dtype=np.complex64).reshape(
+                background_complex_stack.shape[0],
+                -1,
+            )
+        )
+        print(
+            "Measured external sigma_q from top-half background stack XZ range "
+            f"(depth < {top_half_depth}): {sigma_q:.6g}"
+        )
+        return sigma_q, str(background_path)
+    except Exception as error:
+        print(
+            f"Could not load separate background stack from {background_input_path} "
+            f"({error}). Falling back to deep tissue region."
+        )
+        return np.nan, None
 
 
 def phase_to_delta_z_nm(phase_trace, center_wavelength_nm):
@@ -149,43 +422,6 @@ def complex_field_autocorrelation(complex_trace, max_lag):
     for idx, lag in enumerate(lags):
         g1[idx] = np.mean(complex_trace[:-lag] * np.conj(complex_trace[lag:])) / denominator
     return lags, g1
-
-
-def single_sided_power_spectrum(trace, frame_rate_hz, min_frequency_hz=0.0):
-    trace = np.asarray(trace, dtype=np.float32)
-    if trace.size < 2:
-        return np.empty(0, dtype=np.float32), np.empty(0, dtype=np.float32)
-
-    centered = trace - np.mean(trace, dtype=np.float32)
-    spectrum = np.fft.rfft(centered) / trace.size
-    power = (np.abs(spectrum) ** 2).astype(np.float32, copy=False)
-    frequencies = np.fft.rfftfreq(trace.size, d=1.0 / float(frame_rate_hz)).astype(
-        np.float32,
-        copy=False,
-    )
-    if min_frequency_hz > 0:
-        keep = frequencies > np.float32(min_frequency_hz)
-        frequencies = frequencies[keep]
-        power = power[keep]
-    return frequencies, power
-
-
-def complex_power_spectrum(complex_trace, frame_rate_hz, min_abs_frequency_hz=0.0):
-    complex_trace = np.asarray(complex_trace, dtype=np.complex64)
-    if complex_trace.size < 2:
-        return np.empty(0, dtype=np.float32), np.empty(0, dtype=np.float32)
-
-    centered = complex_trace - np.mean(complex_trace)
-    spectrum = np.fft.fftshift(np.fft.fft(centered) / complex_trace.size)
-    power = (np.abs(spectrum) ** 2).astype(np.float32, copy=False)
-    frequencies = np.fft.fftshift(
-        np.fft.fftfreq(complex_trace.size, d=1.0 / float(frame_rate_hz))
-    ).astype(np.float32, copy=False)
-    if min_abs_frequency_hz > 0:
-        keep = np.abs(frequencies) > np.float32(min_abs_frequency_hz)
-        frequencies = frequencies[keep]
-        power = power[keep]
-    return frequencies, power
 
 
 def fft_bandstop_trace(trace, frame_rate_hz, stop_band_hz=None):
@@ -328,11 +564,14 @@ class AmpPhaseBlineTraceViewer:
         self,
         complex_stack,
         stack_path,
+        external_noise_sigma_q=np.nan,
+        external_noise_source=None,
+        phase_noise_variance_coefficient=DEFAULT_PHASE_NOISE_VARIANCE_COEFFICIENT,
+        phase_noise_variance_floor_rad2=DEFAULT_PHASE_NOISE_VARIANCE_FLOOR_RAD2,
         frame_rate_hz=DEFAULT_FRAME_RATE_HZ,
         center_wavelength_nm=DEFAULT_CENTER_WAVELENGTH_NM,
         profile_start_depth=0,
         max_autocorr_lag=DEFAULT_MAX_AUTOCORR_LAG,
-        spectrum_min_hz=DEFAULT_SPECTRUM_MIN_HZ,
         notch_band_hz=DEFAULT_NOTCH_BAND_HZ,
         dynamic_uniform_filter_size=DEFAULT_DYNAMIC_UNIFORM_FILTER_SIZE,
         dynamic_chunk_x=DEFAULT_DYNAMIC_CHUNK_X,
@@ -342,22 +581,32 @@ class AmpPhaseBlineTraceViewer:
             raise ValueError(f"Expected complex stack with shape (T, X, Z), got {self.complex_stack.shape}")
 
         self.stack_path = Path(stack_path)
+        self.external_noise_sigma_q = float(external_noise_sigma_q)
+        self.external_noise_source = external_noise_source
+        self.phase_noise_variance_coefficient = float(phase_noise_variance_coefficient)
+        self.phase_noise_variance_floor_rad2 = float(phase_noise_variance_floor_rad2)
         self.frame_rate_hz = float(frame_rate_hz)
         self.center_wavelength_nm = float(center_wavelength_nm)
         self.max_autocorr_lag = int(max_autocorr_lag)
-        self.spectrum_min_hz = float(spectrum_min_hz)
         self.notch_band_hz = notch_band_hz
         self.dynamic_uniform_filter_size = int(dynamic_uniform_filter_size)
         self.dynamic_chunk_x = int(dynamic_chunk_x)
         self.frames, self.x_pixels, self.z_pixels = self.complex_stack.shape
         self.profile_start_depth = int(np.clip(profile_start_depth, 0, self.z_pixels - 1))
-        self.time_axis_s = np.arange(self.frames, dtype=np.float32) / np.float32(self.frame_rate_hz)
-        self.filtered_complex_stack = notch_filter_complex_stack_amp_phase(
-            self.complex_stack,
-            frame_rate_hz=self.frame_rate_hz,
-            notch_band_hz=self.notch_band_hz,
-            chunk_x=self.dynamic_chunk_x,
+        self.phase_noise_reference_start_depth = resolve_noise_start_depth(
+            self.z_pixels,
+            DEFAULT_PHASE_NOISE_REFERENCE_START_DEPTH,
         )
+        self.time_axis_s = np.arange(self.frames, dtype=np.float32) / np.float32(self.frame_rate_hz)
+        if self.notch_band_hz is None:
+            self.filtered_complex_stack = self.complex_stack
+        else:
+            self.filtered_complex_stack = notch_filter_complex_stack_amp_phase(
+                self.complex_stack,
+                frame_rate_hz=self.frame_rate_hz,
+                notch_band_hz=self.notch_band_hz,
+                chunk_x=self.dynamic_chunk_x,
+            )
         self.mean_abs_bline = np.mean(np.abs(self.filtered_complex_stack), axis=0, dtype=np.float32)
         self.amplitude_dynamic, self.complex_dynamic = compute_dynamic_images(
             self.filtered_complex_stack,
@@ -366,6 +615,31 @@ class AmpPhaseBlineTraceViewer:
             uniform_filter_size=self.dynamic_uniform_filter_size,
             chunk_x=self.dynamic_chunk_x,
         )
+        self.dynamic_ratio = np.divide(
+            self.amplitude_dynamic,
+            self.complex_dynamic,
+            out=np.zeros_like(self.amplitude_dynamic, dtype=np.float32),
+            where=self.complex_dynamic > np.float32(0.0),
+        ).astype(np.float32, copy=False)
+        saved_tissue_vertices = load_saved_tissue_vertices(self.stack_path)
+        if saved_tissue_vertices is not None:
+            self.tissue_vertices = saved_tissue_vertices
+            self.tissue_mask = polygon_mask_for_image_shape(saved_tissue_vertices, self.mean_abs_bline.shape)
+        else:
+            self.tissue_mask = select_polygon_roi(
+                self.mean_abs_bline,
+                f"{self.stack_path.name}: draw TISSUE ROI, then press Enter",
+            )
+            self.tissue_vertices = None
+        if np.isfinite(self.external_noise_sigma_q) and self.external_noise_sigma_q > 0:
+            self.noise_sigma_q = self.external_noise_sigma_q
+            self.noise_sigma_source = "separate_background_stack"
+        else:
+            noise_region = self.filtered_complex_stack[:, :, self.phase_noise_reference_start_depth:]
+            self.noise_sigma_q = estimate_sigma_q_from_complex_samples(
+                noise_region.reshape(noise_region.shape[0], -1)
+            )
+            self.noise_sigma_source = "deep_tissue_region"
 
         self.selected_x = self.x_pixels // 2
         profile = self.mean_abs_bline[self.selected_x, self.profile_start_depth:]
@@ -387,8 +661,7 @@ class AmpPhaseBlineTraceViewer:
         self.ax_g1_raw = None
         self.ax_g1 = None
         self.ax_summary = None
-        self.ax_amp_spectrum = None
-        self.ax_phase_spectrum = None
+        self.ax_ratio = None
         self.im_bline = None
         self.im_amp_dynamic = None
         self.im_complex_dynamic = None
@@ -398,27 +671,26 @@ class AmpPhaseBlineTraceViewer:
         self.amp_trace_raw_line = None
         self.complex_scatter_raw = None
         self.phase_trace_line = None
+        self.phase_noise_upper_line = None
+        self.phase_noise_lower_line = None
         self.g_amp_raw_line = None
         self.g_amp_line = None
         self.g1_raw_abs_line = None
         self.g1_abs_line = None
         self.summary_text = None
-        self.amp_spectrum_line = None
-        self.phase_spectrum_line = None
+        self.ratio_scatter = None
         self.current_lags = None
         self.current_g_amp_raw = None
         self.current_g_amp = None
         self.current_g1_raw = None
         self.current_g1 = None
-        self.current_frequency_hz = None
-        self.current_amp_power = None
-        self.current_complex_frequency_hz = None
-        self.current_complex_power = None
         self.current_amp_trace = None
         self.current_phase_trace = None
         self.current_unfiltered_complex_trace = None
         self.current_filtered_complex_trace = None
         self.current_complex_trace_raw_display = None
+        self.current_pixel_snr_db = None
+        self.current_expected_phase_std_rad = None
         self.current_amplitude_dynamic = self.amplitude_dynamic
         self.current_complex_dynamic = self.complex_dynamic
         self.brightness_slider = None
@@ -442,22 +714,29 @@ class AmpPhaseBlineTraceViewer:
             4,
             height_ratios=[1.0, 1.0, 1.0],
             width_ratios=[1.0, 1.0, 1.0, 0.68],
+            hspace=0.42,
+            wspace=0.34,
         )
         self.ax_bline = self.fig.add_subplot(grid[0, 0])
-        self.ax_amp_dynamic = self.fig.add_subplot(grid[1, 0])
-        self.ax_complex_dynamic = self.fig.add_subplot(grid[2, 0])
+        self.ax_amp_dynamic = self.fig.add_subplot(
+            grid[1, 0],
+            sharex=self.ax_bline,
+            sharey=self.ax_bline,
+        )
+        self.ax_complex_dynamic = self.fig.add_subplot(
+            grid[2, 0],
+            sharex=self.ax_bline,
+            sharey=self.ax_bline,
+        )
         self.ax_amp_trace_raw = self.fig.add_subplot(grid[0, 1])
-        amp_corr_grid = grid[1, 1].subgridspec(2, 1, hspace=0.28)
-        complex_corr_grid = grid[1, 2].subgridspec(2, 1, hspace=0.28)
-        self.ax_g_amp_raw = self.fig.add_subplot(amp_corr_grid[0, 0])
-        self.ax_g_amp = self.fig.add_subplot(amp_corr_grid[1, 0])
-        self.ax_amp_spectrum = self.fig.add_subplot(grid[2, 1])
+        self.ax_g_amp_raw = self.fig.add_subplot(grid[1, 1])
+        self.ax_g1_raw = self.fig.add_subplot(grid[2, 1])
         self.ax_phase_trace = self.fig.add_subplot(grid[0, 2])
-        self.ax_g1_raw = self.fig.add_subplot(complex_corr_grid[0, 0])
-        self.ax_g1 = self.fig.add_subplot(complex_corr_grid[1, 0])
-        self.ax_phase_spectrum = self.fig.add_subplot(grid[2, 2])
+        self.ax_g_amp = self.fig.add_subplot(grid[1, 2])
+        self.ax_g1 = self.fig.add_subplot(grid[2, 2])
         self.ax_complex_scatter_raw = self.fig.add_subplot(grid[0, 3], projection="polar")
         self.ax_summary = self.fig.add_subplot(grid[1, 3])
+        self.ax_ratio = self.fig.add_subplot(grid[2, 3])
 
         self.bline_vmin, self.bline_vmax = self.initial_bline_clim()
         self.im_bline = self.ax_bline.imshow(
@@ -502,6 +781,21 @@ class AmpPhaseBlineTraceViewer:
         self.ax_complex_dynamic.set_xlabel("X pixel")
         self.ax_complex_dynamic.set_ylabel("Depth index")
 
+        tissue_intensity = np.asarray(self.mean_abs_bline[self.tissue_mask], dtype=np.float32)
+        tissue_ratio = np.asarray(self.dynamic_ratio[self.tissue_mask], dtype=np.float32)
+        self.ratio_scatter = self.ax_ratio.scatter(
+            tissue_intensity,
+            tissue_ratio,
+            s=6,
+            c="black",
+            alpha=0.35,
+            edgecolors="none",
+        )
+        self.ax_ratio.set_title("Tissue ROI: amp/complex dynamic vs intensity")
+        self.ax_ratio.set_xlabel("OCT intensity")
+        self.ax_ratio.set_ylabel("Amp/complex dynamic")
+        self.ax_ratio.grid(True, alpha=0.25)
+
         self.cursor_bline = self.ax_bline.plot(
             [self.selected_x],
             [self.selected_depth],
@@ -526,7 +820,6 @@ class AmpPhaseBlineTraceViewer:
             color="cyan",
             linestyle="None",
         )[0]
-
         self.amp_trace_raw_line, = self.ax_amp_trace_raw.plot([], [], lw=1.2)
         self.ax_amp_trace_raw.set_xlabel("Time (s)")
         self.ax_amp_trace_raw.set_ylabel("Amplitude")
@@ -557,39 +850,43 @@ class AmpPhaseBlineTraceViewer:
         )
 
         self.phase_trace_line, = self.ax_phase_trace.plot([], [], lw=1.1)
+        self.phase_noise_upper_line = self.ax_phase_trace.axhline(
+            0.0,
+            color="red",
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.9,
+        )
+        self.phase_noise_lower_line = self.ax_phase_trace.axhline(
+            0.0,
+            color="red",
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.9,
+        )
         self.ax_phase_trace.set_xlabel("Time (s)")
         self.ax_phase_trace.set_ylabel("Phase (rad)")
         self.ax_phase_trace.grid(True, alpha=0.25)
 
         self.g_amp_raw_line, = self.ax_g_amp_raw.plot([], [], lw=1.3, color="red")
-        self.ax_g_amp_raw.set_xlabel("Lag k")
+        self.ax_g_amp_raw.set_xlabel("Lag time (s)")
         self.ax_g_amp_raw.set_ylabel("g_amp raw")
         self.ax_g_amp_raw.grid(True, alpha=0.25)
 
         self.g_amp_line, = self.ax_g_amp.plot([], [], lw=1.5, color="red")
-        self.ax_g_amp.set_xlabel("Lag k")
+        self.ax_g_amp.set_xlabel("Lag time (s)")
         self.ax_g_amp.set_ylabel("g_amp(k)")
         self.ax_g_amp.grid(True, alpha=0.25)
 
         self.g1_raw_abs_line, = self.ax_g1_raw.plot([], [], lw=1.3, color="red")
-        self.ax_g1_raw.set_xlabel("Lag k")
+        self.ax_g1_raw.set_xlabel("Lag time (s)")
         self.ax_g1_raw.set_ylabel("|g1 raw|")
         self.ax_g1_raw.grid(True, alpha=0.25)
 
         self.g1_abs_line, = self.ax_g1.plot([], [], lw=1.5, color="red")
-        self.ax_g1.set_xlabel("Lag k")
+        self.ax_g1.set_xlabel("Lag time (s)")
         self.ax_g1.set_ylabel("|g1(k)|")
         self.ax_g1.grid(True, alpha=0.25)
-
-        self.amp_spectrum_line, = self.ax_amp_spectrum.plot([], [], lw=1.4)
-        self.ax_amp_spectrum.set_xlabel("Frequency (Hz)")
-        self.ax_amp_spectrum.set_ylabel("Power")
-        self.ax_amp_spectrum.grid(True, alpha=0.25)
-
-        self.phase_spectrum_line, = self.ax_phase_spectrum.plot([], [], lw=1.4)
-        self.ax_phase_spectrum.set_xlabel("Frequency (Hz)")
-        self.ax_phase_spectrum.set_ylabel("Complex power")
-        self.ax_phase_spectrum.grid(True, alpha=0.25)
 
         self.fig.colorbar(self.im_bline, ax=self.ax_bline, label="Mean amplitude")
         self.fig.colorbar(self.im_amp_dynamic, ax=self.ax_amp_dynamic, label="Variance")
@@ -604,10 +901,10 @@ class AmpPhaseBlineTraceViewer:
             f"{self.stack_path.name}    "
             f"T={self.frames}, X={self.x_pixels}, Z={self.z_pixels}, "
             f"frame rate={self.frame_rate_hz:g} Hz, "
-            f"notch={self.notch_band_hz[0]:g}-{self.notch_band_hz[1]:g} Hz"
+            f"notch={format_notch_band(self.notch_band_hz)}"
         )
         self.update_views()
-        self.fig.tight_layout(rect=[0.0, 0.06, 1.0, 0.96])
+        self.fig.tight_layout(rect=[0.0, 0.05, 1.0, 0.96], h_pad=1.5, w_pad=1.0)
 
     def initial_bline_clim(self):
         return self.initial_image_clim(self.mean_abs_bline)
@@ -713,7 +1010,6 @@ class AmpPhaseBlineTraceViewer:
         self.cursor_bline.set_data([self.selected_x], [self.selected_depth])
         self.cursor_amp_dynamic.set_data([self.selected_x], [self.selected_depth])
         self.cursor_complex_dynamic.set_data([self.selected_x], [self.selected_depth])
-
         unfiltered_complex_trace = self.complex_stack[:, self.selected_x, self.selected_depth]
         filtered_complex_trace = self.filtered_complex_stack[:, self.selected_x, self.selected_depth]
         amp_trace = np.abs(filtered_complex_trace).astype(np.float32, copy=False)
@@ -736,34 +1032,42 @@ class AmpPhaseBlineTraceViewer:
         lags, g_amp = amplitude_autocorrelation(amp_trace_centered, self.max_autocorr_lag)
         _, g1_raw = complex_field_autocorrelation(filtered_complex_trace, self.max_autocorr_lag)
         _, g1 = complex_field_autocorrelation(complex_trace_centered, self.max_autocorr_lag)
-        frequency_hz, amp_power = single_sided_power_spectrum(
-            amp_trace,
-            self.frame_rate_hz,
-            min_frequency_hz=self.spectrum_min_hz,
-        )
-        complex_frequency_hz, complex_power = complex_power_spectrum(
-            filtered_complex_trace,
-            self.frame_rate_hz,
-            min_abs_frequency_hz=self.spectrum_min_hz,
-        )
+        lag_times_s = lags.astype(np.float32) / np.float32(self.frame_rate_hz)
         self.current_lags = lags
         self.current_g_amp_raw = g_amp_raw
         self.current_g_amp = g_amp
         self.current_g1_raw = g1_raw
         self.current_g1 = g1
-        self.current_frequency_hz = frequency_hz
-        self.current_amp_power = amp_power
-        self.current_complex_frequency_hz = complex_frequency_hz
-        self.current_complex_power = complex_power
         self.current_amp_trace = amp_trace
-        self.current_phase_trace = unwrapped_phase
+        self.current_phase_trace = phase_trace
         self.current_unfiltered_complex_trace = unfiltered_complex_trace
         self.current_filtered_complex_trace = filtered_complex_trace
         self.current_complex_trace_raw_display = filtered_complex_trace
+        amp_mean = float(np.nanmean(amp_trace))
+        pixel_snr_db = np.nan
+        expected_phase_std_rad = np.nan
+        if np.isfinite(self.noise_sigma_q) and self.noise_sigma_q > 0 and np.isfinite(amp_mean):
+            snr_linear_power = (amp_mean * amp_mean) / (2.0 * self.noise_sigma_q * self.noise_sigma_q)
+            if np.isfinite(snr_linear_power) and snr_linear_power > 0:
+                pixel_snr_db = float(10.0 * np.log10(max(snr_linear_power, 1e-12)))
+                expected_phase_std_rad = float(
+                    np.sqrt(
+                        max(
+                            0.0,
+                            expected_phase_variance_from_snr_db(
+                                pixel_snr_db,
+                                coefficient=self.phase_noise_variance_coefficient,
+                                variance_floor_rad2=self.phase_noise_variance_floor_rad2,
+                            ),
+                        )
+                    )
+                )
+        self.current_pixel_snr_db = pixel_snr_db
+        self.current_expected_phase_std_rad = expected_phase_std_rad
 
         self.amp_trace_raw_line.set_data(self.time_axis_s, amp_trace)
         self.ax_amp_trace_raw.set_xlim(self.time_axis_s[0], self.time_axis_s[-1])
-        self.ax_amp_trace_raw.set_ylim(0, 500)
+        self.ax_amp_trace_raw.set_ylim(0, DEFAULT_AMPLITUDE_SCALE_LIMIT)
         self.ax_amp_trace_raw.set_title(
             f"Amplitude trace at X={self.selected_x}, depth={self.selected_depth}"
         )
@@ -772,12 +1076,29 @@ class AmpPhaseBlineTraceViewer:
             [np.angle(filtered_complex_trace), np.abs(filtered_complex_trace)]
         )
         self.complex_scatter_raw.set_offsets(polar_points)
-        self.ax_complex_scatter_raw.set_ylim(0, 500)
+        self.ax_complex_scatter_raw.set_ylim(0, DEFAULT_AMPLITUDE_SCALE_LIMIT)
         self.ax_complex_scatter_raw.set_title(
             f"Complex trace polar plot at X={self.selected_x}, depth={self.selected_depth}"
         )
 
-        self.phase_trace_line.set_data(self.time_axis_s, unwrapped_phase)
+        self.phase_trace_line.set_data(self.time_axis_s, phase_trace)
+        phase_center = float(np.nanmean(phase_trace))
+        if np.isfinite(expected_phase_std_rad):
+            band_half_width = (
+                percentile_band_sigma_multiplier(DEFAULT_PHASE_NOISE_CENTRAL_PERCENTILE)
+                * expected_phase_std_rad
+            )
+            self.phase_noise_upper_line.set_ydata(
+                [phase_center + band_half_width, phase_center + band_half_width]
+            )
+            self.phase_noise_lower_line.set_ydata(
+                [phase_center - band_half_width, phase_center - band_half_width]
+            )
+            self.phase_noise_upper_line.set_visible(True)
+            self.phase_noise_lower_line.set_visible(True)
+        else:
+            self.phase_noise_upper_line.set_visible(False)
+            self.phase_noise_lower_line.set_visible(False)
         self.ax_phase_trace.set_xlim(self.time_axis_s[0], self.time_axis_s[-1])
         self.ax_phase_trace.relim()
         self.ax_phase_trace.autoscale_view(scalex=False, scaley=True)
@@ -785,67 +1106,60 @@ class AmpPhaseBlineTraceViewer:
             f"Phase trace at X={self.selected_x}, depth={self.selected_depth}"
         )
 
-        self.g_amp_raw_line.set_data(lags, g_amp_raw)
-        self.ax_g_amp_raw.set_xlim(1, max(1, self.max_autocorr_lag))
+        self.g_amp_raw_line.set_data(lag_times_s, g_amp_raw)
+        self.ax_g_amp_raw.set_xlim(
+            float(lag_times_s[0]) if lag_times_s.size else 0.0,
+            float(lag_times_s[-1]) if lag_times_s.size else max(1, self.max_autocorr_lag) / self.frame_rate_hz,
+        )
         self.ax_g_amp_raw.set_ylim(-1, 1.1)
         self.ax_g_amp_raw.set_title(
-            "Amplitude autocorrelation without mean subtraction"
+            "Amp autocorr, raw",
+            fontsize=10,
         )
 
-        self.g_amp_line.set_data(lags, g_amp)
-        self.ax_g_amp.set_xlim(1, max(1, self.max_autocorr_lag))
+        self.g_amp_line.set_data(lag_times_s, g_amp)
+        self.ax_g_amp.set_xlim(
+            float(lag_times_s[0]) if lag_times_s.size else 0.0,
+            float(lag_times_s[-1]) if lag_times_s.size else max(1, self.max_autocorr_lag) / self.frame_rate_hz,
+        )
         self.ax_g_amp.set_ylim(-1, 1.1)
         self.ax_g_amp.set_title(
-            "Amplitude autocorrelation with mean subtraction"
+            "Amp autocorr, centered",
+            fontsize=10,
         )
 
-        self.g1_raw_abs_line.set_data(lags, np.abs(g1_raw))
-        self.ax_g1_raw.set_xlim(1, max(1, self.max_autocorr_lag))
+        self.g1_raw_abs_line.set_data(lag_times_s, np.abs(g1_raw))
+        self.ax_g1_raw.set_xlim(
+            float(lag_times_s[0]) if lag_times_s.size else 0.0,
+            float(lag_times_s[-1]) if lag_times_s.size else max(1, self.max_autocorr_lag) / self.frame_rate_hz,
+        )
         self.ax_g1_raw.set_ylim(0, 1.1)
         self.ax_g1_raw.set_title(
-            "Complex field autocorrelation without mean subtraction"
+            "Complex autocorr, raw",
+            fontsize=10,
         )
 
-        self.g1_abs_line.set_data(lags, np.abs(g1))
-        self.ax_g1.set_xlim(1, max(1, self.max_autocorr_lag))
+        self.g1_abs_line.set_data(lag_times_s, np.abs(g1))
+        self.ax_g1.set_xlim(
+            float(lag_times_s[0]) if lag_times_s.size else 0.0,
+            float(lag_times_s[-1]) if lag_times_s.size else max(1, self.max_autocorr_lag) / self.frame_rate_hz,
+        )
         self.ax_g1.set_ylim(0, 1.1)
         self.ax_g1.set_title(
-            "Complex field autocorrelation with mean subtraction"
+            "Complex autocorr, centered",
+            fontsize=10,
         )
 
-        self.amp_spectrum_line.set_data(frequency_hz, amp_power)
-        if frequency_hz.size:
-            self.ax_amp_spectrum.set_xlim(frequency_hz[0], frequency_hz[-1])
-        power_ymax = np.nanmax(
-            [
-                np.nanmax(amp_power) if amp_power.size else 0.0,
-                np.nanmax(complex_power) if complex_power.size else 0.0,
-            ]
-        )
-        if not np.isfinite(power_ymax) or power_ymax <= 0:
-            power_ymax = 1.0
-        power_ymax *= 1.05
-        self.ax_amp_spectrum.set_ylim(0, power_ymax)
-        self.ax_amp_spectrum.set_title(
-            f"Amplitude power spectrum, >{self.spectrum_min_hz:g} Hz"
-        )
-
-        self.phase_spectrum_line.set_data(complex_frequency_hz, complex_power)
-        if complex_frequency_hz.size:
-            self.ax_phase_spectrum.set_xlim(complex_frequency_hz[0], complex_frequency_hz[-1])
-        self.ax_phase_spectrum.set_ylim(0, power_ymax)
-        self.ax_phase_spectrum.set_title(
-            f"Complex power spectrum, |f|>{self.spectrum_min_hz:g} Hz"
-        )
-
-        amp_mean = float(np.nanmean(amp_trace))
-        amp_std = float(np.nanstd(amp_trace))
-        phase_std = float(np.nanstd(unwrapped_phase - unwrapped_phase[0]))
+        dynamic_ratio_value = float(self.dynamic_ratio[self.selected_x, self.selected_depth])
+        phase_std = float(np.nanstd(phase_trace))
         dz_std = float(np.nanstd(delta_z_nm))
         summary = (
             f"{self.stack_path.name}: X={self.selected_x}, depth={self.selected_depth}, "
-            f"amp mean={amp_mean:.4g}, amp std={amp_std:.4g}, "
-            f"phase std={phase_std:.4g} rad, delta-z std={dz_std:.4g} nm"
+            f"amp mean={amp_mean:.4g}, amp/complex dynamic={dynamic_ratio_value:.4g}, "
+            f"phase std={phase_std:.4g} rad, "
+            f"SNR-limited phase std={expected_phase_std_rad:.4g} rad, "
+            f"delta-z std={dz_std:.4g} nm, "
+            f"SNR={pixel_snr_db:.3g} dB"
         )
         print(summary)
         if self.summary_text is not None:
@@ -856,26 +1170,38 @@ class AmpPhaseBlineTraceViewer:
 
 def process_one_stack(
     path,
+    external_noise_sigma_q,
+    external_noise_source,
+    phase_noise_variance_coefficient,
+    phase_noise_variance_floor_rad2,
     frame_rate_hz,
+    tissue_duration_seconds,
     center_wavelength_nm,
     profile_start_depth,
     max_autocorr_lag,
-    spectrum_min_hz,
     notch_band_hz,
     dynamic_uniform_filter_size,
     dynamic_chunk_x,
 ):
     print(f"Loading AMP+PHASE stack: {path}")
     complex_stack = read_amp_phase_tiff_stack(path)
+    complex_stack = limit_stack_duration(
+        complex_stack,
+        frame_rate_hz=frame_rate_hz,
+        duration_seconds=tissue_duration_seconds,
+    )
     print(f"Reconstructed complex stack shape: {complex_stack.shape}, dtype={complex_stack.dtype}")
     viewer = AmpPhaseBlineTraceViewer(
         complex_stack=complex_stack,
         stack_path=path,
+        external_noise_sigma_q=external_noise_sigma_q,
+        external_noise_source=external_noise_source,
+        phase_noise_variance_coefficient=phase_noise_variance_coefficient,
+        phase_noise_variance_floor_rad2=phase_noise_variance_floor_rad2,
         frame_rate_hz=frame_rate_hz,
         center_wavelength_nm=center_wavelength_nm,
         profile_start_depth=profile_start_depth,
         max_autocorr_lag=max_autocorr_lag,
-        spectrum_min_hz=spectrum_min_hz,
         notch_band_hz=notch_band_hz,
         dynamic_uniform_filter_size=dynamic_uniform_filter_size,
         dynamic_chunk_x=dynamic_chunk_x,
@@ -900,13 +1226,21 @@ def parse_args():
         default=DEFAULT_INPUT_DIR,
         help="Input TIFF file or directory containing TIFF stacks.",
     )
+    parser.add_argument(
+        "--background-input",
+        default=DEFAULT_BACKGROUND_INPUT_PATH,
+        help="Optional separate background/noise TIFF stack or directory.",
+    )
     parser.add_argument("--frame-rate", type=float, default=DEFAULT_FRAME_RATE_HZ)
+    parser.add_argument("--tissue-duration-seconds", type=float, default=DEFAULT_TISSUE_DURATION_SECONDS)
+    parser.add_argument("--background-duration-seconds", type=float, default=DEFAULT_BACKGROUND_DURATION_SECONDS)
     parser.add_argument("--lambda0-nm", type=float, default=DEFAULT_CENTER_WAVELENGTH_NM)
     parser.add_argument("--profile-start-depth", type=int, default=DEFAULT_PROFILE_START_DEPTH)
     parser.add_argument("--max-autocorr-lag", type=int, default=DEFAULT_MAX_AUTOCORR_LAG)
-    parser.add_argument("--spectrum-min-hz", type=float, default=DEFAULT_SPECTRUM_MIN_HZ)
-    parser.add_argument("--notch-low-hz", type=float, default=DEFAULT_NOTCH_BAND_HZ[0])
-    parser.add_argument("--notch-high-hz", type=float, default=DEFAULT_NOTCH_BAND_HZ[1])
+    default_notch_low = None if DEFAULT_NOTCH_BAND_HZ is None else DEFAULT_NOTCH_BAND_HZ[0]
+    default_notch_high = None if DEFAULT_NOTCH_BAND_HZ is None else DEFAULT_NOTCH_BAND_HZ[1]
+    parser.add_argument("--notch-low-hz", type=float, default=default_notch_low)
+    parser.add_argument("--notch-high-hz", type=float, default=default_notch_high)
     parser.add_argument(
         "--dynamic-uniform-filter-size",
         type=int,
@@ -918,25 +1252,45 @@ def parse_args():
 
 def run_viewer(
     input_path=DEFAULT_INPUT_DIR,
+    background_input_path=DEFAULT_BACKGROUND_INPUT_PATH,
     frame_rate_hz=DEFAULT_FRAME_RATE_HZ,
+    tissue_duration_seconds=DEFAULT_TISSUE_DURATION_SECONDS,
+    background_duration_seconds=DEFAULT_BACKGROUND_DURATION_SECONDS,
     center_wavelength_nm=DEFAULT_CENTER_WAVELENGTH_NM,
     profile_start_depth=DEFAULT_PROFILE_START_DEPTH,
     max_autocorr_lag=DEFAULT_MAX_AUTOCORR_LAG,
-    spectrum_min_hz=DEFAULT_SPECTRUM_MIN_HZ,
     notch_band_hz=DEFAULT_NOTCH_BAND_HZ,
     dynamic_uniform_filter_size=DEFAULT_DYNAMIC_UNIFORM_FILTER_SIZE,
     dynamic_chunk_x=DEFAULT_DYNAMIC_CHUNK_X,
 ):
     paths = iter_tiff_stacks(input_path)
+    external_noise_sigma_q, external_noise_source = load_external_noise_sigma_q(
+        background_input_path,
+        frame_rate_hz=frame_rate_hz,
+        background_duration_seconds=background_duration_seconds,
+        notch_band_hz=notch_band_hz,
+        chunk_x=dynamic_chunk_x,
+    )
+    if np.isfinite(external_noise_sigma_q) and external_noise_sigma_q > 0:
+        print(
+            f"Using separate background stack for sigma_q: "
+            f"{external_noise_source}, sigma_q={external_noise_sigma_q:.6g}"
+        )
+    else:
+        print("No separate background stack provided. Using deep region of each tissue stack for sigma_q.")
     print(f"Found {len(paths)} TIFF stack(s). Close each figure to load the next stack.")
     for path in paths:
         process_one_stack(
             path=path,
+            external_noise_sigma_q=external_noise_sigma_q,
+            external_noise_source=external_noise_source,
+            phase_noise_variance_coefficient=DEFAULT_PHASE_NOISE_VARIANCE_COEFFICIENT,
+            phase_noise_variance_floor_rad2=DEFAULT_PHASE_NOISE_VARIANCE_FLOOR_RAD2,
             frame_rate_hz=frame_rate_hz,
+            tissue_duration_seconds=tissue_duration_seconds,
             center_wavelength_nm=center_wavelength_nm,
             profile_start_depth=profile_start_depth,
             max_autocorr_lag=max_autocorr_lag,
-            spectrum_min_hz=spectrum_min_hz,
             notch_band_hz=notch_band_hz,
             dynamic_uniform_filter_size=dynamic_uniform_filter_size,
             dynamic_chunk_x=dynamic_chunk_x,
@@ -946,14 +1300,19 @@ def run_viewer(
 def main():
     if USE_COMMAND_LINE_ARGS:
         args = parse_args()
+        notch_band_hz = None
+        if args.notch_low_hz is not None and args.notch_high_hz is not None:
+            notch_band_hz = (args.notch_low_hz, args.notch_high_hz)
         run_viewer(
             input_path=args.input,
+            background_input_path=args.background_input,
             frame_rate_hz=args.frame_rate,
+            tissue_duration_seconds=args.tissue_duration_seconds,
+            background_duration_seconds=args.background_duration_seconds,
             center_wavelength_nm=args.lambda0_nm,
             profile_start_depth=args.profile_start_depth,
             max_autocorr_lag=args.max_autocorr_lag,
-            spectrum_min_hz=args.spectrum_min_hz,
-            notch_band_hz=(args.notch_low_hz, args.notch_high_hz),
+            notch_band_hz=notch_band_hz,
             dynamic_uniform_filter_size=args.dynamic_uniform_filter_size,
             dynamic_chunk_x=args.dynamic_chunk_x,
         )
@@ -961,11 +1320,13 @@ def main():
 
     run_viewer(
         input_path=DEFAULT_INPUT_DIR,
+        background_input_path=DEFAULT_BACKGROUND_INPUT_PATH,
         frame_rate_hz=DEFAULT_FRAME_RATE_HZ,
+        tissue_duration_seconds=DEFAULT_TISSUE_DURATION_SECONDS,
+        background_duration_seconds=DEFAULT_BACKGROUND_DURATION_SECONDS,
         center_wavelength_nm=DEFAULT_CENTER_WAVELENGTH_NM,
         profile_start_depth=DEFAULT_PROFILE_START_DEPTH,
         max_autocorr_lag=DEFAULT_MAX_AUTOCORR_LAG,
-        spectrum_min_hz=DEFAULT_SPECTRUM_MIN_HZ,
         notch_band_hz=DEFAULT_NOTCH_BAND_HZ,
         dynamic_uniform_filter_size=DEFAULT_DYNAMIC_UNIFORM_FILTER_SIZE,
         dynamic_chunk_x=DEFAULT_DYNAMIC_CHUNK_X,

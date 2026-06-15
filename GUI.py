@@ -659,7 +659,7 @@ class Ui_MainWindow(object):
         font = QtGui.QFont()
         font.setPointSize(20)
         self.Timer.setFont(font)
-        self.Timer.setDecimals(1)
+        self.Timer.setDecimals(2)
         self.Timer.setMaximum(10000.0)
         self.Timer.setProperty("value", 12.0)
         self.Timer.setObjectName("Timer")

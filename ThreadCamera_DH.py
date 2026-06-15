@@ -25,8 +25,23 @@ global SIM
 # Fall back to simulation when the Daheng SDK cannot be imported.
 try:
     import sys
-    GALAXY_SDK_PYTHON_DIR = r"D:\\GalaxySDK\\Development\\Samples\\Python\\"
-    sys.path.append(GALAXY_SDK_PYTHON_DIR)
+    GALAXY_SDK_ROOT = r"D:\GalaxySDK"
+
+    GALAXY_PYTHON_DIR = os.path.join(
+        GALAXY_SDK_ROOT,
+        "Development",
+        "Samples",
+        "Python",
+    )
+
+    GALAXY_DLL_DIR = os.path.join(
+        GALAXY_SDK_ROOT,
+        "APIDll",
+        "Win64",
+    )
+
+    sys.path.append(GALAXY_PYTHON_DIR)
+    os.add_dll_directory(GALAXY_DLL_DIR)
     import gxipy as gx 
     import DahengCamera_init
     from ctypes import *

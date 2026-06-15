@@ -25,26 +25,26 @@ except Exception:
 
 @dataclass(frozen=True)
 class CalibrationConfig:
-    data_path: Path = Path(r"E:\IOCTData\disperison_compensation\20260506")
+    data_path: Path = Path(r"E:\IOCTData\disperison_compensation\20260608_4downsample")
     test_path: Path = Path(r"E:\IOCTData\disperison_compensation\20260506")
-    nk: int = 1104
+    nk: int = 276
     nx: int = 1264
     ny: int = 1
-    highpass_smooth_span: int = 51
+    highpass_smooth_span: int = 15
     phase_smooth_span: int = 21
     dphase_smooth_span: int = 11
-    phase_column_start: int = 101  # MATLAB columns 701:800
-    phase_column_stop: int = 1000
+    phase_column_start: int = 451  # MATLAB columns 701:800
+    phase_column_stop: int = 460
     file1_left_guard: int = 15
     file1_right_guard: int = 15
     file2_left_guard: int = 10
     file2_right_guard: int = 20
     interpolation_epsilon: float = 1.0e-5
     plot: bool = True
-    plot_every_n_columns: int = 50
+    plot_every_n_columns: int = 10
     plot_column_start: int = 1  # MATLAB column 2
-    phase_plot_column_start: int = 101  # MATLAB column 702
-    phase_plot_column_stop: int = 1000
+    phase_plot_column_start: int = 401  # MATLAB column 702
+    phase_plot_column_stop: int = 500
     run_calibration: bool = True
     run_test: bool = False
 
@@ -89,6 +89,7 @@ def read_tiff_spectrum(path: Path, config: CalibrationConfig) -> np.ndarray:
 
 def highpass_spectra(data: np.ndarray, span: int) -> np.ndarray:
     return data - smooth_moving_mean(data, span=span, axis=0)
+    # return data - np.reshape(np.mean(data, axis=1),[data.shape[0],1])
 
 
 def analytic_phase(data: np.ndarray) -> np.ndarray:

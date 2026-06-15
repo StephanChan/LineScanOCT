@@ -148,7 +148,7 @@ def process_idle_dynamic_until_deadline(weaver, deadline, current_message):
 def process_next_idle_dynamic_folder(weaver, deadline):
     root_dir = weaver.ui.DIR.toPlainText()
     gpu_thread = getattr(weaver, "gpu_thread", None)
-    prefer_gpu = gpu_thread is not None and not getattr(gpu_thread, "SIM", True)
+    # prefer_gpu = gpu_thread is not None and not getattr(gpu_thread, "SIM", True)
     if gpu_thread is None:
         return False
 
@@ -186,8 +186,7 @@ def process_next_idle_dynamic_folder(weaver, deadline):
                         f"file={entry['path']}"
                     )
                 dynamic_2d, mean_2d = gpu_thread.compute_dynamic_and_mean_from_stack(
-                    stack,
-                    prefer_gpu=prefer_gpu,
+                    stack
                 )
                 dynamic_slices.append(dynamic_2d)
                 mean_slices.append(mean_2d)

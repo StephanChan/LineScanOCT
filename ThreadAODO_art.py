@@ -502,7 +502,7 @@ class AODOThread(QThread):
         speed = max(speed, 0.01)
         position_widget = getattr(self.ui, f"{axis}Position")
         stage_range = float(position_widget.maximum()) - float(position_widget.minimum())
-        return max(30.0, 2.0 * stage_range / speed)
+        return max(30.0, 5.0 * stage_range / speed)
 
     def run_motor_call(self, callback, timeout, description):
         error_box = []
