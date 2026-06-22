@@ -16,9 +16,9 @@ except ImportError:
 
 
 # Spyder/default run settings. Edit these values, then press Run.
-DEFAULT_TISSUE_INPUT_PATH = r"E:\IOCTData\Lung Cancer mice 260601\260608\200Hz 2seconds Blines"
-DEFAULT_BACKGROUND_INPUT_PATH = r"E:\IOCTData\Lung Cancer mice 260601\260608\100Hz 10seconds Blines\noise\Noise-Yrpt1001-X1264-Z276.tif"
-DEFAULT_FRAME_RATE_HZ = 200.0
+DEFAULT_TISSUE_INPUT_PATH = r"E:\IOCTData\HighResData\paper\Wout_sub_background\PumpON"
+DEFAULT_BACKGROUND_INPUT_PATH = r"E:\IOCTData\HighResData\noise\Wout_sub_background\Bline-1-Yrpt800-X1104-Z184.tif"
+DEFAULT_FRAME_RATE_HZ = 50.0
 DEFAULT_TISSUE_DURATION_SECONDS = 2.0
 DEFAULT_BACKGROUND_DURATION_SECONDS = 2.0
 # Use None when matching the full-band time-domain pipeline. The time-domain

@@ -19,18 +19,14 @@ except ImportError:
 
 # Spyder/default run settings. Edit these values, then press Run.
 DEFAULT_INPUT_PATH = (
-    r"E:\IOCTData\vibration charac\5mm glass base\vibration measurement"
-    r"\Table float pump on closure open\closure closed\paper vibration"
-    r"\Bline-2-Yrpt1000-X1264-Z276.tif"
+    r"E:\IOCTData\HighResData\paper\Wout_sub_background\PumpON\tissue\Bline-1-Yrpt800-X1104-Z184.tif"
 )
 DEFAULT_OUTPUT_DIR = None  # None saves results beside the input stack.
 DEFAULT_INPUT_IS_SAVED_AMP_PHASE = True
 DEFAULT_NOISE_INPUT_PATH =(
-    r"E:\IOCTData\vibration charac\5mm glass base\vibration measurement"
-    r"\Table float pump on closure open\closure closed\paper vibration"
-    r"\Noise-Yrpt1001-X1264-Z276.tif"
+    r"E:\IOCTData\HighResData\noise\microscope slide\Bline-1-Yrpt800-X1104-Z184.tif"
 )  # Set a noise-only TIFF here. None or "" falls back to signal-stack bottom-region noise.
-DEFAULT_FRAME_RATE_HZ = 200.0
+DEFAULT_FRAME_RATE_HZ = 50.0
 DEFAULT_CENTER_WAVELENGTH_NM = 840.0
 DEFAULT_REFRACTIVE_INDEX = 1.0
 DEFAULT_USE_HANNING = False
@@ -43,7 +39,7 @@ DEFAULT_G1_MAX_PIXELS = 20000
 DEFAULT_TARGET_TRACE_SNR_DB = (20.0, 30.0, 40.0, 50.0)
 DEFAULT_THEORY_VARIANCE_COEFFICIENT = 0.5
 DEFAULT_ENABLE_PHASE_VARIANCE_FIT = True
-DEFAULT_FIT_SNR_RANGE_DB = (5.0, 34.0)
+DEFAULT_FIT_SNR_RANGE_DB = (5.0, 45.0)
 DEFAULT_UPPER_BOUND_PERCENTILE = 99.9
 DEFAULT_FIT_MIN_BIN_PIXELS = 100
 DEFAULT_FIT_GRID_POINTS = 500
@@ -250,6 +246,35 @@ def estimate_sigma_q_from_complex_samples(complex_samples):
     return sigma_q
 
 
+def circular_phase_mean_axis0(phase_stack):
+    phase_stack = np.asarray(phase_stack, dtype=np.float32)
+    unit_phasor = np.exp(1j * phase_stack).astype(np.complex64, copy=False)
+    mean_phasor = np.mean(unit_phasor, axis=0, dtype=np.complex64)
+    return np.angle(mean_phasor).astype(np.float32, copy=False)
+
+
+def circular_phase_std_axis0(phase_stack):
+    phase_stack = np.asarray(phase_stack, dtype=np.float32)
+    unit_phasor = np.exp(1j * phase_stack).astype(np.complex64, copy=False)
+    resultant = np.mean(unit_phasor, axis=0, dtype=np.complex64)
+    resultant_magnitude = np.abs(resultant).astype(np.float32, copy=False)
+    resultant_magnitude = np.clip(resultant_magnitude, 1e-8, 1.0)
+    circular_std = np.sqrt(np.maximum(-2.0 * np.log(resultant_magnitude), 0.0)).astype(
+        np.float32,
+        copy=False,
+    )
+    return circular_std
+
+
+def wrap_phase_residual(phase_stack, phase_mean):
+    phase_stack = np.asarray(phase_stack, dtype=np.float32)
+    phase_mean = np.asarray(phase_mean, dtype=np.float32)
+    return np.angle(np.exp(1j * (phase_stack - phase_mean[np.newaxis, :, :]))).astype(
+        np.float32,
+        copy=False,
+    )
+
+
 def top_half_depth_stop(depth_pixels, analysis_start_depth=0):
     analysis_start_depth = int(max(0, analysis_start_depth))
     half_depth = int(max(1, depth_pixels // 2))
@@ -399,10 +424,10 @@ def calculate_phase_noise_metrics(
     snr_linear_power = (mean_amplitude * mean_amplitude) / np.float32(2.0 * sigma_q * sigma_q)
     snr_db_map = 10.0 * np.log10(np.maximum(snr_linear_power, np.float32(1e-12)))
 
-    phase = np.unwrap(np.angle(depth_complex).astype(np.float32, copy=False), axis=0)
-    phase_mean = np.mean(phase, axis=0, dtype=np.float32)
-    phase_centered = phase - phase_mean[np.newaxis, :, :]
-    phase_std_map = np.std(phase_centered, axis=0, dtype=np.float32)
+    phase = np.angle(depth_complex).astype(np.float32, copy=False)
+    phase_mean = circular_phase_mean_axis0(phase)
+    phase_centered = wrap_phase_residual(phase, phase_mean)
+    phase_std_map = circular_phase_std_axis0(phase)
     phase_variance_map = phase_std_map * phase_std_map
 
     wavelength_nm = float(center_wavelength_nm)
@@ -833,8 +858,8 @@ def plot_noise_floor_summary(
         )
     ax_std.set_yscale("log")
     ax_std.set_xlabel("Pixel SNR (dB)", fontsize=FONT_SIZES["label"])
-    ax_std.set_ylabel("Phase standard deviation (rad)", fontsize=FONT_SIZES["label"])
-    ax_std.set_title("Phase Noise vs SNR", fontsize=FONT_SIZES["title"])
+    ax_std.set_ylabel("Circular phase standard deviation (rad)", fontsize=FONT_SIZES["label"])
+    ax_std.set_title("Circular Phase Noise vs SNR", fontsize=FONT_SIZES["title"])
     ax_std.grid(True, which="both", alpha=0.25)
     ax_std.legend(fontsize=FONT_SIZES["legend"])
 

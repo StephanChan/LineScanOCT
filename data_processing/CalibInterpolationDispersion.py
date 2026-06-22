@@ -25,16 +25,16 @@ except Exception:
 
 @dataclass(frozen=True)
 class CalibrationConfig:
-    data_path: Path = Path(r"E:\IOCTData\disperison_compensation\20260608_4downsample")
+    data_path: Path = Path(r"E:\IOCTData\disperison_compensation\HighRes0618")
     test_path: Path = Path(r"E:\IOCTData\disperison_compensation\20260506")
-    nk: int = 276
-    nx: int = 1264
+    nk: int = 904
+    nx: int = 1104
     ny: int = 1
     highpass_smooth_span: int = 15
     phase_smooth_span: int = 21
     dphase_smooth_span: int = 11
-    phase_column_start: int = 451  # MATLAB columns 701:800
-    phase_column_stop: int = 460
+    phase_column_start: int = 521  # MATLAB columns 701:800
+    phase_column_stop: int = 530
     file1_left_guard: int = 15
     file1_right_guard: int = 15
     file2_left_guard: int = 10
@@ -44,7 +44,7 @@ class CalibrationConfig:
     plot_every_n_columns: int = 10
     plot_column_start: int = 1  # MATLAB column 2
     phase_plot_column_start: int = 401  # MATLAB column 702
-    phase_plot_column_stop: int = 500
+    phase_plot_column_stop: int = 600
     run_calibration: bool = True
     run_test: bool = False
 
@@ -303,7 +303,7 @@ def phase_for_file2(data: np.ndarray, config: CalibrationConfig) -> tuple[np.nda
     rrb = np.abs(rr0[:z_range, :])
     plot_columns(rrb, "file2 raw Alines", config, xlim=(0, z_range), linewidth=2.0)
 
-    search_start = nk//6
+    search_start = nk//10
     z = int(np.argmax(np.mean(rrb[search_start:, :], axis=1)) + search_start)
     rr0_clean = clean_reflector_peak_complex(
         data_hp,

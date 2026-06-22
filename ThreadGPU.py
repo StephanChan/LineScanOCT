@@ -38,16 +38,11 @@ GPU_FFT_CHUNK_FRAMES = 8
 # calculation. Usually leave enabled unless debugging transfer/order issues.
 GPU_OVERLAP_TRANSFER = True
 
-# Pre-FFT averaging factor used by dynamic processing. A value of 1 means no
-# pre-averaging; larger values average neighboring raw frames before FFT, which
-# reduces the temporal sampling rate and can smooth fast dynamics.
-GPU_PRE_AVG_FACTOR = 1
-
 # Spectral baseline subtraction window in camera samples. The raw spectrum is
 # smoothed along each A-line with this uniform-filter window, then subtracted
 # before interpolation/dispersion/FFT. Must be an odd integer; values above 513
 # are clamped because of the current CUDA kernel halo loading pattern.
-GPU_SPECTRAL_BASELINE_WINDOW_SIZE = 51
+GPU_SPECTRAL_BASELINE_WINDOW_SIZE = 35
 
 # Set True to print GPU processing timing for each FFT request. Timing forces
 # CUDA synchronization around each profiled step, so use it for diagnostics and
@@ -62,12 +57,12 @@ GPU_PROFILE_TIMING_PRINT_CHUNKS = False
 # Set True to apply temporal uniform low-pass filtering before dynamic contrast
 # calculation. Set False to use the raw time trace directly. This switch applies
 # to both amplitude dynamic mode and AMP+PHASE complex dynamic mode.
-DYNAMIC_TEMPORAL_LOWPASS_ENABLED = True
+DYNAMIC_TEMPORAL_LOWPASS_ENABLED = False
 
 # Temporal uniform-filter window size in frames. Only used when
 # DYNAMIC_TEMPORAL_LOWPASS_ENABLED is True. Larger values suppress faster
 # temporal fluctuations; 1 is equivalent to no temporal filtering.
-DYNAMIC_TEMPORAL_LOWPASS_WINDOW_SIZE = 10
+DYNAMIC_TEMPORAL_LOWPASS_WINDOW_SIZE = 1
 
 # Spatial Gaussian smoothing sigma applied to the final dynamic image. Set 0 to
 # disable final image smoothing.
@@ -138,7 +133,7 @@ class GPUThread(QThread):
         self.dynamic_filter_gpu_buffer = None
         self.dynamic_var_gpu_buffer = None
         self.gpu_streams = None
-        self.gpu_pre_avg_factor = GPU_PRE_AVG_FACTOR
+        self.gpu_pre_avg_factor = 1
         # Reusable GPU buffer for pre-FFT averaging output.
         self.gpu_pre_avg_gpu_buffer = None
         self.active_tasks = 0
@@ -832,12 +827,16 @@ class GPUThread(QThread):
     def compute_amplitude_dynamic_cpu(self, data_cpu):
         if data_cpu.ndim != 3 or data_cpu.shape[0] < 2:
             return []
-        filtered = uniform_filter1d(
-            data_cpu,
-            size=self.current_dynamic_temporal_filter_size(),
-            axis=0,
-            mode='nearest',
-        )
+        filter_size = self.current_dynamic_temporal_filter_size()
+        if filter_size > 1:
+            filtered = uniform_filter1d(
+                data_cpu,
+                size=filter_size,
+                axis=0,
+                mode='nearest',
+            )
+        else:
+            filtered = data_cpu
         dyn = np.var(filtered, axis=0)
         dyn = np.float32(dyn) * np.float32(self.dynMagnification)
         if self.dynamic_gaussian_smoothing > 0:
@@ -1505,26 +1504,29 @@ class GPUThread(QThread):
         if timing is None:
             timing = {}
         frames, xpix, zpix = data_gpu.shape
-        filtered_gpu = self.dynamic_filter_buffer(data_gpu.shape)
         dynamic_gpu = self.dynamic_var_buffer((xpix, zpix))
         threads = 256
-
-        total = int(frames * xpix * zpix)
-        blocks = max(1, min(65535, (total + threads - 1) // threads))
-        step_start = self.gpu_timing_start()
-        self.dynamic_uniform_axis0_kernel(
-            (blocks,),
-            (threads,),
-            (
-                data_gpu,
-                filtered_gpu,
-                int(frames),
-                int(xpix),
-                int(zpix),
-                int(self.current_dynamic_temporal_filter_size()),
-            ),
-        )
-        self.gpu_timing_end(timing, "dynamic_amplitude_temporal_filter", step_start)
+        filter_size = self.current_dynamic_temporal_filter_size()
+        if filter_size > 1:
+            filtered_gpu = self.dynamic_filter_buffer(data_gpu.shape)
+            total = int(frames * xpix * zpix)
+            blocks = max(1, min(65535, (total + threads - 1) // threads))
+            step_start = self.gpu_timing_start()
+            self.dynamic_uniform_axis0_kernel(
+                (blocks,),
+                (threads,),
+                (
+                    data_gpu,
+                    filtered_gpu,
+                    int(frames),
+                    int(xpix),
+                    int(zpix),
+                    int(filter_size),
+                ),
+            )
+            self.gpu_timing_end(timing, "dynamic_amplitude_temporal_filter", step_start)
+        else:
+            filtered_gpu = data_gpu
 
         total = int(xpix * zpix)
         blocks = max(1, min(65535, (total + threads - 1) // threads))
@@ -1609,6 +1611,8 @@ class GPUThread(QThread):
 
     def pre_avg_factor(self):
         if self.current_dynamic_enabled():
+            if hasattr(self.ui, "PreFFTBlineAvg"):
+                return max(1, int(self.ui.PreFFTBlineAvg.value()))
             return max(1, int(self.gpu_pre_avg_factor))
         return self.current_bline_avg()
 

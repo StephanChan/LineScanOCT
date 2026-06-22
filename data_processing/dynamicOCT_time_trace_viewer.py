@@ -32,12 +32,18 @@ DEFAULT_MAX_AUTOCORR_LAG = 200
 DEFAULT_NOTCH_BAND_HZ = None
 DEFAULT_AMPLITUDE_SCALE_LIMIT = 1000.0
 DEFAULT_PHASE_NOISE_REFERENCE_START_DEPTH = None  # None uses the deepest quarter of the B-line.
-DEFAULT_PHASE_NOISE_VARIANCE_COEFFICIENT = 0.6284  # Fit coefficient C in sigma_phase^2 = C*10^(-SNR/10) + floor^2.
+DEFAULT_PHASE_NOISE_VARIANCE_COEFFICIENT = 0.55  # Fit coefficient C in sigma_phase^2 = C*10^(-SNR/10) + floor^2.
 DEFAULT_PHASE_NOISE_VARIANCE_FLOOR_RAD2 = 0.0  # Residual phase-variance floor (rad^2).
 DEFAULT_PHASE_NOISE_CENTRAL_PERCENTILE = 99.0  # Draw the central percentile band of the expected Gaussian phase noise.
 
 DEFAULT_DYNAMIC_UNIFORM_FILTER_SIZE = 1
 DEFAULT_DYNAMIC_CHUNK_X = 200
+
+DEFAULT_VIEWER_TITLE_FONT_SIZE = 10
+DEFAULT_VIEWER_LABEL_FONT_SIZE = 9
+DEFAULT_VIEWER_TICK_FONT_SIZE = 8
+DEFAULT_VIEWER_SUMMARY_FONT_SIZE = 9
+DEFAULT_VIEWER_SUPTITLE_FONT_SIZE = 11
 
 # Keep False for Spyder/IPython. Set True only when running from a terminal and
 # passing command-line arguments.
@@ -306,6 +312,15 @@ def expected_phase_variance_from_snr_db(
     coefficient = float(coefficient)
     variance_floor_rad2 = float(variance_floor_rad2)
     return coefficient * np.power(10.0, -snr_db / 10.0) + variance_floor_rad2
+
+
+def circular_phase_std(phase_trace):
+    phase_trace = np.asarray(phase_trace, dtype=np.float32)
+    if phase_trace.size == 0:
+        return np.nan
+    resultant_length = float(np.abs(np.mean(np.exp(1j * phase_trace))))
+    resultant_length = float(np.clip(resultant_length, 1e-8, 1.0))
+    return float(np.sqrt(max(0.0, -2.0 * np.log(resultant_length))))
 
 
 def percentile_band_sigma_multiplier(central_percentile):
@@ -707,6 +722,18 @@ class AmpPhaseBlineTraceViewer:
         plt.show(block=True)
         plt.close(self.fig)
 
+    def style_axis(self, ax, title=None, xlabel=None, ylabel=None, title_font_size=None):
+        if title is not None:
+            ax.set_title(
+                title,
+                fontsize=DEFAULT_VIEWER_TITLE_FONT_SIZE if title_font_size is None else title_font_size,
+            )
+        if xlabel is not None:
+            ax.set_xlabel(xlabel, fontsize=DEFAULT_VIEWER_LABEL_FONT_SIZE)
+        if ylabel is not None:
+            ax.set_ylabel(ylabel, fontsize=DEFAULT_VIEWER_LABEL_FONT_SIZE)
+        ax.tick_params(axis="both", labelsize=DEFAULT_VIEWER_TICK_FONT_SIZE)
+
     def build_figure(self):
         self.fig = plt.figure(figsize=(19.0, 14.0))
         grid = self.fig.add_gridspec(
@@ -747,9 +774,12 @@ class AmpPhaseBlineTraceViewer:
             vmin=self.bline_vmin,
             vmax=self.bline_vmax,
         )
-        self.ax_bline.set_title("Mean abs B-line (click a pixel)")
-        self.ax_bline.set_xlabel("X pixel")
-        self.ax_bline.set_ylabel("Depth index")
+        self.style_axis(
+            self.ax_bline,
+            title="Mean abs B-line (click a pixel)",
+            xlabel="X pixel",
+            ylabel="Depth index",
+        )
 
         self.amp_dynamic_vmin, self.amp_dynamic_vmax = self.initial_image_clim(
             self.amplitude_dynamic
@@ -762,9 +792,12 @@ class AmpPhaseBlineTraceViewer:
             vmin=self.amp_dynamic_vmin,
             vmax=self.amp_dynamic_vmax,
         )
-        self.ax_amp_dynamic.set_title("Amplitude dynamic signal")
-        self.ax_amp_dynamic.set_xlabel("X pixel")
-        self.ax_amp_dynamic.set_ylabel("Depth index")
+        self.style_axis(
+            self.ax_amp_dynamic,
+            title="Amplitude dynamic signal",
+            xlabel="X pixel",
+            ylabel="Depth index",
+        )
 
         self.complex_dynamic_vmin, self.complex_dynamic_vmax = self.initial_image_clim(
             self.complex_dynamic
@@ -777,9 +810,12 @@ class AmpPhaseBlineTraceViewer:
             vmin=self.complex_dynamic_vmin,
             vmax=self.complex_dynamic_vmax,
         )
-        self.ax_complex_dynamic.set_title("Complex dynamic signal, abs result")
-        self.ax_complex_dynamic.set_xlabel("X pixel")
-        self.ax_complex_dynamic.set_ylabel("Depth index")
+        self.style_axis(
+            self.ax_complex_dynamic,
+            title="Complex dynamic signal, abs result",
+            xlabel="X pixel",
+            ylabel="Depth index",
+        )
 
         tissue_intensity = np.asarray(self.mean_abs_bline[self.tissue_mask], dtype=np.float32)
         tissue_ratio = np.asarray(self.dynamic_ratio[self.tissue_mask], dtype=np.float32)
@@ -791,9 +827,12 @@ class AmpPhaseBlineTraceViewer:
             alpha=0.35,
             edgecolors="none",
         )
-        self.ax_ratio.set_title("Tissue ROI: amp/complex dynamic vs intensity")
-        self.ax_ratio.set_xlabel("OCT intensity")
-        self.ax_ratio.set_ylabel("Amp/complex dynamic")
+        self.style_axis(
+            self.ax_ratio,
+            title="Tissue ROI: amp/complex dynamic vs intensity",
+            xlabel="OCT intensity",
+            ylabel="Amp/complex dynamic",
+        )
         self.ax_ratio.grid(True, alpha=0.25)
 
         self.cursor_bline = self.ax_bline.plot(
@@ -821,8 +860,11 @@ class AmpPhaseBlineTraceViewer:
             linestyle="None",
         )[0]
         self.amp_trace_raw_line, = self.ax_amp_trace_raw.plot([], [], lw=1.2)
-        self.ax_amp_trace_raw.set_xlabel("Time (s)")
-        self.ax_amp_trace_raw.set_ylabel("Amplitude")
+        self.style_axis(
+            self.ax_amp_trace_raw,
+            xlabel="Time (s)",
+            ylabel="Amplitude",
+        )
         self.ax_amp_trace_raw.grid(True, alpha=0.25)
 
         self.complex_scatter_raw = self.ax_complex_scatter_raw.scatter(
@@ -835,6 +877,7 @@ class AmpPhaseBlineTraceViewer:
             edgecolors="none",
         )
         self.ax_complex_scatter_raw.grid(True, alpha=0.25)
+        self.ax_complex_scatter_raw.tick_params(axis="both", labelsize=DEFAULT_VIEWER_TICK_FONT_SIZE)
 
         self.ax_summary.axis("off")
         self.summary_text = self.ax_summary.text(
@@ -844,7 +887,7 @@ class AmpPhaseBlineTraceViewer:
             transform=self.ax_summary.transAxes,
             va="top",
             ha="left",
-            fontsize=11,
+            fontsize=DEFAULT_VIEWER_SUMMARY_FONT_SIZE,
             family="monospace",
             wrap=True,
         )
@@ -864,33 +907,51 @@ class AmpPhaseBlineTraceViewer:
             linewidth=1.0,
             alpha=0.9,
         )
-        self.ax_phase_trace.set_xlabel("Time (s)")
-        self.ax_phase_trace.set_ylabel("Phase (rad)")
+        self.style_axis(
+            self.ax_phase_trace,
+            xlabel="Time (s)",
+            ylabel="Unwrapped phase (rad)",
+        )
         self.ax_phase_trace.grid(True, alpha=0.25)
 
         self.g_amp_raw_line, = self.ax_g_amp_raw.plot([], [], lw=1.3, color="red")
-        self.ax_g_amp_raw.set_xlabel("Lag time (s)")
-        self.ax_g_amp_raw.set_ylabel("g_amp raw")
+        self.style_axis(
+            self.ax_g_amp_raw,
+            xlabel="Lag time (s)",
+            ylabel="g_amp raw",
+        )
         self.ax_g_amp_raw.grid(True, alpha=0.25)
 
         self.g_amp_line, = self.ax_g_amp.plot([], [], lw=1.5, color="red")
-        self.ax_g_amp.set_xlabel("Lag time (s)")
-        self.ax_g_amp.set_ylabel("g_amp(k)")
+        self.style_axis(
+            self.ax_g_amp,
+            xlabel="Lag time (s)",
+            ylabel="g_amp(k)",
+        )
         self.ax_g_amp.grid(True, alpha=0.25)
 
         self.g1_raw_abs_line, = self.ax_g1_raw.plot([], [], lw=1.3, color="red")
-        self.ax_g1_raw.set_xlabel("Lag time (s)")
-        self.ax_g1_raw.set_ylabel("|g1 raw|")
+        self.style_axis(
+            self.ax_g1_raw,
+            xlabel="Lag time (s)",
+            ylabel="|g1 raw|",
+        )
         self.ax_g1_raw.grid(True, alpha=0.25)
 
         self.g1_abs_line, = self.ax_g1.plot([], [], lw=1.5, color="red")
-        self.ax_g1.set_xlabel("Lag time (s)")
-        self.ax_g1.set_ylabel("|g1(k)|")
+        self.style_axis(
+            self.ax_g1,
+            xlabel="Lag time (s)",
+            ylabel="|g1(k)|",
+        )
         self.ax_g1.grid(True, alpha=0.25)
 
-        self.fig.colorbar(self.im_bline, ax=self.ax_bline, label="Mean amplitude")
-        self.fig.colorbar(self.im_amp_dynamic, ax=self.ax_amp_dynamic, label="Variance")
-        self.fig.colorbar(self.im_complex_dynamic, ax=self.ax_complex_dynamic, label="Abs variance")
+        colorbar_bline = self.fig.colorbar(self.im_bline, ax=self.ax_bline, label="Mean amplitude")
+        colorbar_amp = self.fig.colorbar(self.im_amp_dynamic, ax=self.ax_amp_dynamic, label="Variance")
+        colorbar_complex = self.fig.colorbar(self.im_complex_dynamic, ax=self.ax_complex_dynamic, label="Abs variance")
+        for colorbar in (colorbar_bline, colorbar_amp, colorbar_complex):
+            colorbar.ax.tick_params(labelsize=DEFAULT_VIEWER_TICK_FONT_SIZE)
+            colorbar.ax.yaxis.label.set_size(DEFAULT_VIEWER_LABEL_FONT_SIZE)
         self.fig.canvas.mpl_connect("button_press_event", self.on_click)
         self.fig.canvas.mpl_connect("button_release_event", self.on_release)
         self.fig.canvas.mpl_connect("motion_notify_event", self.on_motion)
@@ -901,7 +962,8 @@ class AmpPhaseBlineTraceViewer:
             f"{self.stack_path.name}    "
             f"T={self.frames}, X={self.x_pixels}, Z={self.z_pixels}, "
             f"frame rate={self.frame_rate_hz:g} Hz, "
-            f"notch={format_notch_band(self.notch_band_hz)}"
+            f"notch={format_notch_band(self.notch_band_hz)}",
+            fontsize=DEFAULT_VIEWER_SUPTITLE_FONT_SIZE,
         )
         self.update_views()
         self.fig.tight_layout(rect=[0.0, 0.05, 1.0, 0.96], h_pad=1.5, w_pad=1.0)
@@ -1013,9 +1075,9 @@ class AmpPhaseBlineTraceViewer:
         unfiltered_complex_trace = self.complex_stack[:, self.selected_x, self.selected_depth]
         filtered_complex_trace = self.filtered_complex_stack[:, self.selected_x, self.selected_depth]
         amp_trace = np.abs(filtered_complex_trace).astype(np.float32, copy=False)
-        phase_trace = np.angle(filtered_complex_trace).astype(np.float32, copy=False)
+        wrapped_phase_trace = np.angle(filtered_complex_trace).astype(np.float32, copy=False)
         _, unwrapped_phase = phase_to_delta_z_nm(
-            phase_trace,
+            wrapped_phase_trace,
             center_wavelength_nm=self.center_wavelength_nm,
         )
         delta_z_nm = (
@@ -1039,7 +1101,7 @@ class AmpPhaseBlineTraceViewer:
         self.current_g1_raw = g1_raw
         self.current_g1 = g1
         self.current_amp_trace = amp_trace
-        self.current_phase_trace = phase_trace
+        self.current_phase_trace = unwrapped_phase
         self.current_unfiltered_complex_trace = unfiltered_complex_trace
         self.current_filtered_complex_trace = filtered_complex_trace
         self.current_complex_trace_raw_display = filtered_complex_trace
@@ -1069,7 +1131,8 @@ class AmpPhaseBlineTraceViewer:
         self.ax_amp_trace_raw.set_xlim(self.time_axis_s[0], self.time_axis_s[-1])
         self.ax_amp_trace_raw.set_ylim(0, DEFAULT_AMPLITUDE_SCALE_LIMIT)
         self.ax_amp_trace_raw.set_title(
-            f"Amplitude trace at X={self.selected_x}, depth={self.selected_depth}"
+            f"Amplitude trace at X={self.selected_x}, depth={self.selected_depth}",
+            fontsize=DEFAULT_VIEWER_TITLE_FONT_SIZE,
         )
 
         polar_points = np.column_stack(
@@ -1078,11 +1141,12 @@ class AmpPhaseBlineTraceViewer:
         self.complex_scatter_raw.set_offsets(polar_points)
         self.ax_complex_scatter_raw.set_ylim(0, DEFAULT_AMPLITUDE_SCALE_LIMIT)
         self.ax_complex_scatter_raw.set_title(
-            f"Complex trace polar plot at X={self.selected_x}, depth={self.selected_depth}"
+            f"Complex trace polar plot at X={self.selected_x}, depth={self.selected_depth}",
+            fontsize=DEFAULT_VIEWER_TITLE_FONT_SIZE,
         )
 
-        self.phase_trace_line.set_data(self.time_axis_s, phase_trace)
-        phase_center = float(np.nanmean(phase_trace))
+        self.phase_trace_line.set_data(self.time_axis_s, unwrapped_phase)
+        phase_center = float(np.nanmean(unwrapped_phase))
         if np.isfinite(expected_phase_std_rad):
             band_half_width = (
                 percentile_band_sigma_multiplier(DEFAULT_PHASE_NOISE_CENTRAL_PERCENTILE)
@@ -1103,7 +1167,8 @@ class AmpPhaseBlineTraceViewer:
         self.ax_phase_trace.relim()
         self.ax_phase_trace.autoscale_view(scalex=False, scaley=True)
         self.ax_phase_trace.set_title(
-            f"Phase trace at X={self.selected_x}, depth={self.selected_depth}"
+            f"Unwrapped phase at X={self.selected_x}, depth={self.selected_depth}",
+            fontsize=DEFAULT_VIEWER_TITLE_FONT_SIZE,
         )
 
         self.g_amp_raw_line.set_data(lag_times_s, g_amp_raw)
@@ -1114,7 +1179,7 @@ class AmpPhaseBlineTraceViewer:
         self.ax_g_amp_raw.set_ylim(-1, 1.1)
         self.ax_g_amp_raw.set_title(
             "Amp autocorr, raw",
-            fontsize=10,
+            fontsize=DEFAULT_VIEWER_TITLE_FONT_SIZE - 1,
         )
 
         self.g_amp_line.set_data(lag_times_s, g_amp)
@@ -1125,7 +1190,7 @@ class AmpPhaseBlineTraceViewer:
         self.ax_g_amp.set_ylim(-1, 1.1)
         self.ax_g_amp.set_title(
             "Amp autocorr, centered",
-            fontsize=10,
+            fontsize=DEFAULT_VIEWER_TITLE_FONT_SIZE - 1,
         )
 
         self.g1_raw_abs_line.set_data(lag_times_s, np.abs(g1_raw))
@@ -1136,7 +1201,7 @@ class AmpPhaseBlineTraceViewer:
         self.ax_g1_raw.set_ylim(0, 1.1)
         self.ax_g1_raw.set_title(
             "Complex autocorr, raw",
-            fontsize=10,
+            fontsize=DEFAULT_VIEWER_TITLE_FONT_SIZE - 1,
         )
 
         self.g1_abs_line.set_data(lag_times_s, np.abs(g1))
@@ -1147,16 +1212,16 @@ class AmpPhaseBlineTraceViewer:
         self.ax_g1.set_ylim(0, 1.1)
         self.ax_g1.set_title(
             "Complex autocorr, centered",
-            fontsize=10,
+            fontsize=DEFAULT_VIEWER_TITLE_FONT_SIZE - 1,
         )
 
         dynamic_ratio_value = float(self.dynamic_ratio[self.selected_x, self.selected_depth])
-        phase_std = float(np.nanstd(phase_trace))
+        phase_std = circular_phase_std(wrapped_phase_trace)
         dz_std = float(np.nanstd(delta_z_nm))
         summary = (
             f"{self.stack_path.name}: X={self.selected_x}, depth={self.selected_depth}, "
             f"amp mean={amp_mean:.4g}, amp/complex dynamic={dynamic_ratio_value:.4g}, "
-            f"phase std={phase_std:.4g} rad, "
+            f"circular phase std={phase_std:.4g} rad, "
             f"SNR-limited phase std={expected_phase_std_rad:.4g} rad, "
             f"delta-z std={dz_std:.4g} nm, "
             f"SNR={pixel_snr_db:.3g} dB"

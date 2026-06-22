@@ -578,6 +578,8 @@ class GUI(MainWindow):
                 self.enqueue_weaver_action(an_action)
         
     def LocateSample(self):
+        self.ZPosition.setValue(5)
+        self.Zmove2()
         self.XHome()
         self.YHome()
         self.scanner = UnifiedSampleScanner(

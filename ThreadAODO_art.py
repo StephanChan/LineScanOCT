@@ -153,6 +153,13 @@ class AODOThread(QThread):
         print(message)
         self.emit_status(message)
 
+        # Z homing is unreliable on this hardware, so recover it by moving to -1 mm
+        # and then redefining that location as zero.
+        motors.move_absolute(z_axis.axis_index, 0.0)
+        motors.set_position(z_axis.axis_index, 0)
+        self.ui.ZPosition.setValue(0)
+        self.ui.Zcurrent.setValue(0)
+        
         motors.set_home_speed(x_axis.axis_index, self.ui.XSpeed.value())
         motors.home(x_axis.axis_index)
         self.ui.XPosition.setValue(0)
@@ -163,12 +170,7 @@ class AODOThread(QThread):
         self.ui.YPosition.setValue(0)
         self.ui.Ycurrent.setValue(0)
 
-        # Z homing is unreliable on this hardware, so recover it by moving to -1 mm
-        # and then redefining that location as zero.
-        motors.move_absolute(z_axis.axis_index, -1.0)
-        motors.set_position(z_axis.axis_index, 0)
-        self.ui.ZPosition.setValue(0)
-        self.ui.Zcurrent.setValue(0)
+
 
         message = (
             f"Stage reset recovery complete: X={self.ui.Xcurrent.value()}, "

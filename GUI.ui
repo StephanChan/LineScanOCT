@@ -736,7 +736,7 @@
                 <bool>false</bool>
                </property>
                <property name="text">
-                <string>偏置归零</string>
+                <string>振镜复位</string>
                </property>
                <property name="checkable">
                 <bool>false</bool>
@@ -830,14 +830,14 @@
              <item row="0" column="0" colspan="2">
               <widget class="QCheckBox" name="DynCheckBox">
                <property name="text">
-                <string>动态OCT? 选中将采集动态信号</string>
+                <string>动态OCT勾选此框</string>
                </property>
               </widget>
              </item>
              <item row="1" column="0" colspan="2">
               <widget class="QCheckBox" name="RealtimeDynCheckBox">
                <property name="text">
-                <string>实时计算动态？选中将不保存所有Bline数据</string>
+                <string>实时计算动态？选中将不保存原始数据</string>
                </property>
               </widget>
              </item>
@@ -1835,41 +1835,6 @@
           <string>隐藏参数</string>
          </attribute>
          <layout class="QGridLayout" name="gridLayout_3">
-          <item row="5" column="2">
-           <widget class="QLabel" name="DepthStartLabel">
-            <property name="minimumSize">
-             <size>
-              <width>200</width>
-              <height>0</height>
-             </size>
-            </property>
-            <property name="maximumSize">
-             <size>
-              <width>150</width>
-              <height>20</height>
-             </size>
-            </property>
-            <property name="text">
-             <string>Display Start(pixel)</string>
-            </property>
-           </widget>
-          </item>
-          <item row="5" column="3">
-           <widget class="QSpinBox" name="DepthStart">
-            <property name="maximumSize">
-             <size>
-              <width>150</width>
-              <height>30</height>
-             </size>
-            </property>
-            <property name="minimum">
-             <number>0</number>
-            </property>
-            <property name="maximum">
-             <number>10000</number>
-            </property>
-           </widget>
-          </item>
           <item row="3" column="0">
            <widget class="QLabel" name="label_31">
             <property name="text">
@@ -2175,6 +2140,55 @@
              </size>
             </property>
            </spacer>
+          </item>
+          <item row="6" column="0">
+           <widget class="QLabel" name="DepthStartLabel">
+            <property name="minimumSize">
+             <size>
+              <width>200</width>
+              <height>0</height>
+             </size>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>150</width>
+              <height>20</height>
+             </size>
+            </property>
+            <property name="text">
+             <string>Display Start(pixel)</string>
+            </property>
+           </widget>
+          </item>
+          <item row="6" column="1">
+           <widget class="QSpinBox" name="DepthStart">
+            <property name="maximumSize">
+             <size>
+              <width>150</width>
+              <height>30</height>
+             </size>
+            </property>
+            <property name="minimum">
+             <number>0</number>
+            </property>
+            <property name="maximum">
+             <number>10000</number>
+            </property>
+           </widget>
+          </item>
+          <item row="5" column="2">
+           <widget class="QLabel" name="label_5">
+            <property name="text">
+             <string>Bline降采样数</string>
+            </property>
+           </widget>
+          </item>
+          <item row="5" column="3">
+           <widget class="QSpinBox" name="PreFFTBlineAvg">
+            <property name="value">
+             <number>4</number>
+            </property>
+           </widget>
           </item>
          </layout>
         </widget>

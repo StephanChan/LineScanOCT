@@ -29,7 +29,7 @@ class StageAxisSpec:
     init_speed_mm_s: float
 
 
-SYSTEM_MAGNIFICATION_4X = 2.85
+SYSTEM_MAGNIFICATION_4X = 4#2.85
 
 
 OBJECTIVE_SPECS = {

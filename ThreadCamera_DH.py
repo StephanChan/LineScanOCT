@@ -59,7 +59,7 @@ except Exception as error:
 
 CONTINUOUS = 0x7FFFFFFF
 DAHENG_PRINT_CAMERA_CONFIG = False
-DAHENG_SPECTRAL_DIMENSION = "vertical"
+DAHENG_SPECTRAL_DIMENSION = "horizontal"
 # Set DAHENG_SPECTRAL_DIMENSION to:
 #   "vertical"   -> camera Height = NSamples_DH, camera Width = AlinesPerBline
 #   "horizontal" -> camera Width = NSamples_DH, camera Height = AlinesPerBline
