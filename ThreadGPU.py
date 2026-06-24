@@ -779,13 +779,17 @@ class GPUThread(QThread):
 
     def apply_post_fft_dynamic_normalization_cpu(self, data_cpu):
         frame_mean = np.mean(np.abs(data_cpu), axis=(1, 2), keepdims=True, dtype=np.float32)
+        global_mean = np.mean(frame_mean, dtype=np.float32)
         data_cpu /= frame_mean + np.float32(self.dynamic_normalization_eps)
+        data_cpu *= global_mean
         data_cpu *= np.float32(self.AMPLIFICATION)
         return data_cpu
 
     def apply_post_fft_dynamic_normalization_gpu(self, data_gpu):
         frame_mean = cupy.mean(cupy.absolute(data_gpu), axis=(1, 2), keepdims=True)
+        global_mean = cupy.mean(frame_mean, dtype=cupy.float32)
         data_gpu /= frame_mean + cupy.float32(self.dynamic_normalization_eps)
+        data_gpu *= global_mean
         data_gpu *= cupy.float32(self.AMPLIFICATION)
         return data_gpu
 

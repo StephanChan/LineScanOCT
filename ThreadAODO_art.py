@@ -155,7 +155,7 @@ class AODOThread(QThread):
 
         # Z homing is unreliable on this hardware, so recover it by moving to -1 mm
         # and then redefining that location as zero.
-        motors.move_absolute(z_axis.axis_index, 0.0)
+        motors.move_absolute(z_axis.axis_index, -1.0)
         motors.set_position(z_axis.axis_index, 0)
         self.ui.ZPosition.setValue(0)
         self.ui.Zcurrent.setValue(0)

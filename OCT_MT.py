@@ -578,7 +578,12 @@ class GUI(MainWindow):
                 self.enqueue_weaver_action(an_action)
         
     def LocateSample(self):
-        self.ZPosition.setValue(5)
+        default_sample_z = self.ui.ZPosition.value()
+        safe_locate_z = min(
+            max(5.0, self.ui.ZPosition.minimum()),
+            self.ui.ZPosition.maximum(),
+        )
+        self.ui.ZPosition.setValue(safe_locate_z)
         self.Zmove2()
         self.XHome()
         self.YHome()
@@ -586,7 +591,7 @@ class GUI(MainWindow):
             self.ui.DIR.toPlainText(),
             fov_w_mm=self.ui.XLength.value(),
             fov_h_mm=self.ui.YLength.value(),
-            current_zpos=self.ui.ZPosition.value(),
+            current_zpos=default_sample_z,
             y_step_um=self.ui.YStepSize.value(),
             stage_bounds=(
                 self.ui.Xmin.value(),

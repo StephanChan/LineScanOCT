@@ -19,12 +19,12 @@ except ImportError:
 
 # Spyder/default run settings. Edit these values, then press Run.
 DEFAULT_INPUT_PATH = (
-    r"E:\IOCTData\HighResData\paper\Wout_sub_background\PumpON\tissue\Bline-1-Yrpt800-X1104-Z184.tif"
+    r"E:\IOCTData\HighResData\50Hz_2s\paper\With_sub_background\incubatorOff\Bline-1-Yrpt800-X1104-Z187.tif"
 )
 DEFAULT_OUTPUT_DIR = None  # None saves results beside the input stack.
 DEFAULT_INPUT_IS_SAVED_AMP_PHASE = True
 DEFAULT_NOISE_INPUT_PATH =(
-    r"E:\IOCTData\HighResData\noise\microscope slide\Bline-1-Yrpt800-X1104-Z184.tif"
+    r"E:\IOCTData\HighResData\50Hz_2s\noise\Wout_sub_background\AllOn\Bline-1-Yrpt800-X1104-Z187.tif"
 )  # Set a noise-only TIFF here. None or "" falls back to signal-stack bottom-region noise.
 DEFAULT_FRAME_RATE_HZ = 50.0
 DEFAULT_CENTER_WAVELENGTH_NM = 840.0

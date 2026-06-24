@@ -270,3 +270,5 @@
 2026-06-18 16:01:21:250 [Dll]   DO_VerifyParam:nSampLineCount不能大于8.
 2026-06-18 16:02:01:220 [Dll]   DO_VerifyParam:nSampLineCount不能大于8.
 2026-06-18 16:02:01:221 [Dll]   DO_VerifyParam:nSampLineCount不能大于8.
+2026-06-23 18:03:51:417 [Dll]   DO_VerifyParam:nSampLineCount不能大于8.
+2026-06-23 18:03:51:429 [Dll]   DO_VerifyParam:nSampLineCount不能大于8.
