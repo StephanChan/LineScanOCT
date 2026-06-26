@@ -265,9 +265,9 @@ class GPUThread(QThread):
                 }
             }
             ''','uniform_axis0_nearest')
-        self.dynamic_variance_axis0_kernel = cupy.RawKernel(r'''
+        self.dynamic_std_axis0_kernel = cupy.RawKernel(r'''
             extern "C" __global__
-            void variance_axis0(const float* src, float* dst, int frames, int xpix, int zpix){
+            void std_axis0(const float* src, float* dst, int frames, int xpix, int zpix){
                 long long total = (long long)xpix * zpix;
                 long long tid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
                 long long stride = (long long)blockDim.x * gridDim.x;
@@ -285,10 +285,10 @@ class GPUThread(QThread):
                     }
                     float mean = sum / (float)frames;
                     float var = sumsq / (float)frames - mean * mean;
-                    dst[idx] = var > 0.0f ? var : 0.0f;
+                    dst[idx] = var > 0.0f ? sqrtf(var) : 0.0f;
                 }
             }
-            ''','variance_axis0')
+            ''','std_axis0')
 
     def run(self):
         self.defwin()
@@ -504,10 +504,10 @@ class GPUThread(QThread):
             "chunk_wait_and_log",
             "dynamic_data_to_gpu",
             "dynamic_amplitude_temporal_filter",
-            "dynamic_amplitude_variance",
+            "dynamic_amplitude_std",
             "dynamic_complex_temporal_filter",
             "dynamic_complex_mean",
-            "dynamic_complex_mean_subtracted_power",
+            "dynamic_complex_mean_subtracted_std",
             "dynamic_result_to_cpu",
             "dynamic_gaussian_smoothing",
             "release_gpu_memory",
@@ -841,7 +841,7 @@ class GPUThread(QThread):
             )
         else:
             filtered = data_cpu
-        dyn = np.var(filtered, axis=0)
+        dyn = np.std(filtered, axis=0)
         dyn = np.float32(dyn) * np.float32(self.dynMagnification)
         if self.dynamic_gaussian_smoothing > 0:
             dyn = gaussian_filter(dyn, self.dynamic_gaussian_smoothing)
@@ -1535,7 +1535,7 @@ class GPUThread(QThread):
         total = int(xpix * zpix)
         blocks = max(1, min(65535, (total + threads - 1) // threads))
         step_start = self.gpu_timing_start()
-        self.dynamic_variance_axis0_kernel(
+        self.dynamic_std_axis0_kernel(
             (blocks,),
             (threads,),
             (
@@ -1546,7 +1546,7 @@ class GPUThread(QThread):
                 int(zpix),
             ),
         )
-        self.gpu_timing_end(timing, "dynamic_amplitude_variance", step_start)
+        self.gpu_timing_end(timing, "dynamic_amplitude_std", step_start)
         return dynamic_gpu
 
     def compute_complex_dynamic_gpu(self, data_gpu, timing=None):
@@ -1573,9 +1573,9 @@ class GPUThread(QThread):
 
         step_start = self.gpu_timing_start()
         centered_gpu = filtered_gpu - mean_gpu[cupy.newaxis, :, :]
-        dynamic_gpu = cupy.mean(cupy.absolute(centered_gpu) ** 2, axis=0)
+        dynamic_gpu = cupy.sqrt(cupy.mean(cupy.absolute(centered_gpu) ** 2, axis=0))
         dynamic_gpu = dynamic_gpu.astype(cupy.float32, copy=False)
-        self.gpu_timing_end(timing, "dynamic_complex_mean_subtracted_power", step_start)
+        self.gpu_timing_end(timing, "dynamic_complex_mean_subtracted_std", step_start)
         return dynamic_gpu
 
     def compute_complex_dynamic_cpu(self, data_cpu):
@@ -1597,7 +1597,7 @@ class GPUThread(QThread):
         else:
             filtered = data_cpu
         mean_field = np.mean(filtered, axis=0)
-        dynamic = np.mean(np.abs(filtered - mean_field[np.newaxis, :, :]) ** 2, axis=0)
+        dynamic = np.sqrt(np.mean(np.abs(filtered - mean_field[np.newaxis, :, :]) ** 2, axis=0))
         dynamic = np.asarray(dynamic, dtype=np.float32) * np.float32(self.dynMagnification)
         if self.dynamic_gaussian_smoothing > 0:
             dynamic = gaussian_filter(dynamic, self.dynamic_gaussian_smoothing)
