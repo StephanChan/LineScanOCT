@@ -158,28 +158,9 @@
           <item>
            <layout class="QHBoxLayout" name="horizontalLayout_8">
             <item>
-             <widget class="QSlider" name="DepthStartBar">
-              <property name="maximumSize">
-               <size>
-                <width>16777215</width>
-                <height>500</height>
-               </size>
-              </property>
+             <widget class="QScrollBar" name="DepthStartBar">
               <property name="maximum">
-               <number>10000</number>
-              </property>
-              <property name="value">
                <number>1024</number>
-              </property>
-              <property name="orientation">
-               <enum>Qt::Vertical</enum>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QSlider" name="DepthEndBar">
-              <property name="maximum">
-               <number>10000</number>
               </property>
               <property name="orientation">
                <enum>Qt::Vertical</enum>
@@ -222,6 +203,16 @@
               </property>
               <property name="alignment">
                <set>Qt::AlignCenter</set>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QScrollBar" name="DepthEndBar">
+              <property name="maximum">
+               <number>1024</number>
+              </property>
+              <property name="orientation">
+               <enum>Qt::Vertical</enum>
               </property>
              </widget>
             </item>
@@ -306,7 +297,7 @@
          </layout>
         </item>
         <item>
-         <layout class="QVBoxLayout" name="verticalLayout_2" stretch="0,0">
+         <layout class="QHBoxLayout" name="horizontalLayout_2" stretch="0,0">
           <property name="spacing">
            <number>6</number>
           </property>
@@ -350,73 +341,13 @@
            </widget>
           </item>
           <item>
-           <widget class="QGroupBox" name="BCbox2">
-            <property name="maximumSize">
-             <size>
-              <width>5000</width>
-              <height>90</height>
-             </size>
+           <widget class="QScrollBar" name="ZDepthBar">
+            <property name="maximum">
+             <number>1024</number>
             </property>
-            <property name="font">
-             <font>
-              <pointsize>11</pointsize>
-             </font>
+            <property name="orientation">
+             <enum>Qt::Vertical</enum>
             </property>
-            <property name="title">
-             <string>对比度</string>
-            </property>
-            <layout class="QVBoxLayout" name="verticalLayout_19">
-             <item>
-              <widget class="QScrollBar" name="Intmax">
-               <property name="minimumSize">
-                <size>
-                 <width>0</width>
-                 <height>20</height>
-                </size>
-               </property>
-               <property name="maximum">
-                <number>4096</number>
-               </property>
-               <property name="singleStep">
-                <number>1</number>
-               </property>
-               <property name="pageStep">
-                <number>5</number>
-               </property>
-               <property name="value">
-                <number>1000</number>
-               </property>
-               <property name="orientation">
-                <enum>Qt::Horizontal</enum>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QScrollBar" name="Intmin">
-               <property name="minimumSize">
-                <size>
-                 <width>0</width>
-                 <height>20</height>
-                </size>
-               </property>
-               <property name="maximum">
-                <number>4096</number>
-               </property>
-               <property name="singleStep">
-                <number>1</number>
-               </property>
-               <property name="pageStep">
-                <number>5</number>
-               </property>
-               <property name="value">
-                <number>0</number>
-               </property>
-               <property name="orientation">
-                <enum>Qt::Horizontal</enum>
-               </property>
-              </widget>
-             </item>
-            </layout>
            </widget>
           </item>
          </layout>
@@ -827,17 +758,17 @@
              <string/>
             </property>
             <layout class="QGridLayout" name="gridLayout_12">
-             <item row="0" column="0" colspan="2">
+             <item row="0" column="0">
               <widget class="QCheckBox" name="DynCheckBox">
                <property name="text">
-                <string>动态OCT勾选此框</string>
+                <string>DOCT模式请勾选此框</string>
                </property>
               </widget>
              </item>
-             <item row="1" column="0" colspan="2">
+             <item row="1" column="0" colspan="3">
               <widget class="QCheckBox" name="RealtimeDynCheckBox">
                <property name="text">
-                <string>实时计算动态？选中将不保存原始数据</string>
+                <string>实时计算活性？选中将不保存原始数据</string>
                </property>
               </widget>
              </item>
@@ -848,7 +779,7 @@
                </property>
               </widget>
              </item>
-             <item row="2" column="1">
+             <item row="2" column="1" colspan="2">
               <widget class="QComboBox" name="FFTDevice">
                <item>
                 <property name="text">
@@ -874,7 +805,7 @@
                </property>
               </widget>
              </item>
-             <item row="3" column="1">
+             <item row="3" column="1" colspan="2">
               <widget class="QComboBox" name="FFTresults">
                <item>
                 <property name="text">
@@ -886,6 +817,20 @@
                  <string>AMP+PHASE</string>
                 </property>
                </item>
+              </widget>
+             </item>
+             <item row="4" column="0" colspan="2">
+              <widget class="QLabel" name="label_5">
+               <property name="text">
+                <string>DOCT频率降采样</string>
+               </property>
+              </widget>
+             </item>
+             <item row="4" column="2">
+              <widget class="QSpinBox" name="PreFFTBlineAvg">
+               <property name="value">
+                <number>4</number>
+               </property>
               </widget>
              </item>
             </layout>
@@ -2179,20 +2124,6 @@
             </property>
            </widget>
           </item>
-          <item row="5" column="2">
-           <widget class="QLabel" name="label_5">
-            <property name="text">
-             <string>Bline降采样数</string>
-            </property>
-           </widget>
-          </item>
-          <item row="5" column="3">
-           <widget class="QSpinBox" name="PreFFTBlineAvg">
-            <property name="value">
-             <number>4</number>
-            </property>
-           </widget>
-          </item>
          </layout>
         </widget>
         <widget class="QWidget" name="DigitizerTab">
@@ -2487,7 +2418,7 @@
                  <number>10000</number>
                 </property>
                 <property name="value">
-                 <number>800</number>
+                 <number>400</number>
                 </property>
                </widget>
               </item>

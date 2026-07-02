@@ -7,8 +7,14 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 from PyQt5.QtCore import Qt, QRectF
 
-from Generaic_functions import RGBImagePlot, RGBOverlayArray, RGBOverlayPlot, fastLinePlot, LinePlot
+from Generaic_functions import RGBImagePlot, fastLinePlot, LinePlot
 from SampleLocator import USB_PIXEL_SIZE_MM, stage_to_usb_image
+
+
+RGB_DYNAMIC_HUE_HZ_PER_CONTRAST_UNIT = 15.0 / 1000.0
+RGB_DYNAMIC_SATURATION_BANDWIDTH_RANGE_HZ = (0.0, 8.0)
+RGB_DYNAMIC_VALUE_DYNAMIC_RANGE = (0.0, 500.0)
+RGB_DYNAMIC_VALUE_GAMMA = 1.0
 
 
 def display_array(array):
@@ -34,40 +40,179 @@ def mosaic_label_render_size(label):
     return int(label_w * upscale), int(label_h * upscale)
 
 
-def dynamic_alpha(ui):
-    return ui.DynContrast.value() / 100.0 if hasattr(ui, "DynContrast") else 0.5
+def rgb_pixmap(rgb):
+    rgb = np.asarray(rgb)
+    if rgb.ndim != 3 or rgb.shape[2] != 3:
+        raise ValueError(f"RGB image must have shape (height, width, 3), got {rgb.shape}")
+    rgb = np.ascontiguousarray(np.clip(rgb, 0, 255).astype(np.uint8, copy=False))
+    height, width, _ = rgb.shape
+    qimage = QImage(rgb.data, width, height, 3 * width, QImage.Format_RGB888).copy()
+    return QPixmap.fromImage(qimage)
 
 
-def render_xz_pixmap(ui, intensity, dynamic=None):
+def rgb_display_limits(min_widget, max_widget):
+    control_max = max(
+        1,
+        int(min_widget.maximum()) if hasattr(min_widget, "maximum") else 255,
+        int(max_widget.maximum()) if hasattr(max_widget, "maximum") else 255,
+    )
+    scale = 255.0 / float(control_max)
+    return float(min_widget.value()) * scale, float(max_widget.value()) * scale
+
+
+def dynamic_rgb_display_array(ui, rgb, min_widget, max_widget):
+    rgb = np.asarray(rgb, dtype=np.float32)
+    if rgb.ndim != 3 or rgb.shape[2] != 3:
+        raise ValueError(f"RGB image must have shape (height, width, 3), got {rgb.shape}")
+    m, M = rgb_display_limits(min_widget, max_widget)
+    adjusted = (rgb - m) / (M - m + 1e-5) * 255.0
+    if hasattr(ui, "DynContrast"):
+        adjusted *= float(ui.DynContrast.value()) / 50.0
+    return np.ascontiguousarray(np.clip(adjusted, 0, 255).astype(np.uint8))
+
+
+def hue_frequency_range_from_controls(min_widget, max_widget):
+    return (
+        float(min_widget.value()) * RGB_DYNAMIC_HUE_HZ_PER_CONTRAST_UNIT,
+        float(max_widget.value()) * RGB_DYNAMIC_HUE_HZ_PER_CONTRAST_UNIT,
+    )
+
+
+def normalize_to_unit_interval(image, value_range, gamma=1.0):
+    low_value, high_value = float(value_range[0]), float(value_range[1])
+    if high_value <= low_value:
+        raise ValueError(f"Invalid display normalization range: {value_range}")
+    normalized = (np.asarray(image, dtype=np.float32) - low_value) / (high_value - low_value)
+    normalized = np.clip(normalized, 0.0, 1.0)
+    gamma = float(gamma)
+    if np.isfinite(gamma) and gamma > 0.0 and abs(gamma - 1.0) > 1e-6:
+        normalized = normalized ** (1.0 / gamma)
+    return normalized
+
+
+def hsv_to_rgb_array(hue, saturation, value):
+    hue = np.mod(np.asarray(hue, dtype=np.float32), 1.0)
+    saturation = np.clip(np.asarray(saturation, dtype=np.float32), 0.0, 1.0)
+    value = np.clip(np.asarray(value, dtype=np.float32), 0.0, 1.0)
+
+    h6 = hue * 6.0
+    i = np.floor(h6).astype(np.int32)
+    f = h6 - i.astype(np.float32)
+    p = value * (1.0 - saturation)
+    q = value * (1.0 - saturation * f)
+    t = value * (1.0 - saturation * (1.0 - f))
+    i_mod = np.mod(i, 6)
+
+    rgb = np.empty(hue.shape + (3,), dtype=np.float32)
+    masks = [
+        (i_mod == 0, value, t, p),
+        (i_mod == 1, q, value, p),
+        (i_mod == 2, p, value, t),
+        (i_mod == 3, p, q, value),
+        (i_mod == 4, t, p, value),
+        (i_mod == 5, value, p, q),
+    ]
+    for mask, red, green, blue in masks:
+        rgb[..., 0][mask] = red[mask]
+        rgb[..., 1][mask] = green[mask]
+        rgb[..., 2][mask] = blue[mask]
+    return np.ascontiguousarray(np.clip(np.rint(rgb * 255.0), 0, 255).astype(np.uint8))
+
+
+def dynamic_metric_rgb_display_array(ui, frequency_hz, bandwidth_hz, value, min_widget, max_widget):
+    hue_range = hue_frequency_range_from_controls(min_widget, max_widget)
+    hue = normalize_to_unit_interval(frequency_hz, hue_range)
+    saturation = normalize_to_unit_interval(
+        bandwidth_hz,
+        RGB_DYNAMIC_SATURATION_BANDWIDTH_RANGE_HZ,
+    )
+    value = normalize_to_unit_interval(
+        value,
+        RGB_DYNAMIC_VALUE_DYNAMIC_RANGE,
+        gamma=RGB_DYNAMIC_VALUE_GAMMA,
+    )
+    if hasattr(ui, "DynContrast"):
+        value = np.clip(value * (float(ui.DynContrast.value()) / 50.0), 0.0, 1.0)
+    return hsv_to_rgb_array(hue, saturation, value)
+
+
+def z_depth_index(ui, z_pixels):
+    if z_pixels <= 0:
+        return 0
+    if not hasattr(ui, "ZDepthBar"):
+        return 0
+    return max(0, min(int(ui.ZDepthBar.value()), int(z_pixels) - 1))
+
+
+def z_plane_from_volume(ui, volume):
+    if volume is None or np.size(volume) == 0:
+        return None
+    volume = np.asarray(volume)
+    if volume.ndim == 3:
+        return volume[:, :, z_depth_index(ui, volume.shape[2])]
+    if volume.ndim == 4 and volume.shape[-1] == 3:
+        return volume[:, :, z_depth_index(ui, volume.shape[2]), :]
+    raise ValueError(f"XY volume must have shape (Y, X, Z) or (Y, X, Z, 3), got {volume.shape}")
+
+
+def render_xz_pixmap(ui, intensity, rgb=None, hsv=None, frequency_hz=None, bandwidth_hz=None, value=None):
+    if hsv is not None and np.size(hsv) > 0:
+        hsv = np.asarray(hsv, dtype=np.float32)
+        return rgb_pixmap(dynamic_metric_rgb_display_array(ui, hsv[..., 0], hsv[..., 1], hsv[..., 2], ui.XZmin, ui.XZmax))
+    if rgb is not None and np.size(rgb) > 0:
+        if frequency_hz is not None and bandwidth_hz is not None and value is not None:
+            return rgb_pixmap(dynamic_metric_rgb_display_array(ui, frequency_hz, bandwidth_hz, value, ui.XZmin, ui.XZmax))
+        return rgb_pixmap(dynamic_rgb_display_array(ui, rgb, ui.XZmin, ui.XZmax))
     intensity = display_array(intensity)
-    dynamic = display_array(dynamic)
     ym = ui.XZmin.value()
     yM = ui.XZmax.value()
-    use_dynamic = ui.DynCheckBox.isChecked()
-    if use_dynamic and dynamic is not None and np.size(dynamic) > 0:
-        return RGBOverlayPlot(intensity, dynamic, ym, yM, alpha=dynamic_alpha(ui))
     return RGBImagePlot(matrix1=intensity, m=ym, M=yM)
 
 
-def set_xy_projection(ui, intensity, dynamic=None):
-    if intensity is None or getattr(ui, "mosaic_viewer", None) is None:
+def set_xy_projection(
+    ui,
+    intensity,
+    rgb=None,
+    hsv=None,
+    frequency_hz=None,
+    bandwidth_hz=None,
+    value=None,
+    volume=None,
+    hsv_volume=None,
+):
+    if getattr(ui, "mosaic_viewer", None) is None:
         return
-    intensity = display_array(intensity)
-    dynamic = display_array(dynamic)
+    if intensity is None and volume is None:
+        return
     x_step_size = ui.XStepSize.value()
     y_step_size = ui.YStepSize.value()
-    use_dynamic = ui.DynCheckBox.isChecked()
-    if use_dynamic and dynamic is not None and np.size(dynamic) > 0:
-        overlay = RGBOverlayArray(
-            intensity,
-            dynamic,
-            ui.Intmin.value(),
-            ui.Intmax.value(),
-            alpha=dynamic_alpha(ui),
-        )
-        ui.mosaic_viewer.set_image(overlay, ui.Intmin.value(), ui.Intmax.value(), x_step_size, y_step_size)
+    volume_plane = z_plane_from_volume(ui, volume)
+    if volume_plane is not None:
+        intensity = volume_plane
+    hsv_volume_plane = z_plane_from_volume(ui, hsv_volume)
+    if hsv_volume_plane is not None:
+        hsv = hsv_volume_plane
+    if hsv is not None and np.size(hsv) > 0:
+        hsv = np.asarray(hsv, dtype=np.float32)
+        rgb = dynamic_metric_rgb_display_array(ui, hsv[..., 0], hsv[..., 1], hsv[..., 2], ui.XZmin, ui.XZmax)
+    elif rgb is not None and np.size(rgb) > 0:
+        if frequency_hz is not None and bandwidth_hz is not None and value is not None:
+            rgb = dynamic_metric_rgb_display_array(ui, frequency_hz, bandwidth_hz, value, ui.XZmin, ui.XZmax)
+        else:
+            rgb = dynamic_rgb_display_array(ui, rgb, ui.XZmin, ui.XZmax)
+    else:
+        intensity = display_array(intensity)
+        ui.mosaic_viewer.set_image(intensity, ui.XZmin.value(), ui.XZmax.value(), x_step_size, y_step_size)
         return
-    ui.mosaic_viewer.set_image(intensity, ui.Intmin.value(), ui.Intmax.value(), x_step_size, y_step_size)
+    if rgb is not None and np.size(rgb) > 0:
+        ui.mosaic_viewer.set_image(
+            rgb,
+            0,
+            255,
+            x_step_size,
+            y_step_size,
+        )
+        return
 
 
 def display_sample_overlay(ui, overlay_images, sample_id, fov_locations_getter):
@@ -242,25 +387,77 @@ def render_bline_ready(ui, payload):
     bline = payload.get("bline", None)
     if bline is None:
         return
-    dyn = payload.get("dyn", None)
-    ui.XZplane.setPixmap(render_xz_pixmap(ui, bline, dyn))
+    rgb = payload.get("rgb", None)
+    ui.XZplane.setPixmap(
+        render_xz_pixmap(
+            ui,
+            bline,
+            rgb,
+            payload.get("hsv", None),
+            payload.get("freq", None),
+            payload.get("bandwidth", None),
+            payload.get("value", None),
+        )
+    )
 
 
 def render_cscan_ready(ui, payload):
     bline = payload.get("bline", None)
-    dynb = payload.get("dynb", None)
+    rgbb = payload.get("rgbb", None)
     aip = payload.get("aip", None)
-    dyn = payload.get("dyn", None)
+    rgb = payload.get("rgb", None)
 
     if bline is not None:
-        ui.XZplane.setPixmap(render_xz_pixmap(ui, bline, dynb))
+        ui.XZplane.setPixmap(
+            render_xz_pixmap(
+                ui,
+                bline,
+                rgbb,
+                payload.get("hsvb", None),
+                payload.get("freqb", None),
+                payload.get("bandwidthb", None),
+                payload.get("valueb", None),
+            )
+        )
 
-    set_xy_projection(ui, aip, dyn)
+    set_xy_projection(
+        ui,
+        aip,
+        rgb,
+        payload.get("hsv", None),
+        payload.get("freq", None),
+        payload.get("bandwidth", None),
+        payload.get("value", None),
+        payload.get("volume", None),
+        payload.get("hsv_volume", None),
+    )
 
 
 def render_mosaic_ready(ui, payload):
     mosaic = payload.get("mosaic", None)
     bline = payload.get("bline", None)
+    bline_rgb = payload.get("bline_rgb", None)
+    mosaic_rgb = payload.get("mosaic_rgb", None)
     if bline is not None:
-        ui.XZplane.setPixmap(render_xz_pixmap(ui, bline))
-    set_xy_projection(ui, mosaic)
+        ui.XZplane.setPixmap(
+            render_xz_pixmap(
+                ui,
+                bline,
+                bline_rgb,
+                payload.get("bline_hsv", None),
+                payload.get("bline_freq", None),
+                payload.get("bline_bandwidth", None),
+                payload.get("bline_value", None),
+            )
+        )
+    set_xy_projection(
+        ui,
+        mosaic,
+        mosaic_rgb,
+        payload.get("mosaic_hsv", None),
+        payload.get("mosaic_freq", None),
+        payload.get("mosaic_bandwidth", None),
+        payload.get("mosaic_value", None),
+        payload.get("mosaic_volume", None),
+        payload.get("mosaic_hsv_volume", None),
+    )

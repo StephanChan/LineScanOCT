@@ -14,7 +14,7 @@ import time
 import traceback
 from ActionTypes import DnSActions, EXIT_ACTION, GPUActions
 from CameraUi import effective_camera_sample_count
-
+from scipy.ndimage import zoom, uniform_filter
 
 # =============================================================================
 # GPU / dynamic processing tuning knobs
@@ -72,6 +72,21 @@ DYNAMIC_GAUSSIAN_SMOOTHING = False
 # the underlying dynamic algorithm; it only scales the final numeric image.
 DYNAMIC_MAGNIFICATION = 1
 
+# Set True to remove the strongest shared temporal/spatial modes before dynamic
+# frequency analysis. This is applied after per-pixel temporal mean subtraction,
+# so it removes coherent fluctuations rather than the static mean image.
+DYNAMIC_SVD_FILTER_ENABLED = False
+
+# Number of dominant SVD modes to remove when DYNAMIC_SVD_FILTER_ENABLED is True.
+DYNAMIC_SVD_REMOVE_COMPONENTS = 5
+
+# HSV frequency-dynamic rendering. H encodes mean temporal frequency, S encodes
+# spectral bandwidth, and V encodes dynamic standard deviation.
+DYNAMIC_HUE_FREQUENCY_RANGE_HZ = (2, 23.0)
+DYNAMIC_SATURATION_BANDWIDTH_RANGE_HZ = (0.0, 8)
+DYNAMIC_VALUE_DYNAMIC_RANGE = (0.0, 1000.0)
+DYNAMIC_VALUE_GAMMA = 1.0
+
 # Static/background normalization --------------------------------------------
 # Shared small denominator protection for background X normalization and dynamic
 # normalization. Usually leave this tiny; increase only if weak-signal pixels
@@ -122,6 +137,12 @@ class GPUThread(QThread):
         self.pre_fft_log_deviation_threshold_pct = PRE_FFT_LOG_DEVIATION_THRESHOLD_PCT
         self.dynamic_input_log_deviation_threshold_pct = DYNAMIC_INPUT_LOG_DEVIATION_THRESHOLD_PCT
         self.dynMagnification = DYNAMIC_MAGNIFICATION
+        self.dynamic_svd_filter_enabled = DYNAMIC_SVD_FILTER_ENABLED
+        self.dynamic_svd_remove_components = DYNAMIC_SVD_REMOVE_COMPONENTS
+        self.dynamic_hue_frequency_range_hz = DYNAMIC_HUE_FREQUENCY_RANGE_HZ
+        self.dynamic_saturation_bandwidth_range_hz = DYNAMIC_SATURATION_BANDWIDTH_RANGE_HZ
+        self.dynamic_value_dynamic_range = DYNAMIC_VALUE_DYNAMIC_RANGE
+        self.dynamic_value_gamma = DYNAMIC_VALUE_GAMMA
         self.yp_gpu_buffer = None
         self.yp_gpu_stream_buffers = [None, None]
         self.raw_gpu_buffer = None
@@ -130,8 +151,6 @@ class GPUThread(QThread):
         self.float_gpu_stream_buffers = [None, None]
         self.highpass_gpu_buffer = None
         self.highpass_gpu_stream_buffers = [None, None]
-        self.dynamic_filter_gpu_buffer = None
-        self.dynamic_var_gpu_buffer = None
         self.gpu_streams = None
         self.gpu_pre_avg_factor = 1
         # Reusable GPU buffer for pre-FFT averaging output.
@@ -235,61 +254,6 @@ class GPUThread(QThread):
                 }
             }
             ''','subtract_uniform_baseline')
-        self.dynamic_uniform_axis0_kernel = cupy.RawKernel(r'''
-            extern "C" __global__
-            void uniform_axis0_nearest(const float* src, float* dst, int frames, int xpix, int zpix, int window){
-                long long total = (long long)frames * xpix * zpix;
-                long long tid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
-                long long stride = (long long)blockDim.x * gridDim.x;
-                int left = window / 2;
-                int right = window - left - 1;
-
-                for(long long idx = tid; idx < total; idx += stride){
-                    int z = idx % zpix;
-                    long long tmp = idx / zpix;
-                    int x = tmp % xpix;
-                    int t = tmp / xpix;
-                    float sum = 0.0f;
-                    for(int offset = -left; offset <= right; ++offset){
-                        int tt = t + offset;
-                        if(tt < 0){
-                            tt = 0;
-                        }
-                        if(tt >= frames){
-                            tt = frames - 1;
-                        }
-                        long long src_idx = ((long long)tt * xpix + x) * zpix + z;
-                        sum += src[src_idx];
-                    }
-                    dst[idx] = sum / (float)window;
-                }
-            }
-            ''','uniform_axis0_nearest')
-        self.dynamic_std_axis0_kernel = cupy.RawKernel(r'''
-            extern "C" __global__
-            void std_axis0(const float* src, float* dst, int frames, int xpix, int zpix){
-                long long total = (long long)xpix * zpix;
-                long long tid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
-                long long stride = (long long)blockDim.x * gridDim.x;
-
-                for(long long idx = tid; idx < total; idx += stride){
-                    int z = idx % zpix;
-                    int x = idx / zpix;
-                    float sum = 0.0f;
-                    float sumsq = 0.0f;
-                    for(int t = 0; t < frames; ++t){
-                        long long src_idx = ((long long)t * xpix + x) * zpix + z;
-                        float v = src[src_idx];
-                        sum += v;
-                        sumsq += v * v;
-                    }
-                    float mean = sum / (float)frames;
-                    float var = sumsq / (float)frames - mean * mean;
-                    dst[idx] = var > 0.0f ? sqrtf(var) : 0.0f;
-                }
-            }
-            ''','std_axis0')
-
     def run(self):
         self.defwin()
         self.definterp()
@@ -363,6 +327,18 @@ class GPUThread(QThread):
 
     def current_bline_avg(self):
         return max(1, int(self.ui.BlineAVG.value()))
+
+    def current_camera_frame_rate_hz(self):
+        camera_name = self.ui.Camera.currentText()
+        if camera_name == "Daheng" and hasattr(self.ui, "FrameRate_DH"):
+            return float(self.ui.FrameRate_DH.value())
+        if camera_name == "PhotonFocus" and hasattr(self.ui, "FrameRate_PF"):
+            return float(self.ui.FrameRate_PF.value())
+        return 1.0
+
+    def current_dynamic_frame_rate_hz(self, pre_avg_count=1):
+        pre_avg_count = max(1, int(pre_avg_count))
+        return self.current_camera_frame_rate_hz() / float(pre_avg_count)
 
     def current_nsamples(self):
         return effective_camera_sample_count(self.ui)
@@ -503,11 +479,13 @@ class GPUThread(QThread):
             "copy_gpu_to_host",
             "chunk_wait_and_log",
             "dynamic_data_to_gpu",
-            "dynamic_amplitude_temporal_filter",
-            "dynamic_amplitude_std",
-            "dynamic_complex_temporal_filter",
-            "dynamic_complex_mean",
-            "dynamic_complex_mean_subtracted_std",
+            "dynamic_amplitude_center",
+            "dynamic_amplitude_frequency_power",
+            "dynamic_complex_center",
+            "dynamic_complex_frequency_power",
+            "dynamic_frequency_fold_power",
+            "dynamic_frequency_hsv_metrics",
+            "dynamic_frequency_hsv_rgb",
             "dynamic_result_to_cpu",
             "dynamic_gaussian_smoothing",
             "release_gpu_memory",
@@ -584,7 +562,11 @@ class GPUThread(QThread):
         # print('data_CPU shape', self.data_CPU.shape)
         # print('data_CPU:', self.data_CPU[0,0,0:15])
         if self.should_run_realtime_dynamic():
-            Dyn = self.compute_realtime_dynamic_gpu(dynamic_gpu_stack, timing)
+            Dyn = self.compute_realtime_dynamic_gpu(
+                dynamic_gpu_stack,
+                timing,
+                frame_rate_hz=self.current_dynamic_frame_rate_hz(pre_avg_count),
+            )
         else:
             Dyn = []
         del dynamic_gpu_stack
@@ -688,7 +670,9 @@ class GPUThread(QThread):
         self.apply_background_x_normalization_cpu(self.data_CPU)
 
         if self.should_run_realtime_dynamic():
-            dyn = self.compute_realtime_dynamic_cpu()
+            dyn = self.compute_realtime_dynamic_cpu(
+                frame_rate_hz=self.current_dynamic_frame_rate_hz(pre_avg_count),
+            )
         else:
             dyn = []
 
@@ -818,34 +802,126 @@ class GPUThread(QThread):
         y1 = data_cpu[:, idx1]
         return np.float32(y0 + (xt - x0) * (y1 - y0) / (x1 - x0 + 0.00001))
 
-    def compute_realtime_dynamic_cpu(self):
+    def compute_realtime_dynamic_cpu(self, frame_rate_hz=None):
+        if frame_rate_hz is None:
+            frame_rate_hz = self.current_dynamic_frame_rate_hz()
         if isinstance(self.data_CPU, np.ndarray) and self.data_CPU.dtype.kind == 'c':
             data_cpu = np.asarray(self.data_CPU, dtype=np.complex64)
             if data_cpu.ndim != 3 or data_cpu.shape[0] < 2:
                 return []
-            return self.compute_complex_dynamic_cpu(data_cpu)
-
-        data_cpu = np.asarray(self.data_CPU, dtype=np.float32)
-        return self.compute_amplitude_dynamic_cpu(data_cpu)
-
-    def compute_amplitude_dynamic_cpu(self, data_cpu):
-        if data_cpu.ndim != 3 or data_cpu.shape[0] < 2:
-            return []
-        filter_size = self.current_dynamic_temporal_filter_size()
-        if filter_size > 1:
-            filtered = uniform_filter1d(
-                data_cpu,
-                size=filter_size,
-                axis=0,
-                mode='nearest',
-            )
+            metrics = self.compute_complex_frequency_hsv_cpu(data_cpu, frame_rate_hz)
         else:
-            filtered = data_cpu
-        dyn = np.std(filtered, axis=0)
-        dyn = np.float32(dyn) * np.float32(self.dynMagnification)
-        if self.dynamic_gaussian_smoothing > 0:
-            dyn = gaussian_filter(dyn, self.dynamic_gaussian_smoothing)
-        return dyn
+            data_cpu = np.asarray(self.data_CPU, dtype=np.float32)
+            if data_cpu.ndim != 3 or data_cpu.shape[0] < 2:
+                return []
+            metrics = self.compute_amplitude_frequency_hsv_cpu(data_cpu, frame_rate_hz)
+
+        hsv = np.asarray(metrics["hsv"], dtype=np.float32)
+        if self.dynamic_gaussian_smoothing:
+            dynamic_std = hsv[..., 2]
+            dynamic_std = gaussian_filter(dynamic_std, sigma=(1, 1))
+            hsv[..., 2] = dynamic_std
+        return {
+            "hsv": hsv,
+        }
+
+    def frequency_axis_cpu(self, frames, frame_rate_hz):
+        return np.fft.fftfreq(
+            int(frames),
+            d=1.0 / float(frame_rate_hz),
+        ).astype(np.float32)
+
+    def apply_dynamic_svd_filter_cpu(self, centered_cpu):
+        if not self.dynamic_svd_filter_enabled:
+            return centered_cpu
+
+        frames = int(centered_cpu.shape[0])
+        remove_components = int(self.dynamic_svd_remove_components)
+        if remove_components <= 0:
+            raise RuntimeError("Dynamic SVD filtering is enabled but DYNAMIC_SVD_REMOVE_COMPONENTS <= 0.")
+        if remove_components >= frames:
+            raise RuntimeError(
+                f"Dynamic SVD remove components ({remove_components}) must be smaller than frame count ({frames})."
+            )
+
+        original_shape = centered_cpu.shape
+        matrix_cpu = centered_cpu.reshape(frames, -1)
+        pixel_count = max(1, int(matrix_cpu.shape[1]))
+        covariance_cpu = (matrix_cpu @ matrix_cpu.conj().T) / np.float32(pixel_count)
+        _, eigenvectors_cpu = np.linalg.eigh(covariance_cpu)
+        dominant_modes_cpu = eigenvectors_cpu[:, -remove_components:]
+        filtered_matrix_cpu = matrix_cpu - dominant_modes_cpu @ (dominant_modes_cpu.conj().T @ matrix_cpu)
+        return filtered_matrix_cpu.reshape(original_shape)
+
+    def fold_power_to_abs_frequency_cpu(self, power_cpu, frequencies_hz_cpu):
+        abs_frequencies_hz_cpu = np.abs(frequencies_hz_cpu)
+        unique_abs_frequencies_hz_cpu = np.unique(abs_frequencies_hz_cpu)
+        folded_power_cpu = np.zeros(
+            (unique_abs_frequencies_hz_cpu.size,) + power_cpu.shape[1:],
+            dtype=np.float32,
+        )
+        for idx in range(int(unique_abs_frequencies_hz_cpu.size)):
+            mask_cpu = np.isclose(abs_frequencies_hz_cpu, unique_abs_frequencies_hz_cpu[idx])
+            folded_power_cpu[idx, :, :] = np.sum(power_cpu[mask_cpu, :, :], axis=0, dtype=np.float32)
+        return unique_abs_frequencies_hz_cpu.astype(np.float32), folded_power_cpu
+
+    def frequency_hsv_metrics_from_power_cpu(self, power_cpu, frequencies_hz_cpu):
+        abs_frequency_hz_cpu, folded_power_cpu = self.fold_power_to_abs_frequency_cpu(
+            power_cpu,
+            frequencies_hz_cpu,
+        )
+
+        total_power_cpu = np.sum(folded_power_cpu, axis=0, dtype=np.float32)
+        total_power_safe_cpu = np.maximum(total_power_cpu, np.float32(1e-12))
+        frequency_axis_cpu = abs_frequency_hz_cpu[:, np.newaxis, np.newaxis]
+        mean_frequency_hz_cpu = (
+            np.sum(folded_power_cpu * frequency_axis_cpu, axis=0, dtype=np.float32)
+            / total_power_safe_cpu
+        ).astype(np.float32, copy=False)
+        centered_frequency2_cpu = (frequency_axis_cpu - mean_frequency_hz_cpu[np.newaxis, :, :]) ** 2
+        bandwidth_hz_cpu = np.sqrt(
+            np.maximum(
+                np.sum(folded_power_cpu * centered_frequency2_cpu, axis=0, dtype=np.float32)
+                / total_power_safe_cpu,
+                np.float32(0.0),
+            )
+        ).astype(np.float32, copy=False)
+        dynamic_std_cpu = np.sqrt(np.maximum(total_power_cpu, np.float32(0.0))).astype(np.float32, copy=False)
+        dynamic_std_cpu *= np.float32(self.dynMagnification)
+        hsv_source_cpu = np.stack(
+            [mean_frequency_hz_cpu, bandwidth_hz_cpu, dynamic_std_cpu],
+            axis=-1,
+        ).astype(np.float32, copy=False)
+
+        return {
+            "mean_frequency_hz": mean_frequency_hz_cpu,
+            "bandwidth_hz": bandwidth_hz_cpu,
+            "dynamic_std": dynamic_std_cpu,
+            "hsv": hsv_source_cpu,
+        }
+
+    def compute_amplitude_frequency_hsv_cpu(self, data_cpu, frame_rate_hz):
+        frames = int(data_cpu.shape[0])
+        if frames < 2:
+            raise RuntimeError("Amplitude HSV dynamic processing needs at least 2 frames.")
+        centered_cpu = data_cpu.astype(np.float32, copy=False) - np.mean(data_cpu, axis=0, keepdims=True)
+        centered_cpu = self.apply_dynamic_svd_filter_cpu(centered_cpu)
+        spectrum_cpu = np.fft.fft(centered_cpu, axis=0) / np.float32(frames)
+        power_cpu = (np.abs(spectrum_cpu) ** 2).astype(np.float32, copy=False)
+        frequencies_hz_cpu = self.frequency_axis_cpu(frames, frame_rate_hz)
+        return self.frequency_hsv_metrics_from_power_cpu(power_cpu, frequencies_hz_cpu)
+
+    def compute_complex_frequency_hsv_cpu(self, data_cpu, frame_rate_hz):
+        frames = int(data_cpu.shape[0])
+        if frames < 2:
+            raise RuntimeError("Complex HSV dynamic processing needs at least 2 frames.")
+        centered_cpu = data_cpu.astype(np.complex64, copy=False) - np.mean(data_cpu, axis=0, keepdims=True)
+        centered_cpu = self.apply_dynamic_svd_filter_cpu(centered_cpu)
+        spectrum_cpu = np.fft.fft(centered_cpu, axis=0) / np.float32(frames)
+        power_cpu = (np.abs(spectrum_cpu) ** 2).astype(np.float32, copy=False)
+        frequencies_hz_cpu = self.frequency_axis_cpu(frames, frame_rate_hz)
+        return self.frequency_hsv_metrics_from_power_cpu(power_cpu, frequencies_hz_cpu)
+
 
     def apply_background_x_normalization_gpu(self, y_gpu):
         chunk_shape = y_gpu.shape
@@ -1442,7 +1518,7 @@ class GPUThread(QThread):
         # self.ui.PrintOut.append(message)
         self.FFT_actions = 0
 
-    def compute_realtime_dynamic_gpu(self, data_gpu=None, timing=None):
+    def compute_realtime_dynamic_gpu(self, data_gpu=None, timing=None, frame_rate_hz=None):
         if timing is None:
             timing = {}
         if data_gpu is None:
@@ -1453,26 +1529,34 @@ class GPUThread(QThread):
                 data_gpu = cupy.asarray(self.data_CPU, dtype=cupy.float32)
             self.gpu_timing_end(timing, "dynamic_data_to_gpu", step_start)
 
-        if data_gpu.dtype.kind == 'c':
-            dynamic_GPU = self.compute_complex_dynamic_gpu(data_gpu, timing=timing)
-            step_start = self.gpu_timing_start()
-            dynamic = cupy.asnumpy(dynamic_GPU) * self.dynMagnification
-            self.gpu_timing_end(timing, "dynamic_result_to_cpu", step_start)
-            if self.dynamic_gaussian_smoothing:
-                step_start = self.gpu_timing_start()
-                dynamic = gaussian_filter(dynamic, sigma=(1, 1))
-                self.gpu_timing_end(timing, "dynamic_gaussian_smoothing", step_start)
-            return np.asarray(dynamic, dtype=np.float32)
+        if frame_rate_hz is None:
+            frame_rate_hz = self.current_dynamic_frame_rate_hz()
 
-        dynamic_GPU = self.compute_amplitude_dynamic_gpu(data_gpu, timing=timing)
+        if data_gpu.dtype.kind == 'c':
+            metrics_gpu = self.compute_complex_frequency_hsv_gpu(
+                data_gpu,
+                frame_rate_hz,
+                timing=timing,
+            )
+        else:
+            metrics_gpu = self.compute_amplitude_frequency_hsv_gpu(
+                data_gpu,
+                frame_rate_hz,
+                timing=timing,
+        )
+
         step_start = self.gpu_timing_start()
-        dynamic = cupy.asnumpy(dynamic_GPU) * self.dynMagnification
+        hsv = cupy.asnumpy(metrics_gpu["hsv"])
         self.gpu_timing_end(timing, "dynamic_result_to_cpu", step_start)
         if self.dynamic_gaussian_smoothing:
             step_start = self.gpu_timing_start()
-            dynamic = gaussian_filter(dynamic, sigma=(1, 1))
+            dynamic_std = hsv[..., 2]
+            dynamic_std = gaussian_filter(dynamic_std, sigma=(1, 1))
+            hsv[..., 2] = dynamic_std
             self.gpu_timing_end(timing, "dynamic_gaussian_smoothing", step_start)
-        return dynamic
+        return {
+            "hsv": np.asarray(hsv, dtype=np.float32),
+        }
 
     def prepare_stack_for_dynamic_processing(self, stack):
         stack_array = np.asarray(stack)
@@ -1493,10 +1577,16 @@ class GPUThread(QThread):
         stack_prepared = self.prepare_stack_for_dynamic_processing(stack)
         mean_intensity = np.mean(np.abs(stack_prepared), axis=0, dtype=np.float32)
         if stack_prepared.dtype.kind == 'c':
-            dynamic_gpu = self.compute_complex_dynamic_gpu(cupy.asarray(stack_prepared, dtype=cupy.complex64))
+            metrics_gpu = self.compute_complex_frequency_hsv_gpu(
+                cupy.asarray(stack_prepared, dtype=cupy.complex64),
+                self.current_dynamic_frame_rate_hz(),
+            )
         else:
-            dynamic_gpu = self.compute_amplitude_dynamic_gpu(cupy.asarray(stack_prepared, dtype=cupy.float32))
-        dynamic = cupy.asnumpy(dynamic_gpu) * self.dynMagnification
+            metrics_gpu = self.compute_amplitude_frequency_hsv_gpu(
+                cupy.asarray(stack_prepared, dtype=cupy.float32),
+                self.current_dynamic_frame_rate_hz(),
+            )
+        dynamic = cupy.asnumpy(metrics_gpu["dynamic_std"])
         if self.dynamic_gaussian_smoothing:
             dynamic = gaussian_filter(dynamic, sigma=(1, 1))
         return np.asarray(dynamic, dtype=np.float32), np.asarray(mean_intensity, dtype=np.float32)
@@ -1504,114 +1594,207 @@ class GPUThread(QThread):
     def compute_dynamic_and_mean_from_stack(self, stack):
         return self.compute_dynamic_and_mean_from_stack_gpu(stack)
 
-    def compute_amplitude_dynamic_gpu(self, data_gpu, timing=None):
+    def frequency_axis_gpu(self, frames, frame_rate_hz):
+        return cupy.fft.fftfreq(
+            int(frames),
+            d=1.0 / float(frame_rate_hz),
+        ).astype(cupy.float32)
+
+    def apply_dynamic_svd_filter_gpu(self, centered_gpu, timing=None, label="dynamic"):
+        if not self.dynamic_svd_filter_enabled:
+            return centered_gpu
         if timing is None:
             timing = {}
-        frames, xpix, zpix = data_gpu.shape
-        dynamic_gpu = self.dynamic_var_buffer((xpix, zpix))
-        threads = 256
-        filter_size = self.current_dynamic_temporal_filter_size()
-        if filter_size > 1:
-            filtered_gpu = self.dynamic_filter_buffer(data_gpu.shape)
-            total = int(frames * xpix * zpix)
-            blocks = max(1, min(65535, (total + threads - 1) // threads))
-            step_start = self.gpu_timing_start()
-            self.dynamic_uniform_axis0_kernel(
-                (blocks,),
-                (threads,),
-                (
-                    data_gpu,
-                    filtered_gpu,
-                    int(frames),
-                    int(xpix),
-                    int(zpix),
-                    int(filter_size),
-                ),
-            )
-            self.gpu_timing_end(timing, "dynamic_amplitude_temporal_filter", step_start)
-        else:
-            filtered_gpu = data_gpu
 
-        total = int(xpix * zpix)
-        blocks = max(1, min(65535, (total + threads - 1) // threads))
+        frames = int(centered_gpu.shape[0])
+        remove_components = int(self.dynamic_svd_remove_components)
+        if remove_components <= 0:
+            raise RuntimeError("Dynamic SVD filtering is enabled but DYNAMIC_SVD_REMOVE_COMPONENTS <= 0.")
+        if remove_components >= frames:
+            raise RuntimeError(
+                f"Dynamic SVD remove components ({remove_components}) must be smaller than frame count ({frames})."
+            )
+
         step_start = self.gpu_timing_start()
-        self.dynamic_std_axis0_kernel(
-            (blocks,),
-            (threads,),
-            (
-                filtered_gpu,
-                dynamic_gpu,
-                int(frames),
-                int(xpix),
-                int(zpix),
-            ),
+        original_shape = centered_gpu.shape
+        matrix_gpu = centered_gpu.reshape(frames, -1)
+        pixel_count = max(1, int(matrix_gpu.shape[1]))
+        covariance_gpu = (matrix_gpu @ matrix_gpu.conj().T) / cupy.float32(pixel_count)
+        eigenvalues_gpu, eigenvectors_gpu = cupy.linalg.eigh(covariance_gpu)
+        dominant_modes_gpu = eigenvectors_gpu[:, -remove_components:]
+        filtered_matrix_gpu = matrix_gpu - dominant_modes_gpu @ (dominant_modes_gpu.conj().T @ matrix_gpu)
+        filtered_gpu = filtered_matrix_gpu.reshape(original_shape)
+        self.gpu_timing_end(timing, f"{label}_svd_filter_remove_{remove_components}", step_start)
+        return filtered_gpu
+
+    def fold_power_to_abs_frequency_gpu(self, power_gpu, frequencies_hz_gpu, timing=None):
+        if timing is None:
+            timing = {}
+        step_start = self.gpu_timing_start()
+        abs_frequencies_hz_gpu = cupy.absolute(frequencies_hz_gpu)
+        unique_abs_frequencies_hz_gpu = cupy.unique(abs_frequencies_hz_gpu)
+        folded_power_gpu = cupy.zeros(
+            (unique_abs_frequencies_hz_gpu.size,) + power_gpu.shape[1:],
+            dtype=cupy.float32,
         )
-        self.gpu_timing_end(timing, "dynamic_amplitude_std", step_start)
-        return dynamic_gpu
+        for idx in range(int(unique_abs_frequencies_hz_gpu.size)):
+            mask_gpu = cupy.isclose(abs_frequencies_hz_gpu, unique_abs_frequencies_hz_gpu[idx])
+            folded_power_gpu[idx, :, :] = cupy.sum(power_gpu[mask_gpu, :, :], axis=0, dtype=cupy.float32)
+        self.gpu_timing_end(timing, "dynamic_frequency_fold_power", step_start)
+        return unique_abs_frequencies_hz_gpu.astype(cupy.float32), folded_power_gpu
 
-    def compute_complex_dynamic_gpu(self, data_gpu, timing=None):
+    def normalize_dynamic_metric_gpu(self, image_gpu, value_range):
+        low_value, high_value = float(value_range[0]), float(value_range[1])
+        if high_value <= low_value:
+            raise ValueError(f"Invalid dynamic HSV normalization range: {value_range}")
+        normalized_gpu = (image_gpu.astype(cupy.float32, copy=False) - cupy.float32(low_value)) / cupy.float32(high_value - low_value)
+        return cupy.clip(normalized_gpu, cupy.float32(0.0), cupy.float32(1.0))
+
+    def hsv_to_rgb_gpu(self, hue_gpu, saturation_gpu, value_gpu):
+        hue_gpu = cupy.mod(hue_gpu, cupy.float32(1.0))
+        saturation_gpu = cupy.clip(saturation_gpu, cupy.float32(0.0), cupy.float32(1.0))
+        value_gpu = cupy.clip(value_gpu, cupy.float32(0.0), cupy.float32(1.0))
+
+        h6_gpu = hue_gpu * cupy.float32(6.0)
+        i_gpu = cupy.floor(h6_gpu).astype(cupy.int32)
+        f_gpu = h6_gpu - i_gpu.astype(cupy.float32)
+        p_gpu = value_gpu * (cupy.float32(1.0) - saturation_gpu)
+        q_gpu = value_gpu * (cupy.float32(1.0) - saturation_gpu * f_gpu)
+        t_gpu = value_gpu * (cupy.float32(1.0) - saturation_gpu * (cupy.float32(1.0) - f_gpu))
+        i_mod_gpu = cupy.mod(i_gpu, 6)
+
+        r_gpu = cupy.empty_like(value_gpu)
+        g_gpu = cupy.empty_like(value_gpu)
+        b_gpu = cupy.empty_like(value_gpu)
+
+        mask_gpu = i_mod_gpu == 0
+        r_gpu[mask_gpu] = value_gpu[mask_gpu]
+        g_gpu[mask_gpu] = t_gpu[mask_gpu]
+        b_gpu[mask_gpu] = p_gpu[mask_gpu]
+
+        mask_gpu = i_mod_gpu == 1
+        r_gpu[mask_gpu] = q_gpu[mask_gpu]
+        g_gpu[mask_gpu] = value_gpu[mask_gpu]
+        b_gpu[mask_gpu] = p_gpu[mask_gpu]
+
+        mask_gpu = i_mod_gpu == 2
+        r_gpu[mask_gpu] = p_gpu[mask_gpu]
+        g_gpu[mask_gpu] = value_gpu[mask_gpu]
+        b_gpu[mask_gpu] = t_gpu[mask_gpu]
+
+        mask_gpu = i_mod_gpu == 3
+        r_gpu[mask_gpu] = p_gpu[mask_gpu]
+        g_gpu[mask_gpu] = q_gpu[mask_gpu]
+        b_gpu[mask_gpu] = value_gpu[mask_gpu]
+
+        mask_gpu = i_mod_gpu == 4
+        r_gpu[mask_gpu] = t_gpu[mask_gpu]
+        g_gpu[mask_gpu] = p_gpu[mask_gpu]
+        b_gpu[mask_gpu] = value_gpu[mask_gpu]
+
+        mask_gpu = i_mod_gpu == 5
+        r_gpu[mask_gpu] = value_gpu[mask_gpu]
+        g_gpu[mask_gpu] = p_gpu[mask_gpu]
+        b_gpu[mask_gpu] = q_gpu[mask_gpu]
+
+        rgb_gpu = cupy.stack([r_gpu, g_gpu, b_gpu], axis=-1)
+        return cupy.clip(cupy.rint(rgb_gpu * cupy.float32(255.0)), 0, 255).astype(cupy.uint8)
+
+    def frequency_hsv_metrics_from_power_gpu(self, power_gpu, frequencies_hz_gpu, timing=None):
         if timing is None:
             timing = {}
-        frames, xpix, zpix = data_gpu.shape
-        window = self.current_dynamic_temporal_filter_size()
-        left = window // 2
-        right = window - left - 1
-        step_start = self.gpu_timing_start()
-        if window > 1:
-            padded_gpu = cupy.pad(data_gpu, ((left, right), (0, 0), (0, 0)), mode='edge')
-            cumsum_gpu = cupy.cumsum(padded_gpu, axis=0, dtype=cupy.complex64)
-            zero_gpu = cupy.zeros((1, xpix, zpix), dtype=cupy.complex64)
-            cumsum_gpu = cupy.concatenate((zero_gpu, cumsum_gpu), axis=0)
-            filtered_gpu = (cumsum_gpu[window:window + frames] - cumsum_gpu[:frames]) / cupy.float32(window)
-        else:
-            filtered_gpu = data_gpu
-        self.gpu_timing_end(timing, "dynamic_complex_temporal_filter", step_start)
+        abs_frequency_hz_gpu, folded_power_gpu = self.fold_power_to_abs_frequency_gpu(
+            power_gpu,
+            frequencies_hz_gpu,
+            timing=timing,
+        )
 
         step_start = self.gpu_timing_start()
-        mean_gpu = cupy.mean(filtered_gpu, axis=0)
-        self.gpu_timing_end(timing, "dynamic_complex_mean", step_start)
-
-        step_start = self.gpu_timing_start()
-        centered_gpu = filtered_gpu - mean_gpu[cupy.newaxis, :, :]
-        dynamic_gpu = cupy.sqrt(cupy.mean(cupy.absolute(centered_gpu) ** 2, axis=0))
-        dynamic_gpu = dynamic_gpu.astype(cupy.float32, copy=False)
-        self.gpu_timing_end(timing, "dynamic_complex_mean_subtracted_std", step_start)
-        return dynamic_gpu
-
-    def compute_complex_dynamic_cpu(self, data_cpu):
-        filter_size = self.current_dynamic_temporal_filter_size()
-        if filter_size > 1:
-            real_filtered = uniform_filter1d(
-                np.real(data_cpu).astype(np.float32, copy=False),
-                size=filter_size,
-                axis=0,
-                mode='nearest',
+        total_power_gpu = cupy.sum(folded_power_gpu, axis=0, dtype=cupy.float32)
+        total_power_safe_gpu = cupy.maximum(total_power_gpu, cupy.float32(1e-12))
+        frequency_axis_gpu = abs_frequency_hz_gpu[:, cupy.newaxis, cupy.newaxis]
+        mean_frequency_hz_gpu = (
+            cupy.sum(folded_power_gpu * frequency_axis_gpu, axis=0, dtype=cupy.float32)
+            / total_power_safe_gpu
+        ).astype(cupy.float32, copy=False)
+        centered_frequency2_gpu = (frequency_axis_gpu - mean_frequency_hz_gpu[cupy.newaxis, :, :]) ** 2
+        bandwidth_hz_gpu = cupy.sqrt(
+            cupy.maximum(
+                cupy.sum(folded_power_gpu * centered_frequency2_gpu, axis=0, dtype=cupy.float32)
+                / total_power_safe_gpu,
+                cupy.float32(0.0),
             )
-            imag_filtered = uniform_filter1d(
-                np.imag(data_cpu).astype(np.float32, copy=False),
-                size=filter_size,
-                axis=0,
-                mode='nearest',
-            )
-            filtered = real_filtered + 1j * imag_filtered
-        else:
-            filtered = data_cpu
-        mean_field = np.mean(filtered, axis=0)
-        dynamic = np.sqrt(np.mean(np.abs(filtered - mean_field[np.newaxis, :, :]) ** 2, axis=0))
-        dynamic = np.asarray(dynamic, dtype=np.float32) * np.float32(self.dynMagnification)
-        if self.dynamic_gaussian_smoothing > 0:
-            dynamic = gaussian_filter(dynamic, self.dynamic_gaussian_smoothing)
-        return dynamic
+        ).astype(cupy.float32, copy=False)
+        dynamic_std_gpu = cupy.sqrt(cupy.maximum(total_power_gpu, cupy.float32(0.0))).astype(cupy.float32, copy=False)
+        dynamic_std_gpu *= cupy.float32(self.dynMagnification)
+        self.gpu_timing_end(timing, "dynamic_frequency_hsv_metrics", step_start)
 
-    def dynamic_filter_buffer(self, shape):
-        if self.dynamic_filter_gpu_buffer is None or self.dynamic_filter_gpu_buffer.shape != shape:
-            self.dynamic_filter_gpu_buffer = cupy.empty(shape, dtype=cupy.float32)
-        return self.dynamic_filter_gpu_buffer
+        step_start = self.gpu_timing_start()
+        hue_gpu = self.normalize_dynamic_metric_gpu(
+            mean_frequency_hz_gpu,
+            self.dynamic_hue_frequency_range_hz,
+        )
+        saturation_gpu = self.normalize_dynamic_metric_gpu(
+            bandwidth_hz_gpu,
+            self.dynamic_saturation_bandwidth_range_hz,
+        )
+        value_gpu = self.normalize_dynamic_metric_gpu(
+            dynamic_std_gpu,
+            self.dynamic_value_dynamic_range,
+        )
+        gamma = float(self.dynamic_value_gamma)
+        if np.isfinite(gamma) and gamma > 0.0 and abs(gamma - 1.0) > 1e-6:
+            value_gpu = cupy.power(value_gpu, cupy.float32(1.0 / gamma))
+        hsv_source_gpu = cupy.stack(
+            [mean_frequency_hz_gpu, bandwidth_hz_gpu, dynamic_std_gpu],
+            axis=-1,
+        )
+        self.gpu_timing_end(timing, "dynamic_frequency_hsv_source", step_start)
 
-    def dynamic_var_buffer(self, shape):
-        if self.dynamic_var_gpu_buffer is None or self.dynamic_var_gpu_buffer.shape != shape:
-            self.dynamic_var_gpu_buffer = cupy.empty(shape, dtype=cupy.float32)
-        return self.dynamic_var_gpu_buffer
+        return {
+            "mean_frequency_hz": mean_frequency_hz_gpu,
+            "bandwidth_hz": bandwidth_hz_gpu,
+            "dynamic_std": dynamic_std_gpu,
+            "hsv": hsv_source_gpu,
+        }
+
+    def compute_amplitude_frequency_hsv_gpu(self, data_gpu, frame_rate_hz, timing=None):
+        if timing is None:
+            timing = {}
+        frames = int(data_gpu.shape[0])
+        if frames < 2:
+            raise RuntimeError("Amplitude HSV dynamic processing needs at least 2 frames.")
+        step_start = self.gpu_timing_start()
+        centered_gpu = data_gpu.astype(cupy.float32, copy=False) - cupy.mean(data_gpu, axis=0, keepdims=True)
+        self.gpu_timing_end(timing, "dynamic_amplitude_center", step_start)
+        centered_gpu = self.apply_dynamic_svd_filter_gpu(centered_gpu, timing=timing, label="dynamic_amplitude")
+
+        step_start = self.gpu_timing_start()
+        spectrum_gpu = cupy.fft.fft(centered_gpu, axis=0) / cupy.float32(frames)
+        power_gpu = (cupy.absolute(spectrum_gpu) ** 2).astype(cupy.float32, copy=False)
+        self.gpu_timing_end(timing, "dynamic_amplitude_frequency_power", step_start)
+
+        frequencies_hz_gpu = self.frequency_axis_gpu(frames, frame_rate_hz)
+        return self.frequency_hsv_metrics_from_power_gpu(power_gpu, frequencies_hz_gpu, timing=timing)
+
+    def compute_complex_frequency_hsv_gpu(self, data_gpu, frame_rate_hz, timing=None):
+        if timing is None:
+            timing = {}
+        frames = int(data_gpu.shape[0])
+        if frames < 2:
+            raise RuntimeError("Complex HSV dynamic processing needs at least 2 frames.")
+        step_start = self.gpu_timing_start()
+        centered_gpu = data_gpu.astype(cupy.complex64, copy=False) - cupy.mean(data_gpu, axis=0, keepdims=True)
+        self.gpu_timing_end(timing, "dynamic_complex_center", step_start)
+        centered_gpu = self.apply_dynamic_svd_filter_gpu(centered_gpu, timing=timing, label="dynamic_complex")
+
+        step_start = self.gpu_timing_start()
+        spectrum_gpu = cupy.fft.fft(centered_gpu, axis=0) / cupy.float32(frames)
+        power_gpu = (cupy.absolute(spectrum_gpu) ** 2).astype(cupy.float32, copy=False)
+        self.gpu_timing_end(timing, "dynamic_complex_frequency_power", step_start)
+
+        frequencies_hz_gpu = self.frequency_axis_gpu(frames, frame_rate_hz)
+        return self.frequency_hsv_metrics_from_power_gpu(power_gpu, frequencies_hz_gpu, timing=timing)
 
     def pre_avg_factor(self):
         if self.current_dynamic_enabled():

@@ -25,7 +25,6 @@ import cv2
 from mosaic_scan_planner import (
     CENTER_MODE,
     FOV_OVERLAP,
-    MAX_Y_FOV_MM,
     ROI_OCCUPANCY_TARGET,
     plan_mosaic_scan,
 )
@@ -41,12 +40,10 @@ from Display_rendering import (
     render_usb_roi_overlay,
 )
 from DynamicPostprocessing import (
-    process_idle_dynamic_until_deadline,
-    process_next_idle_dynamic_folder,
     update_timer_readout,
-    write_stitched_idle_outputs,
 )
 from CameraUi import effective_camera_sample_count, camera_pixel_format
+from HardwareSpecs import get_objective_spec
 from ScanSession import (
     load_session_data,
     populate_sample_selector,
@@ -88,6 +85,8 @@ SAVE_SAMPLE_TIME_MODES = (
     AcqTypes.TIMED_PLATE_SCAN,
 )
 
+AUTO_BACKGROUND_PER_FOV_ENABLED = False
+
 class WeaverThread(QThread):
     def __init__(self):
         super().__init__()
@@ -95,7 +94,6 @@ class WeaverThread(QThread):
         self.FOV_locations = {}
         self.mosaic_roi_occupancy = ROI_OCCUPANCY_TARGET
         self.mosaic_fov_overlap = FOV_OVERLAP
-        self.mosaic_max_y_fov_mm = MAX_Y_FOV_MM
         self.mosaic_center_mode = CENTER_MODE
         self.debug_mosaic_correction = False
         self._restore_y_geometry = None
@@ -295,6 +293,12 @@ class WeaverThread(QThread):
     def current_y_pixels(self):
         return max(1, int(self.ui.Ypixels.value()))
 
+    def current_max_y_fov_mm(self):
+        objective = get_objective_spec(self.ui.Objective.currentText())
+        if objective is None:
+            raise RuntimeError(f"Unknown objective: {self.ui.Objective.currentText()}")
+        return float(objective.max_y_fov_mm)
+
     def current_alines_per_bline(self):
         return max(1, int(self.ui.AlinesPerBline.value()))
 
@@ -371,6 +375,11 @@ class WeaverThread(QThread):
                     acq_mode,
                     [repeat_count, x_pixels, z_pixels],
                 )
+                bundle["dynamic_rgb_filename"] = self.file_naming.get_filename(
+                    "bline_dyn_rgb",
+                    acq_mode,
+                    [repeat_count, x_pixels, z_pixels],
+                )
             self.file_naming.increment_bline()
             return bundle
 
@@ -383,6 +392,11 @@ class WeaverThread(QThread):
                         [y_pixels, x_pixels, z_pixels],
                         ypixels=y_pixels,
                     )
+                    dynamic_rgb_filename = self.file_naming.get_filename(
+                        "cscan_dyn_rgb",
+                        acq_mode,
+                        [y_pixels, x_pixels, z_pixels],
+                    )
                     mean_filename = self.file_naming.get_filename(
                         "cscan_mean",
                         acq_mode,
@@ -390,6 +404,7 @@ class WeaverThread(QThread):
                     )
                     bundle = {
                         "dynamic_filename": dynamic_filename,
+                        "dynamic_rgb_filename": dynamic_rgb_filename,
                         "mean_filename": mean_filename,
                         "log_filename": dynamic_filename,
                     }
@@ -406,15 +421,8 @@ class WeaverThread(QThread):
                     [repeat_count, x_pixels, z_pixels],
                     ypixels=y_pixels,
                 )
-                dyn_filename = self.file_naming.get_filename(
-                    "cscan_dyn",
-                    acq_mode,
-                    [repeat_count, x_pixels, z_pixels],
-                    ypixels=y_pixels,
-                )
                 bundle = {
                     "filename": bline_filename,
-                    "dynamic_filename": dyn_filename,
                     "log_filename": bline_filename,
                 }
                 self.file_naming.advance_cscan_dynamic_bline(y_pixels)
@@ -432,6 +440,11 @@ class WeaverThread(QThread):
                         acq_mode,
                         [y_pixels, x_pixels, z_pixels],
                     )
+                    dynamic_rgb_filename = self.file_naming.get_filename(
+                        "tile_dyn_rgb",
+                        acq_mode,
+                        [y_pixels, x_pixels, z_pixels],
+                    )
                     mean_filename = self.file_naming.get_filename(
                         "tile_mean",
                         acq_mode,
@@ -439,6 +452,7 @@ class WeaverThread(QThread):
                     )
                     bundle = {
                         "dynamic_filename": dynamic_filename,
+                        "dynamic_rgb_filename": dynamic_rgb_filename,
                         "mean_filename": mean_filename,
                         "log_filename": dynamic_filename,
                     }
@@ -570,7 +584,7 @@ class WeaverThread(QThread):
             # print('waiting for camera data...')
             while self.ui.RunButton.isChecked():
                 try:
-                    an_action = self.DatabackQueue.get(timeout = 2)
+                    an_action = self.DatabackQueue.get(timeout = 2.5)
                     # print('camera queue size:', self.DatabackQueue.qsize())
                     # print('time to fetch data: '+str(round(time.time()-start,3))+'sec')
                     memory_slot = an_action.memory_slot
@@ -979,10 +993,7 @@ class WeaverThread(QThread):
                 break
 
             if self._timed_plate_deadline is not None:
-                if not self.wait_for_processing_barrier(label="offline dynamic processing"):
-                    break
-                final_message = self.process_idle_dynamic_until_deadline(self._timed_plate_deadline, final_message)
-                if not self.ui.RunButton.isChecked():
+                if not self.wait_for_processing_barrier(label="timed plate scan interval"):
                     break
 
                 while self.ui.RunButton.isChecked() and time.time() < self._timed_plate_deadline:
@@ -1075,7 +1086,8 @@ class WeaverThread(QThread):
                 self.move_stage_axis('Y', fov_location.y)
                 self.move_stage_axis('Z', fov_location.z)
                 
-                self.get_background_cscan()
+                if AUTO_BACKGROUND_PER_FOV_ENABLED:
+                    self.get_background_cscan()
                 self.InitMemory()
                 # do FiniteCscan at this position
                 self.SingleScan(DnS_action=DnSActions.PROCESS_MOSAIC, acq_mode=acq_mode, context=[self.CurrentSampleLocations, fov_location])
@@ -1113,15 +1125,6 @@ class WeaverThread(QThread):
             next_value = int(self.ui.CuSlice.value()) + 1
         self.set_time_reader_value(next_value)
 
-    def process_idle_dynamic_until_deadline(self, deadline, current_message):
-        return process_idle_dynamic_until_deadline(self, deadline, current_message)
-
-    def process_next_idle_dynamic_folder(self, deadline):
-        return process_next_idle_dynamic_folder(self, deadline)
-
-    def write_stitched_idle_outputs(self, sample_id, folder_path, tile_count):
-        return write_stitched_idle_outputs(self, sample_id, folder_path, tile_count)
-
     def move_stage_axis(self, axis, target, tolerance=0.005):
         position_widget = getattr(self.ui, f"{axis}Position")
         current_widget = getattr(self.ui, f"{axis}current")
@@ -1155,7 +1158,7 @@ class WeaverThread(QThread):
         except Exception:
             speed = 1.0
         speed = max(abs(speed), 0.001)
-        return max(20.0, abs(distance) / speed * 10.0 + 10.0)
+        return 3.0 * max(20.0, abs(distance) / speed * 10.0 + 10.0)
 
     def sample_fov_locations(self, sample_id):
         if getattr(self, "CurrentSampleLocations", None):
@@ -1304,7 +1307,7 @@ class WeaverThread(QThread):
             ),
             occupancy=self.mosaic_roi_occupancy,
             overlap=self.mosaic_fov_overlap,
-            max_y_fov_mm=self.mosaic_max_y_fov_mm,
+            max_y_fov_mm=self.current_max_y_fov_mm(),
             center_mode=self.mosaic_center_mode,
         )
         reference_z = self.sample_centers[current_id - 1].z

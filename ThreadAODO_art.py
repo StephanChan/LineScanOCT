@@ -497,7 +497,7 @@ class AODOThread(QThread):
     def stage_motion_timeout(self, axis, distance):
         speed = float(getattr(self.ui, f"{axis}Speed").value())
         speed = max(speed, 0.01)
-        return max(5.0, abs(float(distance)) / speed + 5.0)
+        return 3.0 * max(5.0, abs(float(distance)) / speed + 5.0)
 
     def stage_home_timeout(self, axis):
         speed = float(getattr(self.ui, f"{axis}Speed").value())
@@ -568,16 +568,17 @@ class AODOThread(QThread):
             distance = self.ui.XPosition.value() - self.ui.Xcurrent.value()
             message = f"Stage X move start: current={self.ui.Xcurrent.value():.4f}, target={self.ui.XPosition.value():.4f}, distance={distance:.4f}."
             print(message)
+            timeout = self.stage_motion_timeout('X', distance)
             move_completed = self.run_motor_call(
                 lambda: motors.move_relative(x_axis.axis_index, distance),
-                self.stage_motion_timeout('X', distance),
+                timeout,
                 "Stage X move",
             )
             self.ui.Xcurrent.setValue(self.ui.Xcurrent.value()+distance)
             if move_completed:
                 message = f"Stage X move complete: new_current={self.ui.Xcurrent.value():.4f}."
             else:
-                message = f"Stage X move timed out but was assumed complete: new_current={self.ui.Xcurrent.value():.4f}."
+                message = f"Stage X move timed out after {timeout:.1f}s but was assumed complete: new_current={self.ui.Xcurrent.value():.4f}."
                 print(message)
 
         if axis =='Y':
@@ -586,16 +587,17 @@ class AODOThread(QThread):
             distance = self.ui.YPosition.value() - self.ui.Ycurrent.value()
             message = f"Stage Y move start: current={self.ui.Ycurrent.value():.4f}, target={self.ui.YPosition.value():.4f}, distance={distance:.4f}."
             print(message)
+            timeout = self.stage_motion_timeout('Y', distance)
             move_completed = self.run_motor_call(
                 lambda: motors.move_relative(y_axis.axis_index, distance),
-                self.stage_motion_timeout('Y', distance),
+                timeout,
                 "Stage Y move",
             )
             self.ui.Ycurrent.setValue(self.ui.Ycurrent.value()+distance)
             if move_completed:
                 message = f"Stage Y move complete: new_current={self.ui.Ycurrent.value():.4f}."
             else:
-                message = f"Stage Y move timed out but was assumed complete: new_current={self.ui.Ycurrent.value():.4f}."
+                message = f"Stage Y move timed out after {timeout:.1f}s but was assumed complete: new_current={self.ui.Ycurrent.value():.4f}."
                 print(message)
 
         if axis =='Z':
@@ -604,16 +606,17 @@ class AODOThread(QThread):
             distance = self.ui.ZPosition.value() - self.ui.Zcurrent.value()
             message = f"Stage Z move start: current={self.ui.Zcurrent.value():.4f}, target={self.ui.ZPosition.value():.4f}, distance={distance:.4f}."
             print(message)
+            timeout = self.stage_motion_timeout('Z', distance)
             move_completed = self.run_motor_call(
                 lambda: motors.move_relative(z_axis.axis_index, distance),
-                self.stage_motion_timeout('Z', distance),
+                timeout,
                 "Stage Z move",
             )
             self.ui.Zcurrent.setValue(self.ui.Zcurrent.value()+distance)
             if move_completed:
                 message = f"Stage Z move complete: new_current={self.ui.Zcurrent.value():.4f}."
             else:
-                message = f"Stage Z move timed out but was assumed complete: new_current={self.ui.Zcurrent.value():.4f}."
+                message = f"Stage Z move timed out after {timeout:.1f}s but was assumed complete: new_current={self.ui.Zcurrent.value():.4f}."
                 print(message)
 
         # if axis == 'X':

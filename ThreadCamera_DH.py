@@ -480,8 +480,12 @@ class Camera(QThread):
             BlinesCount = 0
             while BlinesCount < self.BlinesPerAcq and self.ui.RunButton.isChecked():
                 t_dq = time.perf_counter()
-                buf = ds.dq_buf(timeout=200)
+                buf = ds.dq_buf(timeout=500)
                 add_profile("dq_buf", time.perf_counter() - t_dq)
+                if buf is None:
+                    print("camera time out...")
+                    increment_profile("timeouts")
+                    continue
                 t_put = time.perf_counter()
                 grab_q.put((buf, BlinesCount))
                 add_profile("queue_put", time.perf_counter() - t_put)

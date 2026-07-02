@@ -6,6 +6,9 @@ import numpy as np
 import tifffile as TIFF
 
 
+OFFLINE_DYNAMIC_PROCESSING_ENABLED = False
+
+
 TILE_BLINE_RE = re.compile(
     r"^tile-(?P<tile>\d+)-Bline-(?P<bline>\d+)-Yrpt(?P<yrpt>\d+)-X(?P<x>\d+)-Z(?P<z>\d+)\.tif$"
 )
@@ -136,6 +139,8 @@ def update_timer_readout(ui, deadline):
 
 
 def process_idle_dynamic_until_deadline(weaver, deadline, current_message):
+    if not OFFLINE_DYNAMIC_PROCESSING_ENABLED:
+        return current_message
     while weaver.ui.RunButton.isChecked() and time.time() < deadline:
         processed = process_next_idle_dynamic_folder(weaver, deadline)
         update_timer_readout(weaver.ui, deadline)
@@ -146,6 +151,8 @@ def process_idle_dynamic_until_deadline(weaver, deadline, current_message):
 
 
 def process_next_idle_dynamic_folder(weaver, deadline):
+    if not OFFLINE_DYNAMIC_PROCESSING_ENABLED:
+        return False
     root_dir = weaver.ui.DIR.toPlainText()
     gpu_thread = getattr(weaver, "gpu_thread", None)
     # prefer_gpu = gpu_thread is not None and not getattr(gpu_thread, "SIM", True)
@@ -219,6 +226,8 @@ def process_next_idle_dynamic_folder(weaver, deadline):
 
 
 def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
+    if not OFFLINE_DYNAMIC_PROCESSING_ENABLED:
+        return False
     sample_locations = weaver.sample_fov_locations(sample_id)
     if not sample_locations:
         return False

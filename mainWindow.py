@@ -254,6 +254,7 @@ class MainWindow(QMainWindow):
             self.ui.statusbar.showMessage(status)
             return None, status
         angle2mmratio = objective.angle_to_mm_ratio
+        self.ui.YLength.setMaximum(float(objective.max_y_fov_mm))
 
         # Calculate AlinesPerBline pixel numbers based on user set FOV size
         Ypixels = np.uint16(np.round(self.ui.YLength.value()*1000/self.ui.YStepSize.value()))
@@ -264,12 +265,21 @@ class MainWindow(QMainWindow):
 
     def Adjust_Bline_Height(self):
         try:
-            samples = effective_camera_sample_count(self.ui)
+            effective_camera_sample_count(self.ui)
         except ValueError as error:
             self.ui.statusbar.showMessage(str(error))
             return
-        self.ui.DepthStart.setValue(samples - self.ui.DepthStartBar.value())
-        self.ui.DepthRange.setValue(np.max([self.ui.DepthStartBar.value() - self.ui.DepthEndBar.value(),1]))
+        depth_start = min(self.ui.DepthStartBar.value(), self.ui.DepthEndBar.value())
+        depth_end = max(self.ui.DepthStartBar.value(), self.ui.DepthEndBar.value())
+        self.ui.DepthStart.setValue(depth_start)
+        self.ui.DepthRange.setValue(max(depth_end - depth_start, 1))
+        self.update_z_depth_bar_range()
+
+    def update_z_depth_bar_range(self):
+        depth_range = max(1, int(self.ui.DepthRange.value()))
+        self.ui.ZDepthBar.setMaximum(depth_range - 1)
+        if self.ui.ZDepthBar.value() >= depth_range:
+            self.ui.ZDepthBar.setValue(depth_range - 1)
 
     def update_depth_bar_limits(self):
         try:
@@ -277,13 +287,20 @@ class MainWindow(QMainWindow):
         except ValueError as error:
             self.ui.statusbar.showMessage(str(error))
             return
+        self.ui.DepthStartBar.setMinimum(0)
+        self.ui.DepthEndBar.setMinimum(0)
         self.ui.DepthStartBar.setMaximum(samples)
         self.ui.DepthEndBar.setMaximum(samples)
+        self.ui.DepthStartBar.setInvertedAppearance(False)
+        self.ui.DepthEndBar.setInvertedAppearance(False)
+        self.ui.DepthStartBar.setInvertedControls(False)
+        self.ui.DepthEndBar.setInvertedControls(False)
         if self.ui.DepthStartBar.value() > samples:
             self.ui.DepthStartBar.setValue(samples)
         if self.ui.DepthEndBar.value() > samples:
             self.ui.DepthEndBar.setValue(samples)
         self.Adjust_Bline_Height()
+        self.update_z_depth_bar_range()
 
     def SaveSettings(self):
         settings = qc.QSettings("config.ini", qc.QSettings.IniFormat)
@@ -322,6 +339,7 @@ class MainWindow(QMainWindow):
         self.ui.BlineAVG.valueChanged.connect(self.Calculate_Galvo_settings)
         self.ui.DepthStartBar.valueChanged.connect(self.Adjust_Bline_Height)
         self.ui.DepthEndBar.valueChanged.connect(self.Adjust_Bline_Height)
+        self.ui.DepthRange.valueChanged.connect(self.update_z_depth_bar_range)
         self.ui.NSamples_DH.valueChanged.connect(self.update_depth_bar_limits)
         self.ui.NSamples_PF.valueChanged.connect(self.update_depth_bar_limits)
         self.ui.SpectralDS_DH.valueChanged.connect(self.update_depth_bar_limits)

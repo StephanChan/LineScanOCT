@@ -45,7 +45,7 @@ from Display_rendering import (
     render_cscan_ready,
     render_mosaic_ready,
 )
-from HardwareSpecs import PHOTONFOCUS_STATIC_NORMALIZATION_MEAN
+from HardwareSpecs import PHOTONFOCUS_STATIC_NORMALIZATION_MEAN, get_objective_spec
 
 CONTINUOUS_ACQ_MODES = (
     AcqTypes.CONTINUOUS_ALINE,
@@ -235,8 +235,8 @@ class GUI(MainWindow):
         # self.ui.DepthStart.valueChanged.connect(self.Update_contrast_Bline)
         # self.ui.DepthRange.valueChanged.connect(self.Update_contrast_Bline)
         self.ui.XZmin.valueChanged.connect(self.Update_contrast)
-        self.ui.Intmax.valueChanged.connect(self.Update_contrast)
-        self.ui.Intmin.valueChanged.connect(self.Update_contrast)
+        if hasattr(self.ui, "ZDepthBar"):
+            self.ui.ZDepthBar.valueChanged.connect(self.Update_contrast)
         self.ui.DynContrast.valueChanged.connect(self.Update_contrast)
         # self.ui.Dynmax.valueChanged.connect(self.Update_contrast_Dyn)
         # self.ui.Dynmin.valueChanged.connect(self.Update_contrast_Dyn)
@@ -371,13 +371,22 @@ class GUI(MainWindow):
             StagebackQueue.get(timeout=timeout)
         except Exception:
             message = (
-                f"Stage timeout while waiting for {label} acknowledgement. "
+                f"Stage timeout while waiting for {label} acknowledgement "
+                f"after {timeout:.1f}s. "
                 "Assuming motion completed and continuing."
             )
             print(message)
             self.ui.statusbar.showMessage(message)
             return False
         return True
+
+    def stage_move_timeout(self, axis):
+        position_widget = getattr(self.ui, f"{axis}Position")
+        current_widget = getattr(self.ui, f"{axis}current")
+        speed_widget = getattr(self.ui, f"{axis}Speed")
+        distance = position_widget.value() - current_widget.value()
+        speed = max(abs(float(speed_widget.value())), 0.001)
+        return 3.0 * max(20.0, abs(distance) / speed * 10.0 + 10.0)
 
     def _managed_acquisition_widgets(self):
         widget_types = (
@@ -578,6 +587,12 @@ class GUI(MainWindow):
                 self.enqueue_weaver_action(an_action)
         
     def LocateSample(self):
+        objective = get_objective_spec(self.ui.Objective.currentText())
+        if objective is None:
+            message = f"Unknown objective for sample locator: {self.ui.Objective.currentText()}"
+            print(message)
+            self.ui.statusbar.showMessage(message)
+            return
         default_sample_z = self.ui.ZPosition.value()
         safe_locate_z = min(
             max(5.0, self.ui.ZPosition.minimum()),
@@ -593,6 +608,7 @@ class GUI(MainWindow):
             fov_h_mm=self.ui.YLength.value(),
             current_zpos=default_sample_z,
             y_step_um=self.ui.YStepSize.value(),
+            max_y_fov_mm=objective.max_y_fov_mm,
             stage_bounds=(
                 self.ui.Xmin.value(),
                 self.ui.Xmax.value(),
@@ -609,6 +625,12 @@ class GUI(MainWindow):
         sample_centers = self.scanner.sample_centers
         raw_img = self.scanner.final_raw_img
         pixel_polygons = self.scanner.final_polygons
+        print("Sample locator center positions:")
+        for center in sample_centers:
+            print(
+                f"sampleID-{center.sample_id}: "
+                f"X={center.x:.4f}, Y={center.y:.4f}, Z={center.z:.4f}"
+            )
         """Updates the combo box content on the main thread."""
         self.ui.sampleSelector.clear()
         if len(sample_centers) == 0:
@@ -641,17 +663,17 @@ class GUI(MainWindow):
     def Xmove2(self):
         an_action = AODOActionField('Xmove2')
         AODOQueue.put(an_action)
-        self._wait_stageback("X move")
+        self._wait_stageback("X move", timeout=self.stage_move_timeout('X'))
         
     def Ymove2(self):
         an_action = AODOActionField('Ymove2')
         AODOQueue.put(an_action)
-        self._wait_stageback("Y move")
+        self._wait_stageback("Y move", timeout=self.stage_move_timeout('Y'))
         
     def Zmove2(self):
         an_action = AODOActionField('Zmove2')
         AODOQueue.put(an_action)
-        self._wait_stageback("Z move")
+        self._wait_stageback("Z move", timeout=self.stage_move_timeout('Z'))
         
     def XUP(self):
         an_action = AODOActionField('XUP')

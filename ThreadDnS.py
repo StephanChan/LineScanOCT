@@ -52,13 +52,29 @@ MOSAIC_DISPLAY_MODES = (
     AcqTypes.TIMED_PLATE_SCAN,
 )
 
+DYNAMIC_HUE_FREQUENCY_RANGE_HZ = (0.0, 15.0)
+DYNAMIC_SATURATION_BANDWIDTH_RANGE_HZ = (0.0, 8.0)
+DYNAMIC_VALUE_DYNAMIC_RANGE = (0.0, 500.0)
+DYNAMIC_VALUE_GAMMA = 1.0
+DYNAMIC_HUE_HZ_PER_CONTRAST_UNIT = 15.0 / 1000.0
+
 class DnSThread(QThread):
     def __init__(self):
         super().__init__()
         # self.SampleDynamic= []
         self.SampleMosaic= []
+        self.SampleMosaicVolume = []
         self.AIP = []
+        self.XYVolume = []
         self.Dyn = []
+        self.DynHSV = []
+        self.DynHSVBline = []
+        self.DynRGB = []
+        self.DynRGBBline = []
+        self.DynFreq = []
+        self.DynFreqBline = []
+        self.DynBandwidth = []
+        self.DynBandwidthBline = []
         # self.totalTiles = 0
         self.display_actions = 0
         self.active_tasks = 0
@@ -66,14 +82,40 @@ class DnSThread(QThread):
         self._tiff_initialized_files = set()
         self.MeanVolume = []
         self.DynamicVolume = []
+        self.DynamicHSVVolume = []
+        self.DynamicRGBVolume = []
+        self.SampleMosaicRGB = []
+        self.SampleMosaicHSV = []
+        self.SampleMosaicHSVVolume = []
+        self.SampleMosaicDyn = []
+        self.SampleMosaicFreq = []
+        self.SampleMosaicBandwidth = []
         self.mosaic_y_pixels = None
 
     def reset_dynamic_accumulators(self):
         self.AIP = []
+        self.XYVolume = []
         self.Dyn = []
+        self.DynHSV = []
+        self.DynHSVBline = []
+        self.DynRGB = []
         self.DynBline = []
+        self.DynRGBBline = []
+        self.DynFreq = []
+        self.DynFreqBline = []
+        self.DynBandwidth = []
+        self.DynBandwidthBline = []
         self.MeanVolume = []
         self.DynamicVolume = []
+        self.DynamicHSVVolume = []
+        self.DynamicRGBVolume = []
+        self.SampleMosaicRGB = []
+        self.SampleMosaicHSV = []
+        self.SampleMosaicVolume = []
+        self.SampleMosaicHSVVolume = []
+        self.SampleMosaicDyn = []
+        self.SampleMosaicFreq = []
+        self.SampleMosaicBandwidth = []
         self.mosaic_y_pixels = None
         
     def run(self):
@@ -145,7 +187,7 @@ class DnSThread(QThread):
                     print(message)
                     self.emit_status(message)
                     # self.ui.PrintOut.append(message)
-                if time.time()-start>1:
+                if time.time()-start>2.0:
                     print('time for DnS:',round(time.time()-start,3))
             except Exception as error:
                 message = "Display/save processing failed. This item was skipped."
@@ -179,6 +221,13 @@ class DnSThread(QThread):
     def current_y_pixels(self):
         return max(1, int(self.ui.Ypixels.value()))
 
+    def current_z_depth_index(self, z_pixels):
+        if z_pixels <= 0:
+            return 0
+        if not hasattr(self.ui, "ZDepthBar"):
+            return 0
+        return max(0, min(int(self.ui.ZDepthBar.value()), int(z_pixels) - 1))
+
     def current_bline_avg(self):
         return max(1, int(self.ui.BlineAVG.value()))
 
@@ -186,7 +235,7 @@ class DnSThread(QThread):
         return (
             self.current_dynamic_enabled()
             and acq_mode in SAVE_SAMPLE_TIME_MODES
-            and np.size(dynamic) > 0
+            and self.has_dynamic_data(dynamic)
         )
 
     def realtime_cscan_dynamic_enabled(self, acq_mode, dynamic):
@@ -194,7 +243,7 @@ class DnSThread(QThread):
             self.current_dynamic_enabled()
             and acq_mode in CSCAN_MODES
             and self.ui.RealtimeDynCheckBox.isChecked()
-            and np.size(dynamic) > 0
+            and self.has_dynamic_data(dynamic)
         )
 
     def write_stack_tiff(self, filename, stack, count=None):
@@ -207,6 +256,110 @@ class DnSThread(QThread):
         if isinstance(data, np.ndarray) and data.dtype.kind == 'c':
             return np.abs(data)
         return data
+
+    @staticmethod
+    def dynamic_std_data(dynamic):
+        if isinstance(dynamic, dict):
+            if "hsv" in dynamic:
+                return dynamic["hsv"][..., 2]
+            return dynamic.get("dynamic_std", [])
+        return dynamic
+
+    @staticmethod
+    def dynamic_hsv_data(dynamic):
+        if isinstance(dynamic, dict):
+            return dynamic.get("hsv", [])
+        return []
+
+    @staticmethod
+    def dynamic_frequency_data(dynamic):
+        if isinstance(dynamic, dict):
+            if "hsv" in dynamic:
+                return dynamic["hsv"][..., 0]
+            return dynamic.get("mean_frequency_hz", [])
+        return []
+
+    @staticmethod
+    def dynamic_bandwidth_data(dynamic):
+        if isinstance(dynamic, dict):
+            if "hsv" in dynamic:
+                return dynamic["hsv"][..., 1]
+            return dynamic.get("bandwidth_hz", [])
+        return []
+
+    @staticmethod
+    def has_dynamic_data(dynamic):
+        if isinstance(dynamic, dict):
+            if "hsv" in dynamic:
+                return np.size(dynamic.get("hsv", [])) > 0
+            return np.size(dynamic.get("dynamic_std", [])) > 0
+        return np.size(dynamic) > 0
+
+    @staticmethod
+    def normalize_dynamic_channel(image, value_range, gamma=1.0):
+        low_value, high_value = float(value_range[0]), float(value_range[1])
+        if high_value <= low_value:
+            raise ValueError(f"Invalid dynamic HSV normalization range: {value_range}")
+        normalized = (np.asarray(image, dtype=np.float32) - low_value) / (high_value - low_value)
+        normalized = np.clip(normalized, 0.0, 1.0)
+        gamma = float(gamma)
+        if np.isfinite(gamma) and gamma > 0.0 and abs(gamma - 1.0) > 1e-6:
+            normalized = normalized ** (1.0 / gamma)
+        return normalized
+
+    @staticmethod
+    def hsv_to_rgb_array(hue, saturation, value):
+        hue = np.mod(np.asarray(hue, dtype=np.float32), 1.0)
+        saturation = np.clip(np.asarray(saturation, dtype=np.float32), 0.0, 1.0)
+        value = np.clip(np.asarray(value, dtype=np.float32), 0.0, 1.0)
+
+        h6 = hue * 6.0
+        i = np.floor(h6).astype(np.int32)
+        f = h6 - i.astype(np.float32)
+        p = value * (1.0 - saturation)
+        q = value * (1.0 - saturation * f)
+        t = value * (1.0 - saturation * (1.0 - f))
+        i_mod = np.mod(i, 6)
+
+        rgb = np.empty(hue.shape + (3,), dtype=np.float32)
+        masks = [
+            (i_mod == 0, value, t, p),
+            (i_mod == 1, q, value, p),
+            (i_mod == 2, p, value, t),
+            (i_mod == 3, p, q, value),
+            (i_mod == 4, t, p, value),
+            (i_mod == 5, value, p, q),
+        ]
+        for mask, red, green, blue in masks:
+            rgb[..., 0][mask] = red[mask]
+            rgb[..., 1][mask] = green[mask]
+            rgb[..., 2][mask] = blue[mask]
+        return np.ascontiguousarray(np.clip(np.rint(rgb * 255.0), 0, 255).astype(np.uint8))
+
+    @classmethod
+    def dynamic_hsv_to_rgb(cls, hsv, hue_range=None):
+        hsv = np.asarray(hsv, dtype=np.float32)
+        if hsv.ndim < 3 or hsv.shape[-1] != 3:
+            raise ValueError(f"Dynamic HSV source must have last dimension 3, got {hsv.shape}")
+        if hue_range is None:
+            hue_range = DYNAMIC_HUE_FREQUENCY_RANGE_HZ
+        hue = cls.normalize_dynamic_channel(hsv[..., 0], hue_range)
+        saturation = cls.normalize_dynamic_channel(hsv[..., 1], DYNAMIC_SATURATION_BANDWIDTH_RANGE_HZ)
+        value = cls.normalize_dynamic_channel(
+            hsv[..., 2],
+            DYNAMIC_VALUE_DYNAMIC_RANGE,
+            gamma=DYNAMIC_VALUE_GAMMA,
+        )
+        return cls.hsv_to_rgb_array(hue, saturation, value)
+
+    def current_save_hue_frequency_range_hz(self):
+        return (
+            float(self.ui.XZmin.value()) * DYNAMIC_HUE_HZ_PER_CONTRAST_UNIT,
+            float(self.ui.XZmax.value()) * DYNAMIC_HUE_HZ_PER_CONTRAST_UNIT,
+        )
+
+    def dynamic_hsv_to_saved_rgb(self, hsv):
+        return self.dynamic_hsv_to_rgb(hsv, hue_range=self.current_save_hue_frequency_range_hz())
 
     @staticmethod
     def save_data(data):
@@ -255,16 +408,38 @@ class DnSThread(QThread):
             return
 
         acq_mode = self.current_acq_mode
-        use_dynamic = self.current_dynamic_enabled()
+        use_realtime_dynamic = self.current_dynamic_enabled() and self.ui.RealtimeDynCheckBox.isChecked()
 
         if kind == "aline" and hasattr(self, "Aline") and np.size(self.Aline) > 0:
             bridge.aline_ready.emit({"mode": acq_mode, "aline": np.array(self.Aline, copy=True)})
 
         if kind == "bline" and hasattr(self, "Bline") and np.size(self.Bline) > 0:
-            dyn = None
-            if use_dynamic and hasattr(self, "DynBline") and np.size(self.DynBline) > 0:
-                dyn = np.array(self.DynBline, copy=True)
-            bridge.bline_ready.emit({"mode": acq_mode, "bline": np.array(self.Bline, copy=True), "dyn": dyn})
+            rgb = None
+            hsv = None
+            freq = None
+            bandwidth = None
+            value = None
+            if use_realtime_dynamic and hasattr(self, "DynRGBBline") and np.size(self.DynRGBBline) > 0:
+                rgb = np.array(self.DynRGBBline, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynHSVBline") and np.size(self.DynHSVBline) > 0:
+                hsv = np.array(self.DynHSVBline, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynFreqBline") and np.size(self.DynFreqBline) > 0:
+                freq = np.array(self.DynFreqBline, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynBandwidthBline") and np.size(self.DynBandwidthBline) > 0:
+                bandwidth = np.array(self.DynBandwidthBline, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynBline") and np.size(self.DynBline) > 0:
+                value = np.array(self.DynBline, copy=True)
+            bridge.bline_ready.emit(
+                {
+                    "mode": acq_mode,
+                    "bline": np.array(self.Bline, copy=True),
+                    "rgb": rgb,
+                    "hsv": hsv,
+                    "freq": freq,
+                    "bandwidth": bandwidth,
+                    "value": value,
+                }
+            )
 
         if (
             kind == "cscan"
@@ -273,28 +448,114 @@ class DnSThread(QThread):
             and np.size(self.Bline) > 0
             and np.size(self.AIP) > 0
         ):
-            dynb = None
-            dyn = None
-            if use_dynamic and hasattr(self, "DynBline") and np.size(self.DynBline) > 0:
-                dynb = np.array(self.DynBline, copy=True)
-            if use_dynamic and hasattr(self, "Dyn") and np.size(self.Dyn) > 0:
-                dyn = np.array(self.Dyn, copy=True)
+            rgbb = None
+            rgb = None
+            hsvb = None
+            hsv = None
+            freqb = None
+            bandwidthb = None
+            valueb = None
+            freq = None
+            bandwidth = None
+            value = None
+            if use_realtime_dynamic and hasattr(self, "DynRGBBline") and np.size(self.DynRGBBline) > 0:
+                rgbb = np.array(self.DynRGBBline, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynRGB") and np.size(self.DynRGB) > 0:
+                rgb = np.array(self.DynRGB, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynHSVBline") and np.size(self.DynHSVBline) > 0:
+                hsvb = np.array(self.DynHSVBline, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynHSV") and np.size(self.DynHSV) > 0:
+                hsv = np.array(self.DynHSV, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynFreqBline") and np.size(self.DynFreqBline) > 0:
+                freqb = np.array(self.DynFreqBline, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynBandwidthBline") and np.size(self.DynBandwidthBline) > 0:
+                bandwidthb = np.array(self.DynBandwidthBline, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynBline") and np.size(self.DynBline) > 0:
+                valueb = np.array(self.DynBline, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynFreq") and np.size(self.DynFreq) > 0:
+                freq = np.array(self.DynFreq, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynBandwidth") and np.size(self.DynBandwidth) > 0:
+                bandwidth = np.array(self.DynBandwidth, copy=True)
+            if use_realtime_dynamic and hasattr(self, "Dyn") and np.size(self.Dyn) > 0:
+                value = np.array(self.Dyn, copy=True)
             bridge.cscan_ready.emit(
                 {
                     "mode": acq_mode,
                     "bline": np.array(self.Bline, copy=True),
-                    "dynb": dynb,
+                    "rgbb": rgbb,
+                    "hsvb": hsvb,
+                    "freqb": freqb,
+                    "bandwidthb": bandwidthb,
+                    "valueb": valueb,
                     "aip": np.array(self.AIP, copy=True),
-                    "dyn": dyn,
+                    "volume": np.array(self.XYVolume, copy=True) if hasattr(self, "XYVolume") and np.size(self.XYVolume) > 0 else None,
+                    "hsv_volume": np.array(self.DynamicHSVVolume, copy=True)
+                    if hasattr(self, "DynamicHSVVolume") and np.size(self.DynamicHSVVolume) > 0
+                    else None,
+                    "rgb": rgb,
+                    "hsv": hsv,
+                    "freq": freq,
+                    "bandwidth": bandwidth,
+                    "value": value,
                 }
             )
 
         if kind == "mosaic" and hasattr(self, "SampleMosaic") and np.size(self.SampleMosaic) > 0:
             bline = None
+            bline_rgb = None
+            mosaic_rgb = None
+            bline_hsv = None
+            mosaic_hsv = None
+            bline_freq = None
+            bline_bandwidth = None
+            bline_value = None
+            mosaic_freq = None
+            mosaic_bandwidth = None
+            mosaic_value = None
             if hasattr(self, "Bline") and np.size(self.Bline) > 0:
                 bline = np.array(self.Bline, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynRGBBline") and np.size(self.DynRGBBline) > 0:
+                bline_rgb = np.array(self.DynRGBBline, copy=True)
+            if use_realtime_dynamic and hasattr(self, "SampleMosaicRGB") and np.size(self.SampleMosaicRGB) > 0:
+                mosaic_rgb = np.array(self.SampleMosaicRGB, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynHSVBline") and np.size(self.DynHSVBline) > 0:
+                bline_hsv = np.array(self.DynHSVBline, copy=True)
+            if use_realtime_dynamic and hasattr(self, "SampleMosaicHSV") and np.size(self.SampleMosaicHSV) > 0:
+                mosaic_hsv = np.array(self.SampleMosaicHSV, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynFreqBline") and np.size(self.DynFreqBline) > 0:
+                bline_freq = np.array(self.DynFreqBline, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynBandwidthBline") and np.size(self.DynBandwidthBline) > 0:
+                bline_bandwidth = np.array(self.DynBandwidthBline, copy=True)
+            if use_realtime_dynamic and hasattr(self, "DynBline") and np.size(self.DynBline) > 0:
+                bline_value = np.array(self.DynBline, copy=True)
+            if use_realtime_dynamic and hasattr(self, "SampleMosaicFreq") and np.size(self.SampleMosaicFreq) > 0:
+                mosaic_freq = np.array(self.SampleMosaicFreq, copy=True)
+            if use_realtime_dynamic and hasattr(self, "SampleMosaicBandwidth") and np.size(self.SampleMosaicBandwidth) > 0:
+                mosaic_bandwidth = np.array(self.SampleMosaicBandwidth, copy=True)
+            if use_realtime_dynamic and hasattr(self, "SampleMosaicDyn") and np.size(self.SampleMosaicDyn) > 0:
+                mosaic_value = np.array(self.SampleMosaicDyn, copy=True)
             bridge.mosaic_ready.emit(
-                {"mode": acq_mode, "mosaic": np.array(self.SampleMosaic, copy=True), "bline": bline}
+                {
+                    "mode": acq_mode,
+                    "mosaic": np.array(self.SampleMosaic, copy=True),
+                    "mosaic_volume": np.array(self.SampleMosaicVolume, copy=True)
+                    if hasattr(self, "SampleMosaicVolume") and np.size(self.SampleMosaicVolume) > 0
+                    else None,
+                    "mosaic_rgb": mosaic_rgb,
+                    "mosaic_hsv": mosaic_hsv,
+                    "mosaic_hsv_volume": np.array(self.SampleMosaicHSVVolume, copy=True)
+                    if hasattr(self, "SampleMosaicHSVVolume") and np.size(self.SampleMosaicHSVVolume) > 0
+                    else None,
+                    "mosaic_freq": mosaic_freq,
+                    "mosaic_bandwidth": mosaic_bandwidth,
+                    "mosaic_value": mosaic_value,
+                    "bline": bline,
+                    "bline_rgb": bline_rgb,
+                    "bline_hsv": bline_hsv,
+                    "bline_freq": bline_freq,
+                    "bline_bandwidth": bline_bandwidth,
+                    "bline_value": bline_value,
+                }
             )
             
     def print_display_counts(self, display_name = ''):
@@ -344,11 +605,30 @@ class DnSThread(QThread):
             Bline = np.mean(Bline,1)
             Xpixels = Xpixels//aline_avg
         self.Bline = np.transpose(Bline)
-        if self.current_dynamic_enabled() and len(dynamic)>0:
-            self.DynBline = np.transpose(dynamic)
+        dyn_data = self.dynamic_std_data(dynamic)
+        hsv_data = self.dynamic_hsv_data(dynamic)
+        freq_data = self.dynamic_frequency_data(dynamic)
+        bandwidth_data = self.dynamic_bandwidth_data(dynamic)
+        if self.current_dynamic_enabled() and np.size(dyn_data)>0:
+            self.DynBline = np.transpose(dyn_data)
         else:
             self.DynBline = []
             self.Dyn = []
+        if self.current_dynamic_enabled() and np.size(hsv_data)>0:
+            hsv_data = np.asarray(hsv_data, dtype=np.float32)
+            self.DynHSVBline = np.transpose(hsv_data, (1, 0, 2))
+            self.DynRGBBline = np.transpose(self.dynamic_hsv_to_rgb(hsv_data), (1, 0, 2))
+        else:
+            self.DynHSVBline = []
+            self.DynRGBBline = []
+        if self.current_dynamic_enabled() and np.size(freq_data)>0:
+            self.DynFreqBline = np.transpose(np.asarray(freq_data, dtype=np.float32))
+        else:
+            self.DynFreqBline = []
+        if self.current_dynamic_enabled() and np.size(bandwidth_data)>0:
+            self.DynBandwidthBline = np.transpose(np.asarray(bandwidth_data, dtype=np.float32))
+        else:
+            self.DynBandwidthBline = []
 
         
         if self.current_save_enabled():
@@ -378,23 +658,35 @@ class DnSThread(QThread):
         self.Bline = np.transpose(Bline)
         
         # print('Bline:', self.Bline[Zpixels//2:Zpixels//2+5, Xpixels//2])
-        if len(dynamic)>0:
-            self.DynBline = np.transpose(dynamic)
+        dyn_data = self.dynamic_std_data(dynamic)
+        if np.size(dyn_data)>0:
+            self.DynBline = np.transpose(dyn_data)
             # print('DynBline:', self.DynBline[Zpixels//2:Zpixels//2+5, Xpixels//2])
         else:
             self.DynBline = []
+        self.DynRGBBline = []
+        self.DynHSVBline = []
+        self.DynRGB = []
+        self.DynHSV = []
+        self.DynFreqBline = []
+        self.DynBandwidthBline = []
+        self.DynFreq = []
+        self.DynBandwidth = []
         
         if dynamic_bline_idx == 0:
             self.AIP = np.zeros([Ypixels, Xpixels])
-        if len(dynamic)>0:
+            self.XYVolume = np.zeros((Ypixels, Xpixels, Zpixels), dtype=np.float32)
+        if np.size(dyn_data)>0:
             if dynamic_bline_idx == 0:
                 self.Dyn = np.zeros([Ypixels, Xpixels])
                 
         # print(Bline.shape, self.AIP.shape)
         print('Ypixel: ', dynamic_bline_idx + 1, ' / ', Ypixels)
-        self.AIP[dynamic_bline_idx, :] = np.mean(Bline,1)
-        if len(dynamic)>0:
-            self.Dyn[dynamic_bline_idx, :] = np.mean(dynamic,1)
+        z_idx = self.current_z_depth_index(Zpixels)
+        self.XYVolume[dynamic_bline_idx, :, :] = Bline
+        self.AIP[dynamic_bline_idx, :] = Bline[:, z_idx]
+        if np.size(dyn_data)>0:
+            self.Dyn[dynamic_bline_idx, :] = dyn_data[:, z_idx]
         if self.current_save_enabled():
             self.Save(data=data, dynamic=dynamic, acq_mode=acq_mode, gpu_avg_count=gpu_avg_count)
         
@@ -420,10 +712,20 @@ class DnSThread(QThread):
             Cscan = np.mean(Cscan,2)
             Xpixels = Xpixels//aline_avg
         # print(data[10,100,50:60])
+        self.XYVolume = Cscan
+        z_idx = self.current_z_depth_index(Zpixels)
         self.Bline = np.transpose(Cscan[Ypixels//2,:,:]).copy()# has to be first index, otherwise the memory space is not continuous
-        self.AIP = np.mean(Cscan,2)
+        self.AIP = Cscan[:, :, z_idx]
         self.DynBline = []
         self.Dyn = []
+        self.DynRGBBline = []
+        self.DynHSVBline = []
+        self.DynRGB = []
+        self.DynHSV = []
+        self.DynFreqBline = []
+        self.DynBandwidthBline = []
+        self.DynFreq = []
+        self.DynBandwidth = []
         
         if self.current_save_enabled():
             self.Save(data=data, raw=raw, acq_mode=acq_mode, gpu_avg_count=gpu_avg_count)
@@ -441,11 +743,30 @@ class DnSThread(QThread):
         else:
             bline = display_data[0]
 
-        dyn_slice = np.asarray(dynamic, dtype=np.float32)
+        dyn_slice = np.asarray(self.dynamic_std_data(dynamic), dtype=np.float32)
+        hsv_slice = self.dynamic_hsv_data(dynamic)
+        freq_slice = self.dynamic_frequency_data(dynamic)
+        bandwidth_slice = self.dynamic_bandwidth_data(dynamic)
+        if np.size(hsv_slice) > 0:
+            hsv_slice = np.asarray(hsv_slice, dtype=np.float32)
+            rgb_slice = self.dynamic_hsv_to_rgb(hsv_slice)
+        else:
+            rgb_slice = []
+        if np.size(freq_slice) > 0:
+            freq_slice = np.asarray(freq_slice, dtype=np.float32)
+        if np.size(bandwidth_slice) > 0:
+            bandwidth_slice = np.asarray(bandwidth_slice, dtype=np.float32)
         aline_avg = self.current_aline_avg()
         if aline_avg > 1:
             bline = bline.reshape([xpixels // aline_avg, aline_avg, zpixels]).mean(axis=1)
             dyn_slice = dyn_slice.reshape([xpixels // aline_avg, aline_avg, zpixels]).mean(axis=1)
+            if np.size(hsv_slice) > 0:
+                hsv_slice = hsv_slice.reshape([xpixels // aline_avg, aline_avg, zpixels, 3]).mean(axis=1)
+                rgb_slice = self.dynamic_hsv_to_rgb(hsv_slice)
+            if np.size(freq_slice) > 0:
+                freq_slice = freq_slice.reshape([xpixels // aline_avg, aline_avg, zpixels]).mean(axis=1)
+            if np.size(bandwidth_slice) > 0:
+                bandwidth_slice = bandwidth_slice.reshape([xpixels // aline_avg, aline_avg, zpixels]).mean(axis=1)
             xpixels = xpixels // aline_avg
 
         if (
@@ -455,15 +776,61 @@ class DnSThread(QThread):
         ):
             self.MeanVolume = np.zeros((ypixels, xpixels, zpixels), dtype=np.float32)
             self.DynamicVolume = np.zeros((ypixels, xpixels, zpixels), dtype=np.float32)
+            if np.size(hsv_slice) > 0:
+                self.DynamicHSVVolume = np.zeros((ypixels, xpixels, zpixels, 3), dtype=np.float32)
+                self.DynamicRGBVolume = np.zeros((ypixels, xpixels, zpixels, 3), dtype=np.uint8)
+            else:
+                self.DynamicHSVVolume = []
+                self.DynamicRGBVolume = []
             self.AIP = np.zeros((ypixels, xpixels), dtype=np.float32)
             self.Dyn = np.zeros((ypixels, xpixels), dtype=np.float32)
+            self.DynHSV = np.zeros((ypixels, xpixels, 3), dtype=np.float32)
+            self.DynFreq = np.zeros((ypixels, xpixels), dtype=np.float32)
+            self.DynBandwidth = np.zeros((ypixels, xpixels), dtype=np.float32)
 
         self.Bline = np.transpose(bline)
         self.DynBline = np.transpose(dyn_slice)
+        if np.size(hsv_slice) > 0:
+            self.DynHSVBline = np.transpose(hsv_slice, (1, 0, 2))
+        else:
+            self.DynHSVBline = []
+        if np.size(rgb_slice) > 0:
+            self.DynRGBBline = np.transpose(rgb_slice, (1, 0, 2))
+        else:
+            self.DynRGBBline = []
+        if np.size(freq_slice) > 0:
+            self.DynFreqBline = np.transpose(freq_slice)
+        else:
+            self.DynFreqBline = []
+        if np.size(bandwidth_slice) > 0:
+            self.DynBandwidthBline = np.transpose(bandwidth_slice)
+        else:
+            self.DynBandwidthBline = []
         self.MeanVolume[dynamic_bline_idx, :, :] = bline
+        self.XYVolume = self.MeanVolume
         self.DynamicVolume[dynamic_bline_idx, :, :] = dyn_slice
-        self.AIP[dynamic_bline_idx, :] = np.mean(bline, axis=1)
-        self.Dyn[dynamic_bline_idx, :] = np.mean(dyn_slice, axis=1)
+        if np.size(hsv_slice) > 0:
+            self.DynamicHSVVolume[dynamic_bline_idx, :, :, :] = hsv_slice
+        if np.size(rgb_slice) > 0:
+            self.DynamicRGBVolume[dynamic_bline_idx, :, :, :] = rgb_slice
+        z_idx = self.current_z_depth_index(zpixels)
+        self.AIP[dynamic_bline_idx, :] = bline[:, z_idx]
+        self.Dyn[dynamic_bline_idx, :] = dyn_slice[:, z_idx]
+        if np.size(freq_slice) > 0:
+            self.DynFreq[dynamic_bline_idx, :] = freq_slice[:, z_idx]
+        if np.size(bandwidth_slice) > 0:
+            self.DynBandwidth[dynamic_bline_idx, :] = bandwidth_slice[:, z_idx]
+        if np.size(hsv_slice) > 0:
+            self.DynHSV[dynamic_bline_idx, :, :] = hsv_slice[:, z_idx, :]
+        if np.size(rgb_slice) > 0:
+            if not isinstance(self.DynRGB, np.ndarray) or self.DynRGB.shape != (ypixels, xpixels, 3):
+                self.DynRGB = np.zeros((ypixels, xpixels, 3), dtype=np.uint8)
+            self.DynRGB[dynamic_bline_idx, :, :] = rgb_slice[:, z_idx, :].astype(np.uint8)
+        else:
+            self.DynRGB = []
+            self.DynHSV = []
+            self.DynFreq = []
+            self.DynBandwidth = []
         print('Ypixel: ', dynamic_bline_idx + 1, ' / ', ypixels)
         if dynamic_bline_idx + 1 == ypixels:
             if self.current_save_enabled():
@@ -497,6 +864,13 @@ class DnSThread(QThread):
         mw_px = num_cols * fw_px
         mh_px = num_rows * fh_px
         self.SampleMosaic = np.ones((mh_px, mw_px), dtype=np.float32)*10
+        self.SampleMosaicVolume = []
+        self.SampleMosaicRGB = np.zeros((mh_px, mw_px, 3), dtype=np.uint8)
+        self.SampleMosaicHSV = np.zeros((mh_px, mw_px, 3), dtype=np.float32)
+        self.SampleMosaicHSVVolume = []
+        self.SampleMosaicDyn = np.zeros((mh_px, mw_px), dtype=np.float32)
+        self.SampleMosaicFreq = np.zeros((mh_px, mw_px), dtype=np.float32)
+        self.SampleMosaicBandwidth = np.zeros((mh_px, mw_px), dtype=np.float32)
         # print(self.SampleMosaic.shape)
         # Store these for use in Process_Mosaic
         self.fw_mm, self.fh_mm = fw_mm, fh_mm
@@ -561,6 +935,42 @@ class DnSThread(QThread):
         if y2 <= mh and x2 <= mw:
             # print(y1,y2,x1,x2, off_y, off_x, mh, mw)
             self.SampleMosaic[y1:y2, x1:x2] = self.AIP
+            if hasattr(self, "XYVolume") and isinstance(self.XYVolume, np.ndarray) and np.size(self.XYVolume) > 0:
+                z_pixels = self.XYVolume.shape[2]
+                if not isinstance(self.SampleMosaicVolume, np.ndarray) or self.SampleMosaicVolume.shape != (mh, mw, z_pixels):
+                    self.SampleMosaicVolume = np.zeros((mh, mw, z_pixels), dtype=np.float32)
+                self.SampleMosaicVolume[y1:y2, x1:x2, :] = self.XYVolume
+            if (
+                hasattr(self, "DynRGB")
+                and isinstance(self.DynRGB, np.ndarray)
+                and np.size(self.DynRGB) > 0
+                and isinstance(self.SampleMosaicRGB, np.ndarray)
+            ):
+                self.SampleMosaicRGB[y1:y2, x1:x2, :] = self.DynRGB
+            if isinstance(self.SampleMosaicHSV, np.ndarray) and isinstance(self.DynHSV, np.ndarray) and np.size(self.DynHSV) > 0:
+                self.SampleMosaicHSV[y1:y2, x1:x2, :] = self.DynHSV
+            if (
+                hasattr(self, "DynamicHSVVolume")
+                and isinstance(self.DynamicHSVVolume, np.ndarray)
+                and np.size(self.DynamicHSVVolume) > 0
+            ):
+                z_pixels = self.DynamicHSVVolume.shape[2]
+                if (
+                    not isinstance(self.SampleMosaicHSVVolume, np.ndarray)
+                    or self.SampleMosaicHSVVolume.shape != (mh, mw, z_pixels, 3)
+                ):
+                    self.SampleMosaicHSVVolume = np.zeros((mh, mw, z_pixels, 3), dtype=np.float32)
+                self.SampleMosaicHSVVolume[y1:y2, x1:x2, :, :] = self.DynamicHSVVolume
+            if isinstance(self.SampleMosaicDyn, np.ndarray) and isinstance(self.Dyn, np.ndarray) and np.size(self.Dyn) > 0:
+                self.SampleMosaicDyn[y1:y2, x1:x2] = self.Dyn
+            if isinstance(self.SampleMosaicFreq, np.ndarray) and isinstance(self.DynFreq, np.ndarray) and np.size(self.DynFreq) > 0:
+                self.SampleMosaicFreq[y1:y2, x1:x2] = self.DynFreq
+            if (
+                isinstance(self.SampleMosaicBandwidth, np.ndarray)
+                and isinstance(self.DynBandwidth, np.ndarray)
+                and np.size(self.DynBandwidth) > 0
+            ):
+                self.SampleMosaicBandwidth[y1:y2, x1:x2] = self.DynBandwidth
         else:
             print(f"Warning: Tile at ({col_idx}, {row_idx}) is out of mosaic bounds.")
 
@@ -579,11 +989,30 @@ class DnSThread(QThread):
         else:
             Bline = display_data[0]
 
-        DynSlice = np.asarray(dynamic, dtype=np.float32)
+        DynSlice = np.asarray(self.dynamic_std_data(dynamic), dtype=np.float32)
+        HSVSlice = self.dynamic_hsv_data(dynamic)
+        FreqSlice = self.dynamic_frequency_data(dynamic)
+        BandwidthSlice = self.dynamic_bandwidth_data(dynamic)
+        if np.size(HSVSlice) > 0:
+            HSVSlice = np.asarray(HSVSlice, dtype=np.float32)
+            RGBSlice = self.dynamic_hsv_to_rgb(HSVSlice)
+        else:
+            RGBSlice = []
+        if np.size(FreqSlice) > 0:
+            FreqSlice = np.asarray(FreqSlice, dtype=np.float32)
+        if np.size(BandwidthSlice) > 0:
+            BandwidthSlice = np.asarray(BandwidthSlice, dtype=np.float32)
         aline_avg = self.current_aline_avg()
         if aline_avg > 1:
             Bline = Bline.reshape([Xpixels // aline_avg, aline_avg, Zpixels]).mean(axis=1)
             DynSlice = DynSlice.reshape([Xpixels // aline_avg, aline_avg, Zpixels]).mean(axis=1)
+            if np.size(HSVSlice) > 0:
+                HSVSlice = HSVSlice.reshape([Xpixels // aline_avg, aline_avg, Zpixels, 3]).mean(axis=1)
+                RGBSlice = self.dynamic_hsv_to_rgb(HSVSlice)
+            if np.size(FreqSlice) > 0:
+                FreqSlice = FreqSlice.reshape([Xpixels // aline_avg, aline_avg, Zpixels]).mean(axis=1)
+            if np.size(BandwidthSlice) > 0:
+                BandwidthSlice = BandwidthSlice.reshape([Xpixels // aline_avg, aline_avg, Zpixels]).mean(axis=1)
             Xpixels = Xpixels // aline_avg
 
         if (
@@ -593,16 +1022,62 @@ class DnSThread(QThread):
         ):
             self.MeanVolume = np.zeros((Ypixels, Xpixels, Zpixels), dtype=np.float32)
             self.DynamicVolume = np.zeros((Ypixels, Xpixels, Zpixels), dtype=np.float32)
+            if np.size(HSVSlice) > 0:
+                self.DynamicHSVVolume = np.zeros((Ypixels, Xpixels, Zpixels, 3), dtype=np.float32)
+                self.DynamicRGBVolume = np.zeros((Ypixels, Xpixels, Zpixels, 3), dtype=np.uint8)
+            else:
+                self.DynamicHSVVolume = []
+                self.DynamicRGBVolume = []
             self.AIP = np.zeros((Ypixels, Xpixels), dtype=np.float32)
             self.Dyn = np.zeros((Ypixels, Xpixels), dtype=np.float32)
+            self.DynHSV = np.zeros((Ypixels, Xpixels, 3), dtype=np.float32)
+            self.DynFreq = np.zeros((Ypixels, Xpixels), dtype=np.float32)
+            self.DynBandwidth = np.zeros((Ypixels, Xpixels), dtype=np.float32)
 
         self.Bline = np.transpose(Bline)
         self.DynBline = np.transpose(DynSlice)
+        if np.size(HSVSlice) > 0:
+            self.DynHSVBline = np.transpose(HSVSlice, (1, 0, 2))
+        else:
+            self.DynHSVBline = []
+        if np.size(RGBSlice) > 0:
+            self.DynRGBBline = np.transpose(RGBSlice, (1, 0, 2))
+        else:
+            self.DynRGBBline = []
+        if np.size(FreqSlice) > 0:
+            self.DynFreqBline = np.transpose(FreqSlice)
+        else:
+            self.DynFreqBline = []
+        if np.size(BandwidthSlice) > 0:
+            self.DynBandwidthBline = np.transpose(BandwidthSlice)
+        else:
+            self.DynBandwidthBline = []
 
         self.MeanVolume[dynamic_bline_idx, :, :] = Bline
+        self.XYVolume = self.MeanVolume
         self.DynamicVolume[dynamic_bline_idx, :, :] = DynSlice
-        self.AIP[dynamic_bline_idx, :] = np.mean(Bline, axis=1)
-        self.Dyn[dynamic_bline_idx, :] = np.mean(DynSlice, axis=1)
+        if np.size(HSVSlice) > 0:
+            self.DynamicHSVVolume[dynamic_bline_idx, :, :, :] = HSVSlice
+        if np.size(RGBSlice) > 0:
+            self.DynamicRGBVolume[dynamic_bline_idx, :, :, :] = RGBSlice
+        z_idx = self.current_z_depth_index(Zpixels)
+        self.AIP[dynamic_bline_idx, :] = Bline[:, z_idx]
+        self.Dyn[dynamic_bline_idx, :] = DynSlice[:, z_idx]
+        if np.size(FreqSlice) > 0:
+            self.DynFreq[dynamic_bline_idx, :] = FreqSlice[:, z_idx]
+        if np.size(BandwidthSlice) > 0:
+            self.DynBandwidth[dynamic_bline_idx, :] = BandwidthSlice[:, z_idx]
+        if np.size(HSVSlice) > 0:
+            self.DynHSV[dynamic_bline_idx, :, :] = HSVSlice[:, z_idx, :]
+        if np.size(RGBSlice) > 0:
+            if not isinstance(self.DynRGB, np.ndarray) or self.DynRGB.shape != (Ypixels, Xpixels, 3):
+                self.DynRGB = np.zeros((Ypixels, Xpixels, 3), dtype=np.uint8)
+            self.DynRGB[dynamic_bline_idx, :, :] = RGBSlice[:, z_idx, :].astype(np.uint8)
+        else:
+            self.DynRGB = []
+            self.DynHSV = []
+            self.DynFreq = []
+            self.DynBandwidth = []
 
         tile_complete = dynamic_bline_idx + 1 == Ypixels
         if tile_complete:
@@ -612,11 +1087,21 @@ class DnSThread(QThread):
     def SaveRealtimeMosaicDynamicVolumes(self, acq_mode):
         bundle = self.item.filename_bundle
         dynamic_filename = bundle.get("dynamic_filename")
+        dynamic_rgb_filename = bundle.get("dynamic_rgb_filename")
         mean_filename = bundle.get("mean_filename")
         if not dynamic_filename or not mean_filename:
             raise RuntimeError("Missing realtime mosaic dynamic filename bundle.")
         try:
             TIFF.imwrite(dynamic_filename, np.asarray(self.DynamicVolume, dtype=np.float32), append=False)
+            if dynamic_rgb_filename:
+                if not (isinstance(self.DynamicHSVVolume, np.ndarray) and np.size(self.DynamicHSVVolume) > 0):
+                    raise RuntimeError("Missing realtime mosaic HSV volume for RGB dynamic save.")
+                TIFF.imwrite(
+                    dynamic_rgb_filename,
+                    self.dynamic_hsv_to_saved_rgb(self.DynamicHSVVolume),
+                    photometric="rgb",
+                    append=False,
+                )
             TIFF.imwrite(mean_filename, np.asarray(self.MeanVolume, dtype=np.float32), append=False)
         finally:
             pass
@@ -624,11 +1109,21 @@ class DnSThread(QThread):
     def SaveRealtimeCscanDynamicVolumes(self, acq_mode):
         bundle = self.item.filename_bundle
         dynamic_filename = bundle.get("dynamic_filename")
+        dynamic_rgb_filename = bundle.get("dynamic_rgb_filename")
         mean_filename = bundle.get("mean_filename")
         if not dynamic_filename or not mean_filename:
             raise RuntimeError("Missing realtime cscan dynamic filename bundle.")
         try:
             TIFF.imwrite(dynamic_filename, np.asarray(self.DynamicVolume, dtype=np.float32), append=False)
+            if dynamic_rgb_filename:
+                if not (isinstance(self.DynamicHSVVolume, np.ndarray) and np.size(self.DynamicHSVVolume) > 0):
+                    raise RuntimeError("Missing realtime cscan HSV volume for RGB dynamic save.")
+                TIFF.imwrite(
+                    dynamic_rgb_filename,
+                    self.dynamic_hsv_to_saved_rgb(self.DynamicHSVVolume),
+                    photometric="rgb",
+                    append=False,
+                )
             TIFF.imwrite(mean_filename, np.asarray(self.MeanVolume, dtype=np.float32), append=False)
         finally:
             pass
@@ -671,10 +1166,20 @@ class DnSThread(QThread):
         elif acq_mode in BLINE_MODES:
             filename = bundle.get("filename")
             dyn_filename = bundle.get("dynamic_filename")
+            dyn_rgb_filename = bundle.get("dynamic_rgb_filename")
             if not filename:
                 raise RuntimeError("Missing bline filename bundle.")
-            if dyn_filename is not None and np.size(dynamic) > 0:
-                self.write_tiff_frame(dyn_filename, dynamic, append_if_exists=False)
+            dyn_data = self.dynamic_std_data(dynamic)
+            hsv_data = self.dynamic_hsv_data(dynamic)
+            if dyn_filename is not None and np.size(dyn_data) > 0:
+                self.write_tiff_frame(dyn_filename, dyn_data, append_if_exists=False)
+            if dyn_rgb_filename is not None and np.size(hsv_data) > 0:
+                TIFF.imwrite(
+                    dyn_rgb_filename,
+                    self.dynamic_hsv_to_saved_rgb(hsv_data),
+                    photometric="rgb",
+                    append=False,
+                )
             self.write_stack_tiff(filename, data_to_save, Yrpt)
                 
         elif acq_mode in CSCAN_MODES:
@@ -682,12 +1187,9 @@ class DnSThread(QThread):
                 if self.ui.RealtimeDynCheckBox.isChecked():
                     return
                 bline_filename = bundle.get("filename")
-                dyn_filename = bundle.get("dynamic_filename")
-                if not bline_filename or not dyn_filename:
-                    raise RuntimeError("Missing cscan dynamic filename bundle.")
+                if not bline_filename:
+                    raise RuntimeError("Missing cscan dynamic stack filename bundle.")
                 self.write_stack_tiff(bline_filename, data_to_save, Yrpt)
-                if np.size(dynamic) > 0:
-                    self.write_tiff_frame(dyn_filename, dynamic, append_if_exists=True)
             else:
                 filename = bundle.get("filename")
                 if not filename:

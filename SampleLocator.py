@@ -13,15 +13,14 @@ from SampleLocatorUI import Ui_Form
 from mosaic_scan_planner import (
     CENTER_MODE,
     FOV_OVERLAP,
-    MAX_Y_FOV_MM,
     ROI_OCCUPANCY_TARGET,
     plan_mosaic_scan,
 )
 from ScanModels import FOVLocation, SampleCenter
 
 USB_PIXEL_SIZE_MM = 0.045
-USB_X_DISPLACEMENT_MM = -2
-USB_Y_DISPLACEMENT_MM = 20.8
+USB_X_DISPLACEMENT_MM = -4.6
+USB_Y_DISPLACEMENT_MM = 20.9
 USB_CAMERA_INDEX = 0
 USB_FRAME_WIDTH = 3840
 USB_FRAME_HEIGHT = 2160
@@ -82,6 +81,7 @@ class UnifiedSampleScanner(QDialog):
         current_zpos=0,
         y_step_um=10.0,
         stage_bounds=(0, 200, 0, 120),
+        max_y_fov_mm=5.0,
     ):
         super().__init__()
         self.save_dir = save_dir
@@ -104,7 +104,7 @@ class UnifiedSampleScanner(QDialog):
         self.fov_h_mm = fov_h_mm
         self.roi_occupancy = ROI_OCCUPANCY_TARGET
         self.fov_overlap = FOV_OVERLAP
-        self.max_y_fov_mm = MAX_Y_FOV_MM
+        self.max_y_fov_mm = float(max_y_fov_mm)
         self.center_mode = CENTER_MODE
         self.debug_scan_planner = False
 

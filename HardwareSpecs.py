@@ -14,6 +14,7 @@ class ObjectiveSpec:
     name: str
     angle_to_mm_ratio: float
     camera_step_divisor: float
+    max_y_fov_mm: float
 
 
 @dataclass(frozen=True)
@@ -37,21 +38,25 @@ OBJECTIVE_SPECS = {
         name="4X",
         angle_to_mm_ratio= 1.44 * 1.25,
         camera_step_divisor=1.0,
+        max_y_fov_mm=5.0,
     ),
     "5X": ObjectiveSpec(
         name="5X",
         angle_to_mm_ratio=2.094 / 1.19,
         camera_step_divisor=1.25,
+        max_y_fov_mm=4.0,
     ),
     "10X": ObjectiveSpec(
         name="10X",
         angle_to_mm_ratio=2.094 / 2 / 1.19,
         camera_step_divisor=2.5,
+        max_y_fov_mm=2.0,
     ),
     "20X": ObjectiveSpec(
         name="20X",
         angle_to_mm_ratio=2.094 / 1.19 / 4,
         camera_step_divisor=5.0,
+        max_y_fov_mm=1.0,
     ),
 }
 

@@ -41,6 +41,11 @@ def tile_dynamic_volume_filename(tile_num, shape):
     return f"tile-{tile_num}-Dyn-Y{ypix}-X{xpix}-Z{zpix}.tif"
 
 
+def tile_dynamic_rgb_volume_filename(tile_num, shape):
+    ypix, xpix, zpix = _shape3(shape)
+    return f"tile-{tile_num}-DynRGB-Y{ypix}-X{xpix}-Z{zpix}.tif"
+
+
 def tile_mean_volume_filename(tile_num, shape):
     ypix, xpix, zpix = _shape3(shape)
     return f"tile-{tile_num}-Mean-Y{ypix}-X{xpix}-Z{zpix}.tif"
@@ -65,6 +70,11 @@ def cscan_mean_volume_filename(cscan_num, shape):
     return f"CscanMean-{cscan_num}-Y{ypix}-X{xpix}-Z{zpix}.tif"
 
 
+def cscan_dynamic_rgb_volume_filename(cscan_num, shape):
+    ypix, xpix, zpix = _shape3(shape)
+    return f"CscanDynRGB-{cscan_num}-Y{ypix}-X{xpix}-Z{zpix}.tif"
+
+
 def bline_filename(bline_num, shape):
     yrpt, xpix, zpix = _shape3(shape)
     return f"Bline-{bline_num}-Yrpt{yrpt}-X{xpix}-Z{zpix}.tif"
@@ -73,6 +83,11 @@ def bline_filename(bline_num, shape):
 def bline_dyn_filename(bline_num, shape):
     _, xpix, zpix = _shape3(shape)
     return f"BlineDyn-{bline_num}-X{xpix}-Z{zpix}.tif"
+
+
+def bline_dyn_rgb_filename(bline_num, shape):
+    _, xpix, zpix = _shape3(shape)
+    return f"BlineDynRGB-{bline_num}-X{xpix}-Z{zpix}.tif"
 
 
 def aline_filename(aline_num, shape):
@@ -178,6 +193,8 @@ class FileNaming:
             return os.path.join(base_dir, bline_filename(self.bline_num, shape))
         if kind == "bline_dyn":
             return os.path.join(base_dir, bline_dyn_filename(self.bline_num, shape))
+        if kind == "bline_dyn_rgb":
+            return os.path.join(base_dir, bline_dyn_rgb_filename(self.bline_num, shape))
         if kind == "cscan":
             return os.path.join(base_dir, cscan_filename(self.cscan_num, shape))
         if kind == "cscan_bline":
@@ -206,6 +223,8 @@ class FileNaming:
             return os.path.join(base_dir, dyn_name)
         if kind == "cscan_mean":
             return os.path.join(base_dir, cscan_mean_volume_filename(self.cscan_num, shape))
+        if kind == "cscan_dyn_rgb":
+            return os.path.join(base_dir, cscan_dynamic_rgb_volume_filename(self.cscan_num, shape))
         if kind == "sample":
             return os.path.join(base_dir, sample_filename(self.tile_num, shape))
         if kind == "sample_dyn":
@@ -217,6 +236,8 @@ class FileNaming:
             )
         if kind == "tile_dyn":
             return os.path.join(base_dir, tile_dynamic_volume_filename(self.tile_num, shape))
+        if kind == "tile_dyn_rgb":
+            return os.path.join(base_dir, tile_dynamic_rgb_volume_filename(self.tile_num, shape))
         if kind == "tile_mean":
             return os.path.join(base_dir, tile_mean_volume_filename(self.tile_num, shape))
 
