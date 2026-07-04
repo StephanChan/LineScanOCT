@@ -54,9 +54,10 @@ class DActionField:
 
 
 class DbackActionField:
-    def __init__(self, memory_slot):
+    def __init__(self, memory_slot, error=None):
         super().__init__()
         self.memory_slot = memory_slot
+        self.error = error
 
 
 class EXITField:

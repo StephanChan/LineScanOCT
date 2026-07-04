@@ -558,6 +558,7 @@ class WeaverThread(QThread):
         t2=time.time()
         # start camera
 
+        self.drain_queue(self.DbackQueue, "DbackQueue")
         an_action = DActionField('Acquire')
         self.DQueue.put(an_action)
         self.DbackQueue.get()
@@ -576,6 +577,7 @@ class WeaverThread(QThread):
         # print('current dbackqueue size:', self.DbackQueue.qsize())
         # print('\n')
         message = f"{DnS_action} stopped by user."
+        acquisition_failed = False
         for iAcq in range(self.NAcq):
             start = time.time()
             dynamic_bline_idx = iAcq if (self.current_dynamic_enabled() and acq_mode in (CSCAN_MODES + MOSAIC_DISPLAY_MODES)) else None
@@ -585,6 +587,11 @@ class WeaverThread(QThread):
             while self.ui.RunButton.isChecked():
                 try:
                     an_action = self.DatabackQueue.get(timeout = 2.5)
+                    if getattr(an_action, "error", None):
+                        message = str(an_action.error)
+                        print(message)
+                        acquisition_failed = True
+                        break
                     # print('camera queue size:', self.DatabackQueue.qsize())
                     # print('time to fetch data: '+str(round(time.time()-start,3))+'sec')
                     memory_slot = an_action.memory_slot
@@ -628,6 +635,8 @@ class WeaverThread(QThread):
                     break
                 except:
                     print(f"{DnS_action}: waiting for camera data...")
+            if acquisition_failed:
+                break
                     
         an_action = AODOActionField('tryStopTask')
         self.AODOQueue.put(an_action)
@@ -658,8 +667,10 @@ class WeaverThread(QThread):
         self.StagebackQueue.get()
         data_backs = 0 # count number of data backs
         skipped_fft_actions = 0
+        camera_error_message = None
 
         # start digitizer for one acuquqisition
+        self.drain_queue(self.DbackQueue, "DbackQueue")
         an_action = DActionField('Acquire')
         self.DQueue.put(an_action)
         self.DbackQueue.get()
@@ -675,6 +686,11 @@ class WeaverThread(QThread):
             try: # use try-except in cases where Stop button clicked and camera stopped prior to while loop
                 start = time.time()
                 an_action = self.DatabackQueue.get(timeout=2) # never time out
+                if getattr(an_action, "error", None):
+                    message = str(an_action.error)
+                    print(message)
+                    camera_error_message = message
+                    break
                 # print('time to fetch data: '+str(round(time.time()-start,3)))
                 memory_slot = an_action.memory_slot
                 # print(memory_slot)
@@ -745,9 +761,12 @@ class WeaverThread(QThread):
         self.StagebackQueue.get() # wait for AODO CloseTask
         # digitizer will close automatically
         self.finalize_partial_dynamic_naming(acq_mode)
-        message = f"{DnS_action} stopped. Received {data_backs} camera buffer(s)."
-        if skipped_fft_actions:
-            message += f" Skipped {skipped_fft_actions} stale continuous FFT request(s)."
+        if camera_error_message is None:
+            message = f"{DnS_action} stopped. Received {data_backs} camera buffer(s)."
+            if skipped_fft_actions:
+                message += f" Skipped {skipped_fft_actions} stale continuous FFT request(s)."
+        else:
+            message = camera_error_message
         print(message)
         self.drain_continuous_backlog(reason=f"after {DnS_action}")
         an_action = GPUActionField(GPUActions.DISPLAY_FFT_ACTIONS)

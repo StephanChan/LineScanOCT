@@ -66,6 +66,8 @@ DAHENG_SPECTRAL_DIMENSION = "horizontal"
 # Packed conversion and transpose-write are the long pole for long dynamic scans.
 # Increase this cautiously: block completion is still emitted in frame order below.
 DAHENG_CONSUMER_WORKERS = 4
+DAHENG_BUFFER_TIMEOUT_MS = 500
+DAHENG_MAX_CONSECUTIVE_TIMEOUTS = 20
 
 
 def daheng_spectral_axis():
@@ -475,17 +477,46 @@ class Camera(QThread):
         ]
         for worker in workers:
             worker.start()
+        acquisition_error_message = None
         try:
+            print(
+                "Daheng camera acquisition ready: "
+                f"stream_on={getattr(self, '_last_stream_on_elapsed', 0.0):.3f}s, "
+                f"workers={worker_count}, expected_frames={self.BlinesPerAcq}."
+            )
             self.DbackQueue.put(0)
             BlinesCount = 0
+            consecutive_timeouts = 0
             while BlinesCount < self.BlinesPerAcq and self.ui.RunButton.isChecked():
                 t_dq = time.perf_counter()
-                buf = ds.dq_buf(timeout=500)
+                buf = ds.dq_buf(timeout=DAHENG_BUFFER_TIMEOUT_MS)
                 add_profile("dq_buf", time.perf_counter() - t_dq)
                 if buf is None:
-                    print("camera time out...")
+                    consecutive_timeouts += 1
+                    print(
+                        "camera time out... "
+                        f"consecutive={consecutive_timeouts}, "
+                        f"received={BlinesCount}/{self.BlinesPerAcq}, "
+                        f"timeout={DAHENG_BUFFER_TIMEOUT_MS}ms"
+                    )
                     increment_profile("timeouts")
+                    if (
+                        self.BlinesPerAcq != CONTINUOUS
+                        and consecutive_timeouts >= DAHENG_MAX_CONSECUTIVE_TIMEOUTS
+                    ):
+                        print(
+                            "Daheng camera acquisition aborted after "
+                            f"{consecutive_timeouts} consecutive buffer timeouts. "
+                            "This usually means the camera missed one or more finite triggers."
+                        )
+                        acquisition_error_message = (
+                            "Daheng camera acquisition aborted after "
+                            f"{consecutive_timeouts} consecutive buffer timeouts; "
+                            f"received {BlinesCount}/{self.BlinesPerAcq} frame(s)."
+                        )
+                        break
                     continue
+                consecutive_timeouts = 0
                 t_put = time.perf_counter()
                 grab_q.put((buf, BlinesCount))
                 add_profile("queue_put", time.perf_counter() - t_put)
@@ -504,6 +535,8 @@ class Camera(QThread):
                 grab_q.put(grab_stop)
         for worker in workers:
             worker.join()
+        if acquisition_error_message is not None:
+            self.DatabackQueue.put(DbackActionField(None, error=acquisition_error_message))
         self.MemoryLoc = (start_memory_slot + next_block_to_emit[0]) % self.memoryCount
         total = time.perf_counter() - total_t0
         queue_put_fraction = profile["queue_put"] / max(total, 1e-9)
@@ -556,7 +589,10 @@ class Camera(QThread):
 
     def Stream_on(self):
         if self.hcam is not None:
-            self.hcam.stream_on() 
+            t0 = time.perf_counter()
+            self.hcam.stream_on()
+            self._last_stream_on_elapsed = time.perf_counter() - t0
+            print(f"Daheng stream_on completed in {self._last_stream_on_elapsed:.3f}s.")
 
     def Stream_off(self):
         if self.hcam is not None:
