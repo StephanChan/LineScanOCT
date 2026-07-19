@@ -14,6 +14,7 @@ from ActionFields import DnSActionField, AODOActionField, GPUActionField, DActio
 from ActionTypes import AcqTypes, DnSActions, EXIT_ACTION, GPUActions, WeaverActions
 import traceback
 import os
+import json
 import matplotlib.pyplot as plt
 from queue import Empty
 from PyQt5.QtGui import QImage, QPixmap
@@ -37,7 +38,6 @@ from Display_rendering import (
     display_sample_overlay,
     mosaic_label_render_size,
     render_mosaic_correction_overlay,
-    render_usb_roi_overlay,
 )
 from DynamicPostprocessing import (
     update_timer_readout,
@@ -80,12 +80,14 @@ MOSAIC_DISPLAY_MODES = (
 )
 
 SAVE_SAMPLE_TIME_MODES = (
+    AcqTypes.PLATE_PRESCAN,
     AcqTypes.PLATE_SCAN,
     AcqTypes.WELL_SCAN,
     AcqTypes.TIMED_PLATE_SCAN,
 )
 
 AUTO_BACKGROUND_PER_FOV_ENABLED = False
+SKIP_PLATE_PRESCAN_FULL_SAMPLE_SCAN = True
 
 class WeaverThread(QThread):
     def __init__(self):
@@ -477,6 +479,80 @@ class WeaverThread(QThread):
 
         return {}
 
+    def save_mosaic_tile_positions(self, acq_mode):
+        if not self.current_save_enabled():
+            return
+        if acq_mode not in SAVE_SAMPLE_TIME_MODES:
+            return
+        if self.file_naming is None:
+            raise RuntimeError("WeaverThread.file_naming is required when saving is enabled.")
+        save_dir = self.file_naming.save_dir(acq_mode)
+        os.makedirs(save_dir, exist_ok=True)
+
+        aline_avg = max(1, int(self.ui.AlineAVG.value()))
+        x_pixels = self.current_alines_per_bline() // aline_avg
+        y_pixels = self.current_y_pixels()
+        z_pixels = self.current_depth_range()
+        x_length_mm = float(self.ui.XLength.value())
+        y_length_mm = float(self.ui.YLength.value())
+        x_step_um = float(self.ui.XStepSize.value()) if hasattr(self.ui, "XStepSize") else None
+        y_step_um = float(self.ui.YStepSize.value()) if hasattr(self.ui, "YStepSize") else None
+        locations = list(self.CurrentSampleLocations)
+        min_x = min(location.x for location in locations)
+        min_y = min(location.y for location in locations)
+        tile_records = []
+        for tile_index, location in enumerate(locations, start=1):
+            tile_y_length_mm = (
+                y_length_mm
+                if location.y_length_mm is None
+                else float(location.y_length_mm)
+            )
+            col_idx = int(round((float(location.x) - min_x) / x_length_mm))
+            row_idx = int(round((float(location.y) - min_y) / tile_y_length_mm))
+            record = {
+                "tile_index": int(tile_index),
+                "sample_id": int(location.sample_id),
+                "stage_x_mm": float(location.x),
+                "stage_y_mm": float(location.y),
+                "stage_z_mm": float(location.z),
+                "grid_col": int(col_idx),
+                "grid_row": int(row_idx),
+                "x_length_mm": x_length_mm,
+                "y_length_mm": tile_y_length_mm,
+                "x_pixels": int(x_pixels),
+                "y_pixels": int(y_pixels),
+                "z_pixels": int(z_pixels),
+            }
+            if self.current_realtime_dynamic_enabled():
+                record.update(
+                    {
+                        "mean_filename": f"tile-{tile_index}-Mean-Y{y_pixels}-X{x_pixels}-Z{z_pixels}.tif",
+                        "dynamic_std_filename": f"tile-{tile_index}-Dyn-Y{y_pixels}-X{x_pixels}-Z{z_pixels}.tif",
+                        "dynamic_rgb_filename": f"tile-{tile_index}-DynRGB-Y{y_pixels}-X{x_pixels}-Z{z_pixels}.tif",
+                    }
+                )
+            elif not self.current_dynamic_enabled():
+                record["tile_filename"] = f"tile-{tile_index}-Y{y_pixels}-X{x_pixels}-Z{z_pixels}.tif"
+            tile_records.append(record)
+
+        manifest = {
+            "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "acq_mode": acq_mode,
+            "dynamic_enabled": bool(self.current_dynamic_enabled()),
+            "realtime_dynamic_enabled": bool(self.current_realtime_dynamic_enabled()),
+            "coordinate_units": "mm",
+            "tile_order": "tile_index matches acquisition order and saved tile filename number",
+            "x_step_um": x_step_um,
+            "y_step_um": y_step_um,
+            "mosaic_origin_stage_x_mm": float(min_x),
+            "mosaic_origin_stage_y_mm": float(min_y),
+            "tiles": tile_records,
+        }
+        filename = os.path.join(save_dir, "tile_positions.json")
+        with open(filename, "w", encoding="utf-8") as file:
+            json.dump(manifest, file, indent=2)
+        print(f"Mosaic tile position list saved: {filename}")
+
     def wait_for_processing_barrier(self, label="", poll_interval=0.2, stop_if_run_unchecked=True):
         label = label or "the next sample"
         while self.ui.RunButton.isChecked() or not stop_if_run_unchecked:
@@ -837,7 +913,12 @@ class WeaverThread(QThread):
         fresh_locator_data = bool(context)
         if fresh_locator_data:
             self.overlay_images = {}
-            self.FOV_locations, self.sample_centers, self.raw_img, self.pixel_polygons= context
+            if len(context) == 5:
+                self.FOV_locations, self.sample_centers, self.raw_img, self.pixel_polygons, self.overlay_images = context
+            elif len(context) == 4:
+                self.FOV_locations, self.sample_centers, self.raw_img, self.pixel_polygons = context
+            else:
+                raise ValueError(f"PlatePreScan context must have 4 or 5 items, got {len(context)}")
         if self.sample_centers is None or len(self.sample_centers) == 0:
             self.ui.RunButton.setChecked(False)
             self.ui.RunButton.setText('Go')
@@ -846,6 +927,7 @@ class WeaverThread(QThread):
         BlineAVG = self.ui.BlineAVG.value()
         self.ui.BlineAVG.setValue(1)
         self.ui.RunButton.setChecked(True)
+        message = "PlatePreScan completed."
         for sample_center in self.sample_centers:
             if self.ui.RunButton.isChecked():
                 self.ui.NextSampleButton.setText('扫描中，请等待')
@@ -856,6 +938,7 @@ class WeaverThread(QThread):
                 ):
                     return "Plate pre-scan stopped by user."
                 self.emit_status(f"Scanning sampleID-{sample_center.sample_id} pre-scan.")
+                self.ui.sampleSelector.setCurrentIndex(sample_center.sample_id - 1)
                 self.CurrentSampleLocations = [
                     location
                     for location in self.FOV_locations
@@ -866,40 +949,52 @@ class WeaverThread(QThread):
                     print(
                         f"  FOV {idx}: X={location.x:.4f}, Y={location.y:.4f}, Z={location.z:.4f}"
                     )
-                if fresh_locator_data:
-                    self.display_initial_scan_overlay(sample_center.sample_id, self.raw_img, self.pixel_polygons)
-                else:
-                    self.display_sample_overlay(sample_center.sample_id)
+                self.display_sample_overlay(sample_center.sample_id)
                 
                 # User stopped continuousBline, then we do Mosaic scan for this sample
                 self.AdjustZstage(sample_center.sample_id)
-    
-                message = self.iterate_FOVs(acq_mode=acq_mode)
-                if not self.wait_for_processing_barrier(
-                    label=f"finishing sampleID-{sample_center.sample_id} pre-scan",
-                    stop_if_run_unchecked=False,
-                ):
-                    return "Plate pre-scan stopped by user."
+
+                if SKIP_PLATE_PRESCAN_FULL_SAMPLE_SCAN:
+                    message = (
+                        f"PlatePreScan full sample scan skipped for sampleID-{sample_center.sample_id}; "
+                        "Z adjustment was saved to FOV locations."
+                    )
+                    print(message)
+                else:
+                    message = self.iterate_FOVs(acq_mode=acq_mode)
+                    if not self.wait_for_processing_barrier(
+                        label=f"finishing sampleID-{sample_center.sample_id} pre-scan",
+                        stop_if_run_unchecked=False,
+                    ):
+                        return "Plate pre-scan stopped by user."
                 self.ui.NextSampleButton.setText('下一个样品')
                 self.ui.RepeatSampleButton.setText('重新扫描')
                 while (not self.ui.NextSampleButton.isChecked()) and self.ui.RunButton.isChecked():
                     if self.ui.RepeatSampleButton.isChecked():
                         self.ui.NextSampleButton.setText('扫描中，请等待')
                         self.ui.RepeatSampleButton.setText('扫描中，请等待')
-                        correction_applied = self.process_mosaic_correction()
-                        if not correction_applied:
-                            self.CurrentSampleLocations = [
-                                location
-                                for location in self.FOV_locations
-                                if location.sample_id == sample_center.sample_id
-                            ]
+                        if not SKIP_PLATE_PRESCAN_FULL_SAMPLE_SCAN:
+                            correction_applied = self.process_mosaic_correction()
+                            if not correction_applied:
+                                self.CurrentSampleLocations = [
+                                    location
+                                    for location in self.FOV_locations
+                                    if location.sample_id == sample_center.sample_id
+                                ]
                         self.AdjustZstage(sample_center.sample_id)
-                        message = self.iterate_FOVs(acq_mode=acq_mode)
-                        if not self.wait_for_processing_barrier(
-                            label=f"finishing sampleID-{sample_center.sample_id} repeat pre-scan",
-                            stop_if_run_unchecked=False,
-                        ):
-                            return "Plate pre-scan stopped by user."
+                        if SKIP_PLATE_PRESCAN_FULL_SAMPLE_SCAN:
+                            message = (
+                                f"PlatePreScan repeat full sample scan skipped for sampleID-{sample_center.sample_id}; "
+                                "Z adjustment was saved to FOV locations."
+                            )
+                            print(message)
+                        else:
+                            message = self.iterate_FOVs(acq_mode=acq_mode)
+                            if not self.wait_for_processing_barrier(
+                                label=f"finishing sampleID-{sample_center.sample_id} repeat pre-scan",
+                                stop_if_run_unchecked=False,
+                            ):
+                                return "Plate pre-scan stopped by user."
                         self.ui.NextSampleButton.setText('下一个样品')
                         self.ui.RepeatSampleButton.setText('重新扫描')
                         self.ui.RepeatSampleButton.setChecked(False)
@@ -1126,6 +1221,8 @@ class WeaverThread(QThread):
                 message = "Sample FOV scan stopped by user."
         # Home X and Y stages here?
         self.wait_for_processing_barrier(label=f"finishing {acq_mode}", stop_if_run_unchecked=False)
+        if message == "Sample FOV scan completed.":
+            self.save_mosaic_tile_positions(acq_mode)
         return(message)
 
     def update_timer_readout(self, deadline):
@@ -1171,13 +1268,7 @@ class WeaverThread(QThread):
         return True
 
     def stage_move_timeout(self, axis, distance):
-        speed_widget = getattr(self.ui, f"{axis}Speed", None)
-        try:
-            speed = float(speed_widget.value()) if speed_widget is not None else 1.0
-        except Exception:
-            speed = 1.0
-        speed = max(abs(speed), 0.001)
-        return 3.0 * max(20.0, abs(distance) / speed * 10.0 + 10.0)
+        return 300.0
 
     def sample_fov_locations(self, sample_id):
         if getattr(self, "CurrentSampleLocations", None):
@@ -1190,23 +1281,11 @@ class WeaverThread(QThread):
                 ]
         return [location for location in self.FOV_locations if location.sample_id == sample_id]
 
-    def display_initial_scan_overlay(self, sample_id, raw_img, pixel_polygons):
-        """Stores USB overlay source data and renders it at the current label size."""
-        self.overlay_images[sample_id] = {
-            'type': 'usb_roi',
-            'raw_img': raw_img,
-            'pixel_polygons': pixel_polygons,
-        }
-        self.display_sample_overlay(sample_id)
-
     def display_sample_overlay(self, sample_id):
         display_sample_overlay(self.ui, self.overlay_images, sample_id, self.sample_fov_locations)
 
     def mosaic_label_render_size(self):
         return mosaic_label_render_size(self.ui.MosaicLabel)
-
-    def render_usb_roi_overlay(self, sample_id, raw_img, pixel_polygons):
-        render_usb_roi_overlay(self.ui, sample_id, raw_img, pixel_polygons, self.sample_fov_locations)
 
     def y_pixels_from_length(self, y_length_mm):
         y_step_um = max(float(self.ui.YStepSize.value()), 1e-6)
@@ -1409,7 +1488,7 @@ class WeaverThread(QThread):
         realtime_dyn_checked = self.ui.RealtimeDynCheckBox.isChecked()
         self.ui.ACQMode.setCurrentText(AcqTypes.FINITE_BLINE)
         self.ui.FFTDevice.setCurrentText('None')
-        self.ui.BlineAVG.setValue(100)
+        self.ui.BlineAVG.setValue(20)
         self.ui.DynCheckBox.setChecked(False)
         self.ui.RealtimeDynCheckBox.setChecked(False)
         ############################# measure an Aline

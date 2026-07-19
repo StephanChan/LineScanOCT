@@ -495,16 +495,10 @@ class AODOThread(QThread):
         self.StagebackQueue.put(0)
 
     def stage_motion_timeout(self, axis, distance):
-        speed = float(getattr(self.ui, f"{axis}Speed").value())
-        speed = max(speed, 0.01)
-        return 3.0 * max(5.0, abs(float(distance)) / speed + 5.0)
+        return 300.0
 
     def stage_home_timeout(self, axis):
-        speed = float(getattr(self.ui, f"{axis}Speed").value())
-        speed = max(speed, 0.01)
-        position_widget = getattr(self.ui, f"{axis}Position")
-        stage_range = float(position_widget.maximum()) - float(position_widget.minimum())
-        return max(30.0, 5.0 * stage_range / speed)
+        return 300.0
 
     def run_motor_call(self, callback, timeout, description):
         error_box = []

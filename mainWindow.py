@@ -14,7 +14,7 @@ import PyQt5.QtCore as qc
 import numpy as np
 from ActionFields import *
 from Generaic_functions import *
-from HardwareSpecs import camera_step_size_um, get_camera_spec, get_laser_spec, get_objective_spec
+from HardwareSpecs import camera_step_size_um, get_camera_spec, get_objective_spec
 from CameraUi import effective_camera_sample_count
 import traceback
 from InteractiveWidget import InteractiveMosaicWidget
@@ -571,12 +571,6 @@ class MainWindow(QMainWindow):
         #print(self.slice_depths)
         #self.ui.statusbar.showMessage(self.image_depths)
 
-    def Update_laser(self):
-        laser = get_laser_spec(self.ui.Laser.currentText())
-        if laser is None:
-            self.ui.statusbar.showMessage('Laser invalid!!!')
-            return
-        self.Aline_frq = laser.aline_frequency_hz
 
 
 

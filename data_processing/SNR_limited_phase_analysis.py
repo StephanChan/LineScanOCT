@@ -5,10 +5,6 @@ from pathlib import Path
 # matplotlib.use("Qt5Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.path import Path as MplPath
-from matplotlib.widgets import PolygonSelector
-from matplotlib.widgets import Slider
-from scipy.ndimage import uniform_filter1d
 import tifffile as TIFF
 
 try:
@@ -19,27 +15,24 @@ except ImportError:
 
 # Spyder/default run settings. Edit these values, then press Run.
 DEFAULT_INPUT_PATH = (
-    r"E:\IOCTData\HighResData\50Hz_2s\paper\With_sub_background\incubatorOff\Bline-1-Yrpt800-X1104-Z187.tif"
+    r"E:\IOCTData\HighResData\50Hz_2s\paper\Wout_sub_background\AllOn\tissue\070726\Bline-8-Yrpt200-X1104-Z109.tif"
 )
 DEFAULT_OUTPUT_DIR = None  # None saves results beside the input stack.
-DEFAULT_INPUT_IS_SAVED_AMP_PHASE = True
 DEFAULT_NOISE_INPUT_PATH =(
-    r"E:\IOCTData\HighResData\50Hz_2s\noise\Wout_sub_background\AllOn\Bline-1-Yrpt800-X1104-Z187.tif"
-)  # Set a noise-only TIFF here. None or "" falls back to signal-stack bottom-region noise.
+    r"E:\IOCTData\HighResData\50Hz_2s\noise\Wout_sub_background\AllOn\070726\Bline-9-Yrpt200-X1104-Z109.tif"
+)  # Set a noise-only saved AMP+PHASE TIFF here.
 DEFAULT_FRAME_RATE_HZ = 50.0
 DEFAULT_CENTER_WAVELENGTH_NM = 840.0
 DEFAULT_REFRACTIVE_INDEX = 1.0
-DEFAULT_USE_HANNING = False
-DEFAULT_SPECTRAL_HIGHPASS_SIZE = 21
-DEFAULT_FFT_AMPLIFICATION = 100.0
-DEFAULT_ANALYSIS_START_DEPTH = 10
+DEFAULT_ANALYSIS_START_DEPTH = 15
+DEFAULT_NOISE_ANALYSIS_START_DEPTH = 50
 DEFAULT_SNR_BIN_WIDTH_DB = 2.0
 DEFAULT_MAX_G1_LAG = 200
 DEFAULT_G1_MAX_PIXELS = 20000
 DEFAULT_TARGET_TRACE_SNR_DB = (20.0, 30.0, 40.0, 50.0)
 DEFAULT_THEORY_VARIANCE_COEFFICIENT = 0.5
 DEFAULT_ENABLE_PHASE_VARIANCE_FIT = True
-DEFAULT_FIT_SNR_RANGE_DB = (5.0, 45.0)
+DEFAULT_FIT_SNR_RANGE_DB = (10.0, 60.0)
 DEFAULT_UPPER_BOUND_PERCENTILE = 99.9
 DEFAULT_FIT_MIN_BIN_PIXELS = 100
 DEFAULT_FIT_GRID_POINTS = 500
@@ -63,7 +56,7 @@ def format_percentile_label(value):
     return f"{value:g}"
 
 
-def load_stack(path):
+def load_saved_amp_phase_stack(path):
     ext = os.path.splitext(path)[1].lower()
     if ext == ".npy":
         stack = np.load(path)
@@ -79,11 +72,7 @@ def load_stack(path):
         stack = stack[np.newaxis, :, :]
     elif stack.ndim != 3:
         raise ValueError(f"Expected 2D or 3D stack, got {stack.shape}")
-    return np.asarray(stack, dtype=np.float32)
-
-
-def load_saved_amp_phase_stack(path):
-    stack = load_stack(path)
+    stack = np.asarray(stack, dtype=np.float32)
     if stack.shape[-1] % 2 != 0:
         raise ValueError(
             "Saved AMP+PHASE TIFF depth dimension must be even. "
@@ -114,117 +103,6 @@ def reconstruct_complex_from_amp_phase_stack(stack):
     phase = stack[..., z_pixels:]
     complex_stack = amplitude * np.exp(1j * phase)
     return complex_stack.astype(np.complex64, copy=False)
-
-
-def prepare_depth_stack(
-    raw_stack,
-    use_hanning=False,
-    spectral_highpass_size=51,
-    fft_amplification=100.0,
-):
-    spectra = np.asarray(raw_stack, dtype=np.float32)
-    frames, x_pixels, samples = spectra.shape
-    half_depth = samples // 2
-    window = np.hanning(samples).astype(np.float32) if use_hanning else None
-
-    depth_complex = np.empty((frames, x_pixels, half_depth), dtype=np.complex64)
-    for frame_idx in range(frames):
-        frame_spectra = spectra[frame_idx]
-        if spectral_highpass_size and spectral_highpass_size > 1:
-            baseline = uniform_filter1d(
-                frame_spectra,
-                size=int(spectral_highpass_size),
-                axis=1,
-                mode="nearest",
-            )
-            frame_spectra = frame_spectra - baseline
-
-        if window is not None:
-            frame_spectra = frame_spectra * window[np.newaxis, :]
-
-        depth_complex[frame_idx] = (
-            np.fft.fft(frame_spectra, axis=1)[:, :half_depth] / samples
-        ).astype(np.complex64, copy=False)
-
-    depth_complex *= np.float32(fft_amplification)
-    depth_magnitude = np.abs(depth_complex).astype(np.float32, copy=False)
-    return depth_complex, depth_magnitude
-
-
-def polygon_mask_for_image_shape(vertices, image_shape):
-    if vertices is None or len(vertices) < 3:
-        raise ValueError("ROI needs at least three points.")
-
-    x_pixels, z_pixels = image_shape
-    x_grid, z_grid = np.meshgrid(np.arange(x_pixels), np.arange(z_pixels), indexing="ij")
-    points = np.column_stack([x_grid.reshape(-1), z_grid.reshape(-1)])
-    mask = MplPath(vertices).contains_points(points).reshape(image_shape)
-    if not np.any(mask):
-        raise ValueError("ROI mask is empty. Please draw a larger region.")
-    return mask
-
-
-def select_polygon_roi(image, title):
-    vertices = []
-    accepted = {"done": False}
-
-    fig, ax = plt.subplots(figsize=(9, 6))
-    ax.imshow(image.T, aspect="auto", origin="upper", cmap="gray")
-    ax.set_title(title)
-    ax.set_xlabel("X pixel")
-    ax.set_ylabel("Depth index")
-    instruction = ax.text(
-        0.01,
-        0.99,
-        "Click ROI vertices. Press Enter to accept, Esc to reset.",
-        transform=ax.transAxes,
-        va="top",
-        ha="left",
-        fontsize=10,
-        color="white",
-        bbox={"facecolor": "black", "alpha": 0.55, "edgecolor": "none"},
-    )
-
-    def on_select(selected_vertices):
-        vertices[:] = selected_vertices
-
-    try:
-        selector = PolygonSelector(
-            ax,
-            on_select,
-            useblit=True,
-            props={"color": "yellow", "linewidth": 1.5, "alpha": 0.9},
-            handle_props={"markerfacecolor": "yellow", "markeredgecolor": "black", "markersize": 5},
-        )
-    except TypeError:
-        selector = PolygonSelector(
-            ax,
-            on_select,
-            useblit=True,
-            lineprops={"color": "yellow", "linewidth": 1.5, "alpha": 0.9},
-            markerprops={"markerfacecolor": "yellow", "markeredgecolor": "black", "markersize": 5},
-        )
-
-    def on_key(event):
-        if event.key == "enter":
-            accepted["done"] = True
-            plt.close(fig)
-        elif event.key == "escape":
-            vertices.clear()
-            try:
-                selector.verts = []
-            except Exception:
-                pass
-            instruction.set_text("ROI reset. Click ROI vertices. Press Enter to accept.")
-            fig.canvas.draw_idle()
-
-    fig.canvas.mpl_connect("key_press_event", on_key)
-    plt.show(block=True)
-    selector.disconnect_events()
-
-    if not accepted["done"]:
-        raise RuntimeError("ROI selection window was closed before pressing Enter.")
-    return polygon_mask_for_image_shape(vertices, image.shape)
 
 
 def estimate_sigma_q_from_complex_samples(complex_samples):
@@ -275,10 +153,9 @@ def wrap_phase_residual(phase_stack, phase_mean):
     )
 
 
-def top_half_depth_stop(depth_pixels, analysis_start_depth=0):
+def full_depth_stop(depth_pixels, analysis_start_depth=0):
     analysis_start_depth = int(max(0, analysis_start_depth))
-    half_depth = int(max(1, depth_pixels // 2))
-    return int(max(analysis_start_depth + 1, min(depth_pixels - 1, half_depth)))
+    return int(max(analysis_start_depth + 1, depth_pixels))
 
 
 def summarize_noise_distribution(noise_complex, max_points=20000):
@@ -302,94 +179,9 @@ def summarize_noise_distribution(noise_complex, max_points=20000):
     }
 
 
-def measure_noise_sigma_q_from_roi(noise_complex, noise_roi_mask):
-    roi_values = np.asarray(noise_complex[:, noise_roi_mask], dtype=np.complex64)
-    if roi_values.size == 0:
-        raise ValueError("Noise ROI is empty.")
-    return estimate_sigma_q_from_complex_samples(roi_values)
-
-
-class NoiseStartDepthPicker:
-    def __init__(self, mean_depth_image):
-        self.mean_depth_image = np.asarray(mean_depth_image, dtype=np.float32)
-        self.x_pixels, self.depth_pixels = self.mean_depth_image.shape
-        self.selected_depth = max(1, int(self.depth_pixels * 0.75))
-        self.fig = None
-        self.ax_image = None
-        self.im_depth = None
-        self.cursor_depth = None
-        self.brightness_slider = None
-        self.depth_image_vmin = None
-        self.depth_image_vmax = None
-
-    def show(self):
-        self.fig, self.ax_image = plt.subplots(figsize=(9, 6))
-        self.fig.subplots_adjust(bottom=0.14)
-
-        self.depth_image_vmin, self.depth_image_vmax = self._initial_depth_image_clim()
-        self.im_depth = self.ax_image.imshow(
-            self.mean_depth_image.T,
-            aspect="auto",
-            origin="upper",
-            cmap="gray",
-            vmin=self.depth_image_vmin,
-            vmax=self.depth_image_vmax,
-        )
-        self.cursor_depth = self.ax_image.axhline(self.selected_depth, color="red", lw=1.2)
-        self.ax_image.set_title("Click the signal-analysis end depth, then close the window")
-        self.ax_image.set_xlabel("X pixel")
-        self.ax_image.set_ylabel("One-sided FFT depth index")
-        self.fig.colorbar(self.im_depth, ax=self.ax_image, label="Mean FFT amplitude")
-        self.fig.canvas.mpl_connect("button_press_event", self.on_click)
-        self.add_brightness_slider()
-        plt.show(block=True)
-        depth_image_clim = self.im_depth.get_clim()
-        plt.close(self.fig)
-        return self.selected_depth, depth_image_clim
-
-    def _initial_depth_image_clim(self):
-        finite_values = self.mean_depth_image[np.isfinite(self.mean_depth_image)]
-        if finite_values.size == 0:
-            return 0.0, 1.0
-
-        vmin, vmax = np.percentile(finite_values, [1.0, 99.5])
-        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
-            vmin = float(np.nanmin(finite_values))
-            vmax = float(np.nanmax(finite_values))
-        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
-            return 0.0, 1.0
-        return float(vmin), float(vmax)
-
-    def add_brightness_slider(self):
-        slider_ax = self.fig.add_axes([0.14, 0.035, 0.42, 0.03])
-        self.brightness_slider = Slider(
-            ax=slider_ax,
-            label="Brightness",
-            valmin=0.2,
-            valmax=5.0,
-            valinit=1.0,
-            valstep=0.05,
-        )
-        self.brightness_slider.on_changed(self.on_brightness_changed)
-
-    def on_brightness_changed(self, brightness):
-        display_vmax = self.depth_image_vmin + (
-            self.depth_image_vmax - self.depth_image_vmin
-        ) / brightness
-        self.im_depth.set_clim(self.depth_image_vmin, display_vmax)
-        self.fig.canvas.draw_idle()
-
-    def on_click(self, event):
-        if event.inaxes != self.ax_image or event.ydata is None:
-            return
-        self.selected_depth = int(np.clip(round(event.ydata), 0, self.depth_pixels - 1))
-        self.cursor_depth.set_ydata([self.selected_depth, self.selected_depth])
-        self.fig.canvas.draw_idle()
-
-
 def calculate_phase_noise_metrics(
     depth_complex,
-    noise_start_depth,
+    analysis_stop_depth,
     analysis_start_depth=10,
     center_wavelength_nm=840.0,
     refractive_index=1.0,
@@ -399,15 +191,15 @@ def calculate_phase_noise_metrics(
     magnitude = np.abs(depth_complex).astype(np.float32, copy=False)
     frames, x_pixels, depth_pixels = magnitude.shape
     analysis_start_depth = int(np.clip(analysis_start_depth, 0, depth_pixels - 1))
-    noise_start_depth = int(np.clip(noise_start_depth, 0, depth_pixels - 1))
-    if noise_start_depth <= analysis_start_depth:
+    analysis_stop_depth = int(np.clip(analysis_stop_depth, analysis_start_depth + 1, depth_pixels))
+    if analysis_stop_depth <= analysis_start_depth:
         raise ValueError(
             "Signal analysis region is empty. Select an analysis end depth deeper than "
             f"{analysis_start_depth}."
         )
 
     if external_sigma_q is None:
-        noise_region = np.asarray(depth_complex[:, :, :noise_start_depth], dtype=np.complex64)
+        noise_region = np.asarray(depth_complex[:, :, :analysis_stop_depth], dtype=np.complex64)
         if noise_region.shape[2] < 2:
             raise ValueError("Top-half noise region is too shallow.")
         sigma_q = estimate_sigma_q_from_complex_samples(
@@ -436,7 +228,7 @@ def calculate_phase_noise_metrics(
         4.0 * np.pi * float(refractive_index)
     )
 
-    signal_slice = (slice(None), slice(analysis_start_depth, noise_start_depth))
+    signal_slice = (slice(None), slice(analysis_start_depth, analysis_stop_depth))
     snr_flat = snr_db_map[signal_slice].reshape(-1)
     phase_std_flat = phase_std_map[signal_slice].reshape(-1)
     phase_var_flat = phase_variance_map[signal_slice].reshape(-1)
@@ -445,7 +237,7 @@ def calculate_phase_noise_metrics(
 
     x_grid, z_grid = np.meshgrid(
         np.arange(x_pixels),
-        np.arange(analysis_start_depth, noise_start_depth),
+        np.arange(analysis_start_depth, analysis_stop_depth),
         indexing="ij",
     )
     x_flat = x_grid.reshape(-1)
@@ -491,7 +283,7 @@ def calculate_phase_noise_metrics(
     g1 = calculate_g1_static_stability(
         depth_complex,
         analysis_start_depth,
-        noise_start_depth,
+        analysis_stop_depth,
         max_lag=DEFAULT_MAX_G1_LAG,
         max_pixels=DEFAULT_G1_MAX_PIXELS,
     )
@@ -506,7 +298,7 @@ def calculate_phase_noise_metrics(
         "x_pixels": x_pixels,
         "depth_pixels": depth_pixels,
         "analysis_start_depth": analysis_start_depth,
-        "noise_start_depth": noise_start_depth,
+        "analysis_stop_depth": analysis_stop_depth,
         "noise_sigma_q": sigma_q,
         "noise_source": noise_source,
         "phase_std_floor_rad_p1": float(np.nanpercentile(pixel_metrics["phase_std_rad"], 0.1)),
@@ -704,11 +496,11 @@ def select_representative_traces(pixel_metrics, phase_centered, target_snr_db):
 def calculate_g1_static_stability(
     depth_complex,
     analysis_start_depth,
-    noise_start_depth,
+    analysis_stop_depth,
     max_lag=200,
     max_pixels=20000,
 ):
-    analysis = depth_complex[:, :, analysis_start_depth:noise_start_depth]
+    analysis = depth_complex[:, :, analysis_start_depth:analysis_stop_depth]
     frames = analysis.shape[0]
     reshaped = analysis.reshape(frames, -1)
     if reshaped.shape[1] > int(max_pixels):
@@ -950,18 +742,6 @@ def plot_noise_floor_summary(
     plt.close(fig)
 
 
-def plot_binned_curve(ax, binned, metric_name, color, label, suffix="_median", fill_iqr=True):
-    if not binned:
-        return
-    x = np.asarray([row["snr_bin_center_db"] for row in binned], dtype=np.float32)
-    y = np.asarray([row[f"{metric_name}{suffix}"] for row in binned], dtype=np.float32)
-    ax.plot(x, y, color=color, lw=4.0, label=label)
-    if fill_iqr:
-        q25 = np.asarray([row[f"{metric_name}_q25"] for row in binned], dtype=np.float32)
-        q75 = np.asarray([row[f"{metric_name}_q75"] for row in binned], dtype=np.float32)
-        ax.fill_between(x, q25, q75, color=color, alpha=0.18, linewidth=0)
-
-
 def plot_temporal_stability(metrics, frame_rate_hz, output_path, show_figures=False):
     representatives = metrics["representatives"]
     g1 = metrics["g1"]
@@ -1109,33 +889,30 @@ def main():
 
     if DEFAULT_NOISE_INPUT_PATH:
         noise_path = DEFAULT_NOISE_INPUT_PATH
-        if DEFAULT_INPUT_IS_SAVED_AMP_PHASE:
-            noise_saved_stack = load_saved_amp_phase_stack(noise_path)
-            noise_complex = reconstruct_complex_from_amp_phase_stack(noise_saved_stack)
-            del noise_saved_stack
-        else:
-            noise_raw_stack = load_stack(noise_path)
-            noise_complex, _ = prepare_depth_stack(
-                noise_raw_stack,
-                use_hanning=DEFAULT_USE_HANNING,
-                spectral_highpass_size=DEFAULT_SPECTRAL_HIGHPASS_SIZE,
-                fft_amplification=DEFAULT_FFT_AMPLIFICATION,
-            )
-            del noise_raw_stack
+        noise_saved_stack = load_saved_amp_phase_stack(noise_path)
+        noise_complex = reconstruct_complex_from_amp_phase_stack(noise_saved_stack)
+        del noise_saved_stack
 
-        noise_top_half_depth = top_half_depth_stop(
+        noise_analysis_stop_depth = full_depth_stop(
             noise_complex.shape[2],
-            analysis_start_depth=0,
+            analysis_start_depth=DEFAULT_NOISE_ANALYSIS_START_DEPTH,
         )
+        noise_start_depth = int(np.clip(DEFAULT_NOISE_ANALYSIS_START_DEPTH, 0, max(0, noise_complex.shape[2] - 1)))
+        if noise_analysis_stop_depth <= noise_start_depth:
+            raise ValueError(
+                "Noise analysis region is empty. "
+                f"DEFAULT_NOISE_ANALYSIS_START_DEPTH={DEFAULT_NOISE_ANALYSIS_START_DEPTH} "
+                f"is too deep for noise stack depth {noise_complex.shape[2]}."
+            )
         noise_distribution = summarize_noise_distribution(
-            noise_complex[:, :, :noise_top_half_depth]
+            noise_complex[:, :, noise_start_depth:noise_analysis_stop_depth]
         )
         external_sigma_q = estimate_sigma_q_from_complex_samples(
-            noise_complex[:, :, :noise_top_half_depth].reshape(noise_complex.shape[0], -1)
+            noise_complex[:, :, noise_start_depth:noise_analysis_stop_depth].reshape(noise_complex.shape[0], -1)
         )
         print(
-            "Measured external sigma_q from top-half noise stack XZ range "
-            f"(depth < {noise_top_half_depth}): {external_sigma_q:.6g}"
+            "Measured external sigma_q from noise stack XZ range "
+            f"({noise_start_depth} <= depth < {noise_analysis_stop_depth}): {external_sigma_q:.6g}"
         )
         del noise_complex
     else:
@@ -1145,35 +922,23 @@ def main():
             "under the same system settings."
         )
 
-    if DEFAULT_INPUT_IS_SAVED_AMP_PHASE:
-        saved_stack = load_saved_amp_phase_stack(input_path)
-        depth_complex = reconstruct_complex_from_amp_phase_stack(saved_stack)
-        depth_magnitude = np.abs(depth_complex).astype(np.float32, copy=False)
-        del saved_stack
-        print("Input treated as saved AMP+PHASE FFT-domain B-line stack.")
-    else:
-        raw_stack = load_stack(input_path)
-        depth_complex, depth_magnitude = prepare_depth_stack(
-            raw_stack,
-            use_hanning=DEFAULT_USE_HANNING,
-            spectral_highpass_size=DEFAULT_SPECTRAL_HIGHPASS_SIZE,
-            fft_amplification=DEFAULT_FFT_AMPLIFICATION,
-        )
-        del raw_stack
-        print("Input treated as raw spectral stack and reconstructed with FFT.")
+    saved_stack = load_saved_amp_phase_stack(input_path)
+    depth_complex = reconstruct_complex_from_amp_phase_stack(saved_stack)
+    del saved_stack
+    print("Input treated as saved AMP+PHASE FFT-domain B-line stack.")
 
-    noise_start_depth = top_half_depth_stop(
+    analysis_stop_depth = full_depth_stop(
         depth_complex.shape[2],
         analysis_start_depth=DEFAULT_ANALYSIS_START_DEPTH,
     )
     print(
-        "Using top-half depth rule; "
-        f"signal analysis end depth set to {noise_start_depth}."
+        "Using full saved-depth range; "
+        f"signal analysis end depth set to {analysis_stop_depth}."
     )
 
     metrics = calculate_phase_noise_metrics(
         depth_complex,
-        noise_start_depth,
+        analysis_stop_depth,
         analysis_start_depth=DEFAULT_ANALYSIS_START_DEPTH,
         center_wavelength_nm=DEFAULT_CENTER_WAVELENGTH_NM,
         refractive_index=DEFAULT_REFRACTIVE_INDEX,

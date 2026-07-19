@@ -44,6 +44,8 @@ SAVE_SAMPLE_TIME_MODES = (
     AcqTypes.WELL_SCAN,
     AcqTypes.TIMED_PLATE_SCAN,
 )
+STITCH_MOSAIC_VOLUMES_IN_MEMORY = False
+STITCH_MOSAIC_DYNAMIC_UI = False
 
 MOSAIC_DISPLAY_MODES = (
     AcqTypes.PLATE_PRESCAN,
@@ -86,6 +88,7 @@ class DnSThread(QThread):
         self.DynamicRGBVolume = []
         self.SampleMosaicRGB = []
         self.SampleMosaicHSV = []
+        self.SampleMosaicDynamicVolume = []
         self.SampleMosaicHSVVolume = []
         self.SampleMosaicDyn = []
         self.SampleMosaicFreq = []
@@ -112,6 +115,7 @@ class DnSThread(QThread):
         self.SampleMosaicRGB = []
         self.SampleMosaicHSV = []
         self.SampleMosaicVolume = []
+        self.SampleMosaicDynamicVolume = []
         self.SampleMosaicHSVVolume = []
         self.SampleMosaicDyn = []
         self.SampleMosaicFreq = []
@@ -516,11 +520,11 @@ class DnSThread(QThread):
                 bline = np.array(self.Bline, copy=True)
             if use_realtime_dynamic and hasattr(self, "DynRGBBline") and np.size(self.DynRGBBline) > 0:
                 bline_rgb = np.array(self.DynRGBBline, copy=True)
-            if use_realtime_dynamic and hasattr(self, "SampleMosaicRGB") and np.size(self.SampleMosaicRGB) > 0:
+            if STITCH_MOSAIC_DYNAMIC_UI and use_realtime_dynamic and hasattr(self, "SampleMosaicRGB") and np.size(self.SampleMosaicRGB) > 0:
                 mosaic_rgb = np.array(self.SampleMosaicRGB, copy=True)
             if use_realtime_dynamic and hasattr(self, "DynHSVBline") and np.size(self.DynHSVBline) > 0:
                 bline_hsv = np.array(self.DynHSVBline, copy=True)
-            if use_realtime_dynamic and hasattr(self, "SampleMosaicHSV") and np.size(self.SampleMosaicHSV) > 0:
+            if STITCH_MOSAIC_DYNAMIC_UI and use_realtime_dynamic and hasattr(self, "SampleMosaicHSV") and np.size(self.SampleMosaicHSV) > 0:
                 mosaic_hsv = np.array(self.SampleMosaicHSV, copy=True)
             if use_realtime_dynamic and hasattr(self, "DynFreqBline") and np.size(self.DynFreqBline) > 0:
                 bline_freq = np.array(self.DynFreqBline, copy=True)
@@ -528,24 +532,20 @@ class DnSThread(QThread):
                 bline_bandwidth = np.array(self.DynBandwidthBline, copy=True)
             if use_realtime_dynamic and hasattr(self, "DynBline") and np.size(self.DynBline) > 0:
                 bline_value = np.array(self.DynBline, copy=True)
-            if use_realtime_dynamic and hasattr(self, "SampleMosaicFreq") and np.size(self.SampleMosaicFreq) > 0:
+            if STITCH_MOSAIC_DYNAMIC_UI and use_realtime_dynamic and hasattr(self, "SampleMosaicFreq") and np.size(self.SampleMosaicFreq) > 0:
                 mosaic_freq = np.array(self.SampleMosaicFreq, copy=True)
-            if use_realtime_dynamic and hasattr(self, "SampleMosaicBandwidth") and np.size(self.SampleMosaicBandwidth) > 0:
+            if STITCH_MOSAIC_DYNAMIC_UI and use_realtime_dynamic and hasattr(self, "SampleMosaicBandwidth") and np.size(self.SampleMosaicBandwidth) > 0:
                 mosaic_bandwidth = np.array(self.SampleMosaicBandwidth, copy=True)
-            if use_realtime_dynamic and hasattr(self, "SampleMosaicDyn") and np.size(self.SampleMosaicDyn) > 0:
+            if STITCH_MOSAIC_DYNAMIC_UI and use_realtime_dynamic and hasattr(self, "SampleMosaicDyn") and np.size(self.SampleMosaicDyn) > 0:
                 mosaic_value = np.array(self.SampleMosaicDyn, copy=True)
             bridge.mosaic_ready.emit(
                 {
                     "mode": acq_mode,
                     "mosaic": np.array(self.SampleMosaic, copy=True),
-                    "mosaic_volume": np.array(self.SampleMosaicVolume, copy=True)
-                    if hasattr(self, "SampleMosaicVolume") and np.size(self.SampleMosaicVolume) > 0
-                    else None,
+                    "mosaic_volume": None,
                     "mosaic_rgb": mosaic_rgb,
                     "mosaic_hsv": mosaic_hsv,
-                    "mosaic_hsv_volume": np.array(self.SampleMosaicHSVVolume, copy=True)
-                    if hasattr(self, "SampleMosaicHSVVolume") and np.size(self.SampleMosaicHSVVolume) > 0
-                    else None,
+                    "mosaic_hsv_volume": None,
                     "mosaic_freq": mosaic_freq,
                     "mosaic_bandwidth": mosaic_bandwidth,
                     "mosaic_value": mosaic_value,
@@ -867,6 +867,7 @@ class DnSThread(QThread):
         self.SampleMosaicVolume = []
         self.SampleMosaicRGB = np.zeros((mh_px, mw_px, 3), dtype=np.uint8)
         self.SampleMosaicHSV = np.zeros((mh_px, mw_px, 3), dtype=np.float32)
+        self.SampleMosaicDynamicVolume = []
         self.SampleMosaicHSVVolume = []
         self.SampleMosaicDyn = np.zeros((mh_px, mw_px), dtype=np.float32)
         self.SampleMosaicFreq = np.zeros((mh_px, mw_px), dtype=np.float32)
@@ -935,21 +936,33 @@ class DnSThread(QThread):
         if y2 <= mh and x2 <= mw:
             # print(y1,y2,x1,x2, off_y, off_x, mh, mw)
             self.SampleMosaic[y1:y2, x1:x2] = self.AIP
-            if hasattr(self, "XYVolume") and isinstance(self.XYVolume, np.ndarray) and np.size(self.XYVolume) > 0:
+            if STITCH_MOSAIC_VOLUMES_IN_MEMORY and hasattr(self, "XYVolume") and isinstance(self.XYVolume, np.ndarray) and np.size(self.XYVolume) > 0:
                 z_pixels = self.XYVolume.shape[2]
                 if not isinstance(self.SampleMosaicVolume, np.ndarray) or self.SampleMosaicVolume.shape != (mh, mw, z_pixels):
                     self.SampleMosaicVolume = np.zeros((mh, mw, z_pixels), dtype=np.float32)
                 self.SampleMosaicVolume[y1:y2, x1:x2, :] = self.XYVolume
-            if (
+            if STITCH_MOSAIC_DYNAMIC_UI and (
                 hasattr(self, "DynRGB")
                 and isinstance(self.DynRGB, np.ndarray)
                 and np.size(self.DynRGB) > 0
                 and isinstance(self.SampleMosaicRGB, np.ndarray)
             ):
                 self.SampleMosaicRGB[y1:y2, x1:x2, :] = self.DynRGB
-            if isinstance(self.SampleMosaicHSV, np.ndarray) and isinstance(self.DynHSV, np.ndarray) and np.size(self.DynHSV) > 0:
+            if STITCH_MOSAIC_DYNAMIC_UI and isinstance(self.SampleMosaicHSV, np.ndarray) and isinstance(self.DynHSV, np.ndarray) and np.size(self.DynHSV) > 0:
                 self.SampleMosaicHSV[y1:y2, x1:x2, :] = self.DynHSV
-            if (
+            if STITCH_MOSAIC_VOLUMES_IN_MEMORY and (
+                hasattr(self, "DynamicVolume")
+                and isinstance(self.DynamicVolume, np.ndarray)
+                and np.size(self.DynamicVolume) > 0
+            ):
+                z_pixels = self.DynamicVolume.shape[2]
+                if (
+                    not isinstance(self.SampleMosaicDynamicVolume, np.ndarray)
+                    or self.SampleMosaicDynamicVolume.shape != (mh, mw, z_pixels)
+                ):
+                    self.SampleMosaicDynamicVolume = np.zeros((mh, mw, z_pixels), dtype=np.float32)
+                self.SampleMosaicDynamicVolume[y1:y2, x1:x2, :] = self.DynamicVolume
+            if STITCH_MOSAIC_VOLUMES_IN_MEMORY and (
                 hasattr(self, "DynamicHSVVolume")
                 and isinstance(self.DynamicHSVVolume, np.ndarray)
                 and np.size(self.DynamicHSVVolume) > 0
@@ -961,11 +974,11 @@ class DnSThread(QThread):
                 ):
                     self.SampleMosaicHSVVolume = np.zeros((mh, mw, z_pixels, 3), dtype=np.float32)
                 self.SampleMosaicHSVVolume[y1:y2, x1:x2, :, :] = self.DynamicHSVVolume
-            if isinstance(self.SampleMosaicDyn, np.ndarray) and isinstance(self.Dyn, np.ndarray) and np.size(self.Dyn) > 0:
+            if STITCH_MOSAIC_DYNAMIC_UI and isinstance(self.SampleMosaicDyn, np.ndarray) and isinstance(self.Dyn, np.ndarray) and np.size(self.Dyn) > 0:
                 self.SampleMosaicDyn[y1:y2, x1:x2] = self.Dyn
-            if isinstance(self.SampleMosaicFreq, np.ndarray) and isinstance(self.DynFreq, np.ndarray) and np.size(self.DynFreq) > 0:
+            if STITCH_MOSAIC_DYNAMIC_UI and isinstance(self.SampleMosaicFreq, np.ndarray) and isinstance(self.DynFreq, np.ndarray) and np.size(self.DynFreq) > 0:
                 self.SampleMosaicFreq[y1:y2, x1:x2] = self.DynFreq
-            if (
+            if STITCH_MOSAIC_DYNAMIC_UI and (
                 isinstance(self.SampleMosaicBandwidth, np.ndarray)
                 and isinstance(self.DynBandwidth, np.ndarray)
                 and np.size(self.DynBandwidth) > 0
@@ -1141,10 +1154,9 @@ class DnSThread(QThread):
 
         
     def Save_mosaic(self):
-        if self.current_save_enabled():
-            slice_num = self.ui.SliceN.value()
-            filename = self.ui.DIR.toPlainText()+'/aip/slice'+str(slice_num)+'coase.tif'
-            TIFF.imwrite(filename, self.SampleMosaic, append=False)
+        message = "Stitched mosaic volume saving is disabled; use tile_positions.json for offline stitching."
+        print(message)
+        self.emit_status(message)
             
         
     def Save(self, data=[], dynamic=[], raw=False, acq_mode=None, gpu_avg_count=1):

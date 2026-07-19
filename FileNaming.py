@@ -4,6 +4,7 @@ from ActionTypes import AcqTypes
 
 
 SAVE_SAMPLE_TIME_MODES = (
+    AcqTypes.PLATE_PRESCAN,
     AcqTypes.PLATE_SCAN,
     AcqTypes.WELL_SCAN,
     AcqTypes.TIMED_PLATE_SCAN,
@@ -117,6 +118,11 @@ class FileNaming:
         return max(1, index + 1)
 
     def _current_time_number(self):
+        return self._current_time_number_for_acq_mode(None)
+
+    def _current_time_number_for_acq_mode(self, acq_mode):
+        if acq_mode == AcqTypes.PLATE_PRESCAN:
+            return 0
         if hasattr(self.ui, "timeReader"):
             return int(self.ui.timeReader.value())
         if hasattr(self.ui, "CuSlice"):
@@ -127,7 +133,7 @@ class FileNaming:
         if acq_mode not in SAVE_SAMPLE_TIME_MODES:
             return
         sample_id = self._current_sample_id()
-        time_number = self._current_time_number()
+        time_number = self._current_time_number_for_acq_mode(acq_mode)
         if sample_id != self.last_sample_id or time_number != self.last_time_number:
             self.reset_all_counters()
             self.last_sample_id = sample_id
@@ -140,7 +146,7 @@ class FileNaming:
             return sample_time_save_dir(
                 base_dir,
                 self._current_sample_id(),
-                self._current_time_number(),
+                self._current_time_number_for_acq_mode(acq_mode),
             )
         return base_dir
 

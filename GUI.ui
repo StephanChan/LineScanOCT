@@ -3400,21 +3400,21 @@ p, li { white-space: pre-wrap; }
           <item row="0" column="0">
            <widget class="QPushButton" name="TestButten1">
             <property name="text">
-             <string>DnS Init Surf</string>
+             <string>Offset adjustment</string>
             </property>
            </widget>
           </item>
           <item row="2" column="0">
            <widget class="QPushButton" name="TestButten3">
             <property name="text">
-             <string>DnS Display Surface</string>
+             <string>TestButton3</string>
             </property>
            </widget>
           </item>
           <item row="1" column="0">
            <widget class="QPushButton" name="TestButten2">
             <property name="text">
-             <string>DnS Process SurfScan</string>
+             <string>TestButton2</string>
             </property>
            </widget>
           </item>

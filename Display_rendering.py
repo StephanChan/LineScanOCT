@@ -8,7 +8,6 @@ from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 from PyQt5.QtCore import Qt, QRectF
 
 from Generaic_functions import RGBImagePlot, fastLinePlot, LinePlot
-from SampleLocator import USB_PIXEL_SIZE_MM, stage_to_usb_image
 
 
 RGB_DYNAMIC_HUE_HZ_PER_CONTRAST_UNIT = 15.0 / 1000.0
@@ -223,27 +222,34 @@ def display_sample_overlay(ui, overlay_images, sample_id, fov_locations_getter):
     if isinstance(source, QPixmap):
         ui.MosaicLabel.setPixmap(source)
         return
-    if source.get('type') == 'usb_roi':
-        render_usb_roi_overlay(
-            ui,
-            sample_id,
-            source['raw_img'],
-            source['pixel_polygons'],
-            fov_locations_getter,
-        )
+    if source.get('type') == 'usb_region':
+        render_usb_region_overlay(ui, source, fov_locations_getter)
     elif source.get('type') == 'mosaic_correction':
         render_mosaic_correction_overlay(ui, source)
 
 
-def render_usb_roi_overlay(ui, sample_id, raw_img, pixel_polygons, fov_locations_getter):
-    poly_pts = pixel_polygons[sample_id - 1]
-    poly_np = np.array(poly_pts, dtype=np.int32)
-    x, y, w, h = cv2.boundingRect(poly_np)
+def render_usb_region_overlay(ui, source, fov_locations_getter):
+    image_path = source.get("image_path", "")
+    raw_img = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    if raw_img is None:
+        print(f"USB region overlay image missing or unreadable: {image_path}")
+        ui.MosaicLabel.clear()
+        return
 
-    pad = 150
-    x1, y1 = max(0, x - pad), max(0, y - pad)
-    x2, y2 = min(raw_img.shape[1], x + w + pad), min(raw_img.shape[0], y + h + pad)
-    crop_img = raw_img[y1:y2, x1:x2].copy()
+    poly_pts = source.get("pixel_polygon", [])
+    if len(poly_pts) < 3:
+        ui.MosaicLabel.clear()
+        return
+    poly_np = np.asarray(poly_pts, dtype=np.float32)
+    x_min = int(max(0, np.floor(np.min(poly_np[:, 0]) - 200)))
+    y_min = int(max(0, np.floor(np.min(poly_np[:, 1]) - 200)))
+    x_max = int(min(raw_img.shape[1], np.ceil(np.max(poly_np[:, 0]) + 200)))
+    y_max = int(min(raw_img.shape[0], np.ceil(np.max(poly_np[:, 1]) + 200)))
+    crop_img = raw_img[y_min:y_max, x_min:x_max].copy()
+    if crop_img.size == 0:
+        print(f"USB region overlay crop is empty for sampleID-{source.get('sample_id')}")
+        ui.MosaicLabel.clear()
+        return
 
     rgb_img = np.ascontiguousarray(cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB))
     h_v, w_v, ch = rgb_img.shape
@@ -264,7 +270,25 @@ def render_usb_roi_overlay(ui, sample_id, raw_img, pixel_polygons, fov_locations
     painter.drawPixmap(dx, dy, sw, sh, base_pixmap)
 
     def to_ui(px, py):
-        return dx + (px - x1) * scale, dy + (py - y1) * scale
+        return dx + (float(px) - x_min) * scale, dy + (float(py) - y_min) * scale
+
+    calibration = source["calibration"]
+    tile_stage_x = float(source["tile_stage_x"])
+    tile_stage_y = float(source["tile_stage_y"])
+    offset_x_mm = float(source["region_offset_x_mm"])
+    offset_y_mm = float(source["region_offset_y_mm"])
+    scale_x = float(calibration["scale_x_mm_per_px"])
+    scale_y = float(calibration["scale_y_mm_per_px"])
+    sign_x = float(calibration["sign_x"])
+    sign_y = float(calibration["sign_y"])
+    if scale_x <= 0.0 or scale_y <= 0.0:
+        raise ValueError(f"Invalid USB region overlay calibration: {calibration}")
+
+    def stage_to_image(stage_x, stage_y):
+        image_h, image_w = raw_img.shape[:2]
+        py = ((float(stage_x) - tile_stage_x - offset_x_mm) / (sign_x * scale_x)) + image_h / 2.0
+        px = ((float(stage_y) - tile_stage_y - offset_y_mm) / (sign_y * scale_y)) + image_w / 2.0
+        return px, py
 
     painter.setPen(QPen(QColor(0, 120, 255), 3))
     for i in range(len(poly_pts)):
@@ -272,16 +296,14 @@ def render_usb_roi_overlay(ui, sample_id, raw_img, pixel_polygons, fov_locations
         p2 = to_ui(*poly_pts[(i + 1) % len(poly_pts)])
         painter.drawLine(int(p1[0]), int(p1[1]), int(p2[0]), int(p2[1]))
 
-    usb_pixel_size = USB_PIXEL_SIZE_MM
-    fov_x_px = ui.XLength.value() / usb_pixel_size
-
     painter.setPen(QPen(QColor(0, 255, 0), 2))
-    for fov in fov_locations_getter(sample_id):
-        cx_px, cy_px = stage_to_usb_image(fov.x, fov.y, raw_img.shape[1])
+    for fov in fov_locations_getter(int(source["sample_id"])):
+        cx_px, cy_px = stage_to_image(fov.x, fov.y)
         loc_y_fov = fov.y_length_mm if fov.y_length_mm is not None else ui.YLength.value()
-        fov_y_px = loc_y_fov / usb_pixel_size
-        tl = to_ui(cx_px - fov_y_px / 2, cy_px - fov_x_px / 2)
-        br = to_ui(cx_px + fov_y_px / 2, cy_px + fov_x_px / 2)
+        fov_x_px = ui.XLength.value() / scale_x
+        fov_y_px = loc_y_fov / scale_y
+        tl = to_ui(cx_px - fov_y_px / 2.0, cy_px - fov_x_px / 2.0)
+        br = to_ui(cx_px + fov_y_px / 2.0, cy_px + fov_x_px / 2.0)
         painter.drawRect(QRectF(tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]))
 
     painter.end()

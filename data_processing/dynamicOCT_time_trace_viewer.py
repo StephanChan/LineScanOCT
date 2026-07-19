@@ -21,9 +21,10 @@ except ImportError:
 
 
 # Spyder/default run settings. Edit these values, then press Run.
-DEFAULT_INPUT_DIR = r"E:\IOCTData\Lung Cancer mice 260601\260608\200Hz 2seconds Blines"
-DEFAULT_BACKGROUND_INPUT_PATH = r"E:\IOCTData\Lung Cancer mice 260601\260608\100Hz 10seconds Blines\noise\Noise-Yrpt1001-X1264-Z276.tif"  # Optional separate noise/background AMP+PHASE TIFF stack or directory.
-DEFAULT_FRAME_RATE_HZ = 200.0
+DEFAULT_INPUT_DIR = r"E:\IOCTData\BreastCancerMice\0630\Z21_31"
+DEFAULT_FILENAME_GLOB = r"Cscan-*-Bline-*-Yrpt100-X1104-Z73.tif"
+DEFAULT_BACKGROUND_INPUT_PATH = r"E:\IOCTData\HighResData\50Hz_2s\noise\Wout_sub_background\AllOn\070726\Bline-9-Yrpt200-X1104-Z109.tif"  # Optional separate noise/background AMP+PHASE TIFF stack or directory.
+DEFAULT_FRAME_RATE_HZ = 50.0
 DEFAULT_TISSUE_DURATION_SECONDS = 2.0
 DEFAULT_BACKGROUND_DURATION_SECONDS = 2.0
 DEFAULT_CENTER_WAVELENGTH_NM = 840.0
@@ -49,35 +50,50 @@ DEFAULT_VIEWER_SUPTITLE_FONT_SIZE = 11
 # passing command-line arguments.
 USE_COMMAND_LINE_ARGS = False
 
-BLINE_NAME_RE = re.compile(
+LEGACY_BLINE_NAME_RE = re.compile(
     r"^Bline-(?P<index>\d+)-Yrpt(?P<yrpt>\d+)-X(?P<x>\d+)-Z(?P<z>\d+)\.tiff?$",
     re.IGNORECASE,
 )
 
+C_SCAN_BLINE_NAME_RE = re.compile(
+    r"^Cscan-(?P<cscan>\d+)-Bline-(?P<index>\d+)-Yrpt(?P<yrpt>\d+)-X(?P<x>\d+)-Z(?P<z>\d+)\.tiff?$",
+    re.IGNORECASE,
+)
 
-def iter_tiff_stacks(input_dir):
+
+def iter_tiff_stacks(input_dir, filename_glob=None):
     input_path = Path(input_dir)
     if input_path.is_file():
         return [input_path]
     if not input_path.is_dir():
         raise ValueError(f"Input path is not a file or directory: {input_dir}")
 
-    paths = [
-        path
-        for path in input_path.iterdir()
-        if path.is_file() and path.suffix.lower() in {".tif", ".tiff"}
-    ]
+    if filename_glob is not None and str(filename_glob).strip() != "":
+        paths = [path for path in input_path.glob(str(filename_glob)) if path.is_file()]
+    else:
+        paths = [
+            path
+            for path in input_path.iterdir()
+            if path.is_file() and path.suffix.lower() in {".tif", ".tiff"}
+        ]
     paths.sort(key=natural_bline_sort_key)
     if not paths:
+        if filename_glob is not None and str(filename_glob).strip() != "":
+            raise ValueError(f"No TIFF stacks matched glob '{filename_glob}' in: {input_dir}")
         raise ValueError(f"No TIFF stacks found in: {input_dir}")
     return paths
 
 
 def natural_bline_sort_key(path):
-    match = BLINE_NAME_RE.match(path.name)
-    if match is None:
-        return (1, path.name.lower())
-    return (0, int(match.group("index")), int(match.group("yrpt")))
+    match = C_SCAN_BLINE_NAME_RE.match(path.name)
+    if match is not None:
+        return (0, int(match.group("cscan")), int(match.group("index")), int(match.group("yrpt")))
+
+    match = LEGACY_BLINE_NAME_RE.match(path.name)
+    if match is not None:
+        return (1, int(match.group("index")), int(match.group("yrpt")))
+
+    return (2, path.name.lower())
 
 
 def read_amp_phase_tiff_stack(path):
@@ -1292,6 +1308,11 @@ def parse_args():
         help="Input TIFF file or directory containing TIFF stacks.",
     )
     parser.add_argument(
+        "--filename-glob",
+        default=DEFAULT_FILENAME_GLOB,
+        help="Optional glob used when the input is a directory, to limit which TIFF stacks are loaded.",
+    )
+    parser.add_argument(
         "--background-input",
         default=DEFAULT_BACKGROUND_INPUT_PATH,
         help="Optional separate background/noise TIFF stack or directory.",
@@ -1317,6 +1338,7 @@ def parse_args():
 
 def run_viewer(
     input_path=DEFAULT_INPUT_DIR,
+    filename_glob=DEFAULT_FILENAME_GLOB,
     background_input_path=DEFAULT_BACKGROUND_INPUT_PATH,
     frame_rate_hz=DEFAULT_FRAME_RATE_HZ,
     tissue_duration_seconds=DEFAULT_TISSUE_DURATION_SECONDS,
@@ -1328,7 +1350,7 @@ def run_viewer(
     dynamic_uniform_filter_size=DEFAULT_DYNAMIC_UNIFORM_FILTER_SIZE,
     dynamic_chunk_x=DEFAULT_DYNAMIC_CHUNK_X,
 ):
-    paths = iter_tiff_stacks(input_path)
+    paths = iter_tiff_stacks(input_path, filename_glob=filename_glob)
     external_noise_sigma_q, external_noise_source = load_external_noise_sigma_q(
         background_input_path,
         frame_rate_hz=frame_rate_hz,
@@ -1370,6 +1392,7 @@ def main():
             notch_band_hz = (args.notch_low_hz, args.notch_high_hz)
         run_viewer(
             input_path=args.input,
+            filename_glob=args.filename_glob,
             background_input_path=args.background_input,
             frame_rate_hz=args.frame_rate,
             tissue_duration_seconds=args.tissue_duration_seconds,
@@ -1385,6 +1408,7 @@ def main():
 
     run_viewer(
         input_path=DEFAULT_INPUT_DIR,
+        filename_glob=DEFAULT_FILENAME_GLOB,
         background_input_path=DEFAULT_BACKGROUND_INPUT_PATH,
         frame_rate_hz=DEFAULT_FRAME_RATE_HZ,
         tissue_duration_seconds=DEFAULT_TISSUE_DURATION_SECONDS,
