@@ -13,7 +13,7 @@ from dataclasses import dataclass
 class ObjectiveSpec:
     name: str
     angle_to_mm_ratio: float
-    camera_step_divisor: float
+    magnification: float
     max_y_fov_mm: float
 
 
@@ -30,32 +30,29 @@ class StageAxisSpec:
     init_speed_mm_s: float
 
 
-SYSTEM_MAGNIFICATION_4X = 4 * 1.05
-
-
 OBJECTIVE_SPECS = {
     "4X": ObjectiveSpec(
         name="4X",
         angle_to_mm_ratio= 1.44 * 1.25* 0.9,
-        camera_step_divisor=1.0,
+        magnification=4.0 * 1.10,
         max_y_fov_mm=5.0,
     ),
     "5X": ObjectiveSpec(
         name="5X",
         angle_to_mm_ratio=2.094 / 1.19* 0.9,
-        camera_step_divisor=1.25,
+        magnification=5.0 * 1.05,
         max_y_fov_mm=4.0,
     ),
     "10X": ObjectiveSpec(
         name="10X",
         angle_to_mm_ratio=2.094 / 2 / 1.19 * 0.9,
-        camera_step_divisor=2.5,
+        magnification=10.0 * 1.05,
         max_y_fov_mm=2.0,
     ),
     "20X": ObjectiveSpec(
         name="20X",
         angle_to_mm_ratio=2.094 / 1.19 / 4* 0.9,
-        camera_step_divisor=5.0,
+        magnification=20.0 * 1.05,
         max_y_fov_mm=1.0,
     ),
 }
@@ -121,7 +118,9 @@ def camera_step_size_um(camera_name, objective_name):
         raise KeyError(f"Unknown camera: {camera_name}")
     if objective is None:
         raise KeyError(f"Unknown objective: {objective_name}")
-    return camera.pixel_size_um / SYSTEM_MAGNIFICATION_4X / objective.camera_step_divisor
+    if objective.magnification <= 0:
+        raise ValueError(f"Objective magnification must be positive: {objective}")
+    return camera.pixel_size_um / objective.magnification
 
 
 def digital_line_mask(line_name):

@@ -8,6 +8,11 @@ from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 from PyQt5.QtCore import Qt, QRectF
 
 from Generaic_functions import RGBImagePlot, fastLinePlot, LinePlot
+from SampleLocator import (
+    affine_fov_half_size_pixels,
+    calibration_uses_affine,
+    stage_to_image_from_calibration,
+)
 
 
 RGB_DYNAMIC_HUE_HZ_PER_CONTRAST_UNIT = 15.0 / 1000.0
@@ -273,22 +278,11 @@ def render_usb_region_overlay(ui, source, fov_locations_getter):
         return dx + (float(px) - x_min) * scale, dy + (float(py) - y_min) * scale
 
     calibration = source["calibration"]
-    tile_stage_x = float(source["tile_stage_x"])
-    tile_stage_y = float(source["tile_stage_y"])
-    offset_x_mm = float(source["region_offset_x_mm"])
-    offset_y_mm = float(source["region_offset_y_mm"])
-    scale_x = float(calibration["scale_x_mm_per_px"])
-    scale_y = float(calibration["scale_y_mm_per_px"])
-    sign_x = float(calibration["sign_x"])
-    sign_y = float(calibration["sign_y"])
-    if scale_x <= 0.0 or scale_y <= 0.0:
-        raise ValueError(f"Invalid USB region overlay calibration: {calibration}")
+    if not calibration_uses_affine(calibration):
+        raise ValueError(f"USB region overlay requires affine calibration: {calibration}")
 
     def stage_to_image(stage_x, stage_y):
-        image_h, image_w = raw_img.shape[:2]
-        py = ((float(stage_x) - tile_stage_x - offset_x_mm) / (sign_x * scale_x)) + image_h / 2.0
-        px = ((float(stage_y) - tile_stage_y - offset_y_mm) / (sign_y * scale_y)) + image_w / 2.0
-        return px, py
+        return stage_to_image_from_calibration(calibration, stage_x, stage_y)
 
     painter.setPen(QPen(QColor(0, 120, 255), 3))
     for i in range(len(poly_pts)):
@@ -300,8 +294,13 @@ def render_usb_region_overlay(ui, source, fov_locations_getter):
     for fov in fov_locations_getter(int(source["sample_id"])):
         cx_px, cy_px = stage_to_image(fov.x, fov.y)
         loc_y_fov = fov.y_length_mm if fov.y_length_mm is not None else ui.YLength.value()
-        fov_x_px = ui.XLength.value() / scale_x
-        fov_y_px = loc_y_fov / scale_y
+        fov_y_px, fov_x_px = affine_fov_half_size_pixels(
+            calibration,
+            ui.XLength.value(),
+            loc_y_fov,
+        )
+        fov_x_px *= 2.0
+        fov_y_px *= 2.0
         tl = to_ui(cx_px - fov_y_px / 2.0, cy_px - fov_x_px / 2.0)
         br = to_ui(cx_px + fov_y_px / 2.0, cy_px + fov_x_px / 2.0)
         painter.drawRect(QRectF(tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]))

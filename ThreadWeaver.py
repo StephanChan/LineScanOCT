@@ -952,7 +952,10 @@ class WeaverThread(QThread):
                 self.display_sample_overlay(sample_center.sample_id)
                 
                 # User stopped continuousBline, then we do Mosaic scan for this sample
-                self.AdjustZstage(sample_center.sample_id)
+                self.AdjustZstage(
+                    sample_center.sample_id,
+                    start_from_current_z=(sample_center.sample_id != self.sample_centers[0].sample_id),
+                )
 
                 if SKIP_PLATE_PRESCAN_FULL_SAMPLE_SCAN:
                     message = (
@@ -981,7 +984,7 @@ class WeaverThread(QThread):
                                     for location in self.FOV_locations
                                     if location.sample_id == sample_center.sample_id
                                 ]
-                        self.AdjustZstage(sample_center.sample_id)
+                        self.AdjustZstage(sample_center.sample_id, start_from_current_z=True)
                         if SKIP_PLATE_PRESCAN_FULL_SAMPLE_SCAN:
                             message = (
                                 f"PlatePreScan repeat full sample scan skipped for sampleID-{sample_center.sample_id}; "
@@ -1147,12 +1150,21 @@ class WeaverThread(QThread):
             return "Well scan stopped by user."
         return(message) 
 
-    def AdjustZstage(self, sample_id):
+    def AdjustZstage(self, sample_id, start_from_current_z=False):
         sample_center = self.sample_centers[sample_id-1]
         # move to center position of this sample
         self.move_stage_axis('X', sample_center.x)
         self.move_stage_axis('Y', sample_center.y)
-        self.move_stage_axis('Z', sample_center.z)
+        if start_from_current_z:
+            inherited_z = self.ui.ZPosition.value()
+            sample_center.z = inherited_z
+            for location in self.CurrentSampleLocations:
+                location.z = inherited_z
+            print(
+                f"PlatePreScan sampleID-{sample_id}: starting Z adjustment from current Z={inherited_z:.4f}."
+            )
+        else:
+            self.move_stage_axis('Z', sample_center.z)
         # do continuous scan to display Bline
         self.ui.ACQMode.setCurrentText(AcqTypes.CONTINUOUS_BLINE)
         if not self.wait_for_processing_barrier(label=f"starting {AcqTypes.CONTINUOUS_BLINE}"):
@@ -1162,6 +1174,7 @@ class WeaverThread(QThread):
         self.ui.RunButton.setText('点击开始扫描')
         self.RptScan(DnS_action=AcqTypes.CONTINUOUS_BLINE, acq_mode=AcqTypes.CONTINUOUS_BLINE)
         # User can move Z stage up and down to put sample at focus
+        sample_center.z = self.ui.ZPosition.value()
         for location in self.CurrentSampleLocations:
             location.z = self.ui.ZPosition.value()
         

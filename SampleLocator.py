@@ -18,7 +18,6 @@ from mosaic_scan_planner import (
 )
 from ScanModels import FOVLocation, SampleCenter
 
-USB_PIXEL_SIZE_MM = 0.0243
 USB_CAMERA_INDEX = 0
 USB_FRAME_WIDTH = 3840
 USB_FRAME_HEIGHT = 2160
@@ -30,71 +29,137 @@ USB_MOSAIC_Y_MIN_MM = 50.0
 USB_MOSAIC_Y_MAX_MM = 130.0
 USB_MOSAIC_GRID_X = 3
 USB_MOSAIC_GRID_Y = 4
-USB_VALID_CENTER_REGION_PX = 1200
+USB_VALID_CENTER_REGION_PX = 1500
+SAMPLE_STAGE_COLUMN_Y_TOLERANCE_MM = 10.0
+
+USB_CAMERA_TO_STAGE_AFFINE = [
+    [-9.61990609461207e-05, 0.046074609344122719, -5.3744508746854729],
+    [-0.046323119248083452, 2.7853843648006915e-05, 196.4359168459153],
+    [0.0, 0.0, 1.0],
+]
+
+USB_CAMERA_STAGE_CONTROL_POINTS = [
+    {"camera": [672.0, 240.0], "stage": [5.92, 165.1]},
+    {"camera": [658.0, 1408.0], "stage": [59.33, 165.9]},
+    {"camera": [725.0, 1708.0], "stage": [73.17, 162.72]},
+    {"camera": [977.0, 279.0], "stage": [7.31, 151.16]},
+    {"camera": [1010.0, 604.0], "stage": [22.37, 149.6]},
+    {"camera": [1020.0, 1078.0], "stage": [44.27, 149.27]},
+    {"camera": [1526.0, 887.0], "stage": [35.1, 125.9]},
+    {"camera": [1291.0, 888.0], "stage": [35.38, 136.8]},
+    {"camera": [1546.0, 1116.0], "stage": [45.9, 124.9]},
+    {"camera": [1357.0, 1435.0], "stage": [60.6, 133.84]},
+    {"camera": [1558.0, 1691.0], "stage": [72.63, 124.55]},
+    {"camera": [1789.0, 258.0], "stage": [6.33, 113.7]},
+    {"camera": [1782.0, 1157.0], "stage": [47.7, 114.0]},
+    {"camera": [2099.0, 840.0], "stage": [32.75, 99.24]},
+    {"camera": [2161.0, 1669.0], "stage": [71.63, 96.32]},
+    {"camera": [2500.0, 580.0], "stage": [21, 80.54]},
+    {"camera": [2659.0, 838.0], "stage": [32.64, 73.17]},
+    {"camera": [2381.0, 1100.0], "stage": [45.1, 86]},
+    {"camera": [2615.0, 1660.0], "stage": [70.92, 75.19]},
+    {"camera": [2763.0, 215.0], "stage": [4.69, 68.58]},
+]
 
 
 def default_usb_mosaic_calibration():
     return {
-        "offset_x_mm": -72.4,
-        "offset_y_mm": 27.55,
-        "region_offset_points": [
-            {"row": 1, "col": 1, "offset_x_mm": -72.3, "offset_y_mm": 27.55},
-            {"row": 1, "col": 3, "offset_x_mm": -72.5, "offset_y_mm": 27.2},
-            {"row": 4, "col": 1, "offset_x_mm": -73.5, "offset_y_mm": 28.8},
-            {"row": 4, "col": 3, "offset_x_mm": -73.5, "offset_y_mm": 28.7},
+        "calibration_method": "affine_matrix",
+        "camera_to_stage_affine": USB_CAMERA_TO_STAGE_AFFINE,
+        "camera_stage_control_points": USB_CAMERA_STAGE_CONTROL_POINTS,
+        "affine_pixel_space": "fiji_horizontal_flip",
+    }
+
+def calibration_uses_affine(calibration):
+    return (
+        calibration.get("calibration_method") == "affine_matrix"
+        and calibration.get("camera_to_stage_affine") is not None
+    )
+
+def display_pixel_to_affine_pixel(calibration, px, py):
+    if calibration.get("affine_pixel_space") == "raw_camera_fiji":
+        return float(USB_FRAME_WIDTH - 1 - float(py)), float(USB_FRAME_HEIGHT - 1 - float(px))
+    return float(px), float(py)
+
+def affine_pixel_to_display_pixel(calibration, px, py):
+    if calibration.get("affine_pixel_space") == "raw_camera_fiji":
+        return float(USB_FRAME_HEIGHT - 1 - float(py)), float(USB_FRAME_WIDTH - 1 - float(px))
+    return float(px), float(py)
+
+def image_to_stage_from_calibration(calibration, px, py):
+    matrix = np.asarray(calibration["camera_to_stage_affine"], dtype=np.float64)
+    if matrix.shape != (3, 3):
+        raise ValueError(f"camera_to_stage_affine must be 3x3, got {matrix.shape}")
+    affine_px, affine_py = display_pixel_to_affine_pixel(calibration, px, py)
+    point = matrix @ np.asarray([affine_px, affine_py, 1.0], dtype=np.float64)
+    if abs(point[2]) < 1e-12:
+        raise ValueError(f"Invalid affine transform output for pixel ({affine_px}, {affine_py}): {point}")
+    return float(point[0] / point[2]), float(point[1] / point[2])
+
+def stage_to_image_from_calibration(calibration, stage_x, stage_y):
+    matrix = np.asarray(calibration["camera_to_stage_affine"], dtype=np.float64)
+    if matrix.shape != (3, 3):
+        raise ValueError(f"camera_to_stage_affine must be 3x3, got {matrix.shape}")
+    inv_matrix = np.linalg.inv(matrix)
+    point = inv_matrix @ np.asarray([float(stage_x), float(stage_y), 1.0], dtype=np.float64)
+    if abs(point[2]) < 1e-12:
+        raise ValueError(f"Invalid inverse affine output for stage ({stage_x}, {stage_y}): {point}")
+    affine_px = float(point[0] / point[2])
+    affine_py = float(point[1] / point[2])
+    return affine_pixel_to_display_pixel(calibration, affine_px, affine_py)
+
+def affine_fov_half_size_pixels(calibration, x_length_mm, y_length_mm):
+    matrix = np.asarray(calibration["camera_to_stage_affine"], dtype=np.float64)
+    inv_linear = np.linalg.inv(matrix[:2, :2])
+    x_half = float(x_length_mm) / 2.0
+    y_half = float(y_length_mm) / 2.0
+    corners = np.asarray(
+        [
+            [x_half, y_half],
+            [x_half, -y_half],
+            [-x_half, y_half],
+            [-x_half, -y_half],
         ],
-        "scale_x_mm_per_px": USB_PIXEL_SIZE_MM,
-        "scale_y_mm_per_px": USB_PIXEL_SIZE_MM,
-        "sign_x": 1.0,
-        "sign_y": -1.0,
-    }
+        dtype=np.float64,
+    )
+    pixel_offsets = corners @ inv_linear.T
+    if calibration.get("affine_pixel_space") == "raw_camera_fiji":
+        pixel_offsets = np.column_stack((-pixel_offsets[:, 1], -pixel_offsets[:, 0]))
+    return float(np.max(np.abs(pixel_offsets[:, 0]))), float(np.max(np.abs(pixel_offsets[:, 1])))
 
-def usb_mosaic_offset_for_region(calibration, row, col):
-    points = calibration.get("region_offset_points")
-    if not points:
-        raise ValueError(f"USB mosaic calibration missing region_offset_points: {calibration}")
+def sort_sample_entries_by_stage_columns(entries, y_tolerance_mm=SAMPLE_STAGE_COLUMN_Y_TOLERANCE_MM):
+    columns = []
+    for entry in sorted(entries, key=lambda item: (-float(item["center_y"]), -float(item["center_x"]))):
+        best_column = None
+        best_distance = None
+        for column in columns:
+            distance = abs(float(entry["center_y"]) - float(column["mean_y"]))
+            if distance <= float(y_tolerance_mm) and (
+                best_distance is None or distance < best_distance
+            ):
+                best_column = column
+                best_distance = distance
+        if best_column is None:
+            columns.append({"mean_y": float(entry["center_y"]), "entries": [entry]})
+        else:
+            best_column["entries"].append(entry)
+            best_column["mean_y"] = float(
+                np.mean([float(item["center_y"]) for item in best_column["entries"]])
+            )
 
-    point_lookup = {
-        (int(point["row"]), int(point["col"])): (
-            float(point["offset_x_mm"]),
-            float(point["offset_y_mm"]),
+    ordered_entries = []
+    for column in sorted(columns, key=lambda item: -float(item["mean_y"])):
+        ordered_entries.extend(
+            sorted(
+                column["entries"],
+                key=lambda item: (float(item["center_x"]), -float(item["center_y"])),
+            )
         )
-        for point in points
-    }
-    rows = sorted({key[0] for key in point_lookup})
-    cols = sorted({key[1] for key in point_lookup})
-    if len(rows) < 2 or len(cols) < 2:
-        raise ValueError(f"USB mosaic calibration needs at least four corner offset points: {calibration}")
+    return ordered_entries
 
-    r0, r1 = rows[0], rows[-1]
-    c0, c1 = cols[0], cols[-1]
-    required = [(r0, c0), (r0, c1), (r1, c0), (r1, c1)]
-    missing = [key for key in required if key not in point_lookup]
-    if missing:
-        raise ValueError(f"USB mosaic calibration missing corner offset points {missing}: {calibration}")
-
-    row = float(row)
-    col = float(col)
-    row_t = (row - float(r0)) / (float(r1) - float(r0))
-    col_t = (col - float(c0)) / (float(c1) - float(c0))
-
-    top_left = np.asarray(point_lookup[(r0, c0)], dtype=np.float64)
-    top_right = np.asarray(point_lookup[(r0, c1)], dtype=np.float64)
-    bottom_left = np.asarray(point_lookup[(r1, c0)], dtype=np.float64)
-    bottom_right = np.asarray(point_lookup[(r1, c1)], dtype=np.float64)
-
-    top = top_left * (1.0 - col_t) + top_right * col_t
-    bottom = bottom_left * (1.0 - col_t) + bottom_right * col_t
-    offset = top * (1.0 - row_t) + bottom * row_t
-    return float(offset[0]), float(offset[1])
-
-def usb_mosaic_offset_for_tile(calibration, tile):
-    row = int(tile["row"]) + 1
-    col = int(tile["col"]) + 1
-    return usb_mosaic_offset_for_region(calibration, row, col)
 
 def orient_usb_frame(frame):
-    """Apply the display orientation used by the sample locator."""
+    """Apply the horizontal flip used for Fiji calibration."""
     return cv2.flip(frame, 1)
 
 def open_usb_camera(configure_exposure=False):
@@ -119,7 +184,7 @@ def capture_usb_frame(configure_exposure=False):
         cap.release()
 
 def blank_usb_frame():
-    return np.full((USB_FRAME_HEIGHT, USB_FRAME_WIDTH, 3), 40, dtype=np.uint8)
+    return orient_usb_frame(np.full((USB_FRAME_HEIGHT, USB_FRAME_WIDTH, 3), 40, dtype=np.uint8))
 
 class _SampleLocatorDrawingBase(QDialog):
     def _prepare_pixmap(self):
@@ -204,6 +269,8 @@ class _SampleLocatorDrawingBase(QDialog):
     def valid_roi_rect(self):
         if not isinstance(self, MosaicUSBSampleScanner):
             return None
+        if self.current_tile().get("single_frame", False):
+            return None
         if self.img_bgr is None:
             return None
         h, w = self.img_bgr.shape[:2]
@@ -223,10 +290,7 @@ class _SampleLocatorDrawingBase(QDialog):
         return True
 
     def fov_half_size_pixels(self, loc):
-        loc_y_fov = loc.y_length_mm if loc.y_length_mm is not None else self.fov_h_mm
-        h_half = (self.fov_w_mm / 2) / USB_PIXEL_SIZE_MM
-        w_half = (loc_y_fov / 2) / USB_PIXEL_SIZE_MM
-        return w_half, h_half
+        raise NotImplementedError("Sample locator FOV pixel size requires an affine calibration.")
 
     def fov_locations_for_current_view(self):
         return self.generated_locations
@@ -323,7 +387,20 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
         if initial_calibration is not None:
             for key in self.calibration:
                 if key in initial_calibration:
-                    self.calibration[key] = float(initial_calibration[key])
+                    value = initial_calibration[key]
+                    if isinstance(value, list):
+                        self.calibration[key] = [
+                            dict(item) if isinstance(item, dict) else item
+                            for item in value
+                        ]
+                    elif isinstance(value, dict):
+                        self.calibration[key] = dict(value)
+                    elif isinstance(value, bool):
+                        self.calibration[key] = bool(value)
+                    elif isinstance(value, str):
+                        self.calibration[key] = value
+                    else:
+                        self.calibration[key] = float(value)
 
         self.ui = Ui_Form()
         self.ui.setupUi(self)
@@ -340,7 +417,8 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
         self.current_tile_index = 0
         self.tile_polygons = [[] for _ in self.tile_records]
         self.tile_current_polygons = [[] for _ in self.tile_records]
-        self._load_initial_roi_records(initial_roi_records)
+        self.initial_roi_sample_ids = {}
+        self.tile_loaded = False
         self.img_bgr = None
         self.qpixmap_raw = None
         self.polygons = []
@@ -357,6 +435,14 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
         self.last_mouse_pos = QPoint()
         self.pan_x = 0
         self.pan_y = 0
+
+        self._load_initial_roi_records(initial_roi_records)
+        if self._rebuild_mosaic_outputs():
+            print(
+                "USB locator restored previous selections: "
+                f"{len(self.final_tile_roi_records)} ROI(s), "
+                f"{len(self.generated_locations)} FOV(s)."
+            )
 
         self.ui.pic_window.setMouseTracking(True)
         self.ui.pic_window.installEventFilter(self)
@@ -382,10 +468,7 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
         self.ui.verticalLayout.addWidget(
             QW.QLabel(
                 "USB calibration from code: "
-                "region-dependent offset, "
-                f"X={self.calibration['scale_x_mm_per_px']:.6f} mm/px, "
-                f"Y={self.calibration['scale_y_mm_per_px']:.6f} mm/px, "
-                f"sign X={self.calibration['sign_x']:.0f}, sign Y={self.calibration['sign_y']:.0f}"
+                "Fiji horizontal-flip affine matrix"
             )
         )
 
@@ -402,14 +485,143 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
     def _load_initial_roi_records(self, initial_roi_records):
         if not initial_roi_records:
             return
+        loaded_count = 0
         for record in initial_roi_records:
             tile_index = int(record.get("tile_index", 0)) - 1
             if 0 <= tile_index < len(self.tile_polygons):
                 polygon = record.get("pixel_polygon", [])
                 if len(polygon) >= 3:
-                    self.tile_polygons[tile_index].append(
-                        [(float(x), float(y)) for x, y in polygon]
+                    polygon_pts = [(float(x), float(y)) for x, y in polygon]
+                    self.tile_polygons[tile_index].append(polygon_pts)
+                    self.initial_roi_sample_ids[
+                        self._polygon_key(tile_index, polygon_pts)
+                    ] = int(record["sample_id"])
+                    loaded_count += 1
+        print(f"USB locator loaded previous ROI records: {loaded_count}/{len(initial_roi_records)}")
+
+    def _polygon_key(self, tile_index, polygon):
+        rounded_polygon = tuple(
+            (round(float(px), 3), round(float(py), 3))
+            for px, py in polygon
+        )
+        return int(tile_index), rounded_polygon
+
+    def _completed_tile_polygons(self):
+        completed = []
+        for tile_index, polygons in enumerate(self.tile_polygons):
+            for poly in polygons:
+                if len(poly) >= 3:
+                    completed.append((tile_index, poly))
+        return completed
+
+    def _rebuild_mosaic_outputs(self):
+        all_polygons = self._completed_tile_polygons()
+        self.generated_locations = []
+        self.sample_centers = []
+        self.final_polygons = []
+        self.final_tile_roi_records = []
+        self.final_raw_img = None
+        if not all_polygons:
+            return False
+
+        active_tile_index = self.current_tile_index
+        sample_entries = []
+        for tile_index, poly_pts in all_polygons:
+            self.current_tile_index = tile_index
+            fiji_poly_pts = [
+                display_pixel_to_affine_pixel(self.calibration, p[0], p[1])
+                for p in poly_pts
+            ]
+            stage_poly_pts = [self.image_to_stage(p[0], p[1]) for p in poly_pts]
+            scan_plan = plan_mosaic_scan(
+                sample_id=0,
+                mm_polygons=[stage_poly_pts],
+                x_fov_mm=self.fov_w_mm,
+                y_step_um=self.y_step_um,
+                stage_bounds=self.stage_bounds,
+                occupancy=self.roi_occupancy,
+                overlap=self.fov_overlap,
+                max_y_fov_mm=self.max_y_fov_mm,
+                center_mode=self.center_mode,
+            )
+            sample_entries.append(
+                {
+                    "tile_index": tile_index,
+                    "poly_pts": poly_pts,
+                    "fiji_poly_pts": fiji_poly_pts,
+                    "stage_poly_pts": stage_poly_pts,
+                    "center_x": float(scan_plan.center_x),
+                    "center_y": float(scan_plan.center_y),
+                }
+            )
+
+        sample_entries = sort_sample_entries_by_stage_columns(sample_entries)
+        self.initial_roi_sample_ids = {}
+        tile_roi_records = []
+        for idx, entry in enumerate(sample_entries):
+            sample_id = self.sample_id_start + idx
+            tile_index = int(entry["tile_index"])
+            poly_pts = entry["poly_pts"]
+            fiji_poly_pts = entry["fiji_poly_pts"]
+            stage_poly_pts = entry["stage_poly_pts"]
+            polygon_key = self._polygon_key(tile_index, poly_pts)
+            self.initial_roi_sample_ids[polygon_key] = sample_id
+
+            self.current_tile_index = tile_index
+            scan_plan = plan_mosaic_scan(
+                sample_id=sample_id,
+                mm_polygons=[stage_poly_pts],
+                x_fov_mm=self.fov_w_mm,
+                y_step_um=self.y_step_um,
+                stage_bounds=self.stage_bounds,
+                occupancy=self.roi_occupancy,
+                overlap=self.fov_overlap,
+                max_y_fov_mm=self.max_y_fov_mm,
+                center_mode=self.center_mode,
+            )
+            self.sample_centers.append(
+                SampleCenter(
+                    sample_id=sample_id,
+                    x=scan_plan.center_x,
+                    y=scan_plan.center_y,
+                    z=self.current_zpos,
+                )
+            )
+            for loc in scan_plan.fov_locations:
+                self.generated_locations.append(
+                    FOVLocation(
+                        sample_id=sample_id,
+                        x=loc.x,
+                        y=loc.y,
+                        z=self.current_zpos,
+                        y_length_mm=scan_plan.y_length_mm,
                     )
+                )
+            self.final_polygons.append(list(poly_pts))
+            tile = self.tile_records[tile_index]
+            tile_roi_records.append(
+                {
+                    "sample_id": sample_id,
+                    "tile_index": tile_index + 1,
+                    "tile_stage_x": float(tile["stage_x"]),
+                    "tile_stage_y": float(tile["stage_y"]),
+                    "tile_stage_z": float(tile["stage_z"]),
+                    "pixel_polygon": [[float(x), float(y)] for x, y in poly_pts],
+                    "fiji_pixel_polygon": [[float(x), float(y)] for x, y in fiji_poly_pts],
+                    "stage_polygon": [[float(x), float(y)] for x, y in stage_poly_pts],
+                    "center_x": float(scan_plan.center_x),
+                    "center_y": float(scan_plan.center_y),
+                }
+            )
+
+        self.current_tile_index = active_tile_index
+        self.final_tile_roi_records = tile_roi_records
+        print(
+            "Sample IDs sorted by motor stage columns: "
+            f"Y tolerance={SAMPLE_STAGE_COLUMN_Y_TOLERANCE_MM:.1f} mm, "
+            "columns high-to-low Y, samples low-to-high X within each column."
+        )
+        return True
 
     def current_tile(self):
         return self.tile_records[self.current_tile_index]
@@ -419,12 +631,14 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
         self.tile_current_polygons[self.current_tile_index] = list(self.current_polygon)
 
     def load_tile(self, index):
-        self._save_current_tile_state() if hasattr(self, "polygons") else None
+        if self.tile_loaded:
+            self._save_current_tile_state()
         self.current_tile_index = max(0, min(int(index), len(self.tile_records) - 1))
         tile = self.current_tile()
         self.img_bgr = tile["image"]
         self.polygons = [list(poly) for poly in self.tile_polygons[self.current_tile_index]]
         self.current_polygon = list(self.tile_current_polygons[self.current_tile_index])
+        self.tile_loaded = True
         self._prepare_pixmap()
         self.reset_view()
         self.tile_label.setText(
@@ -441,56 +655,23 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
             self.load_tile(self.current_tile_index + 1)
 
     def image_to_stage(self, px, py):
-        tile = self.current_tile()
-        image = tile.get("image", None)
-        if image is None:
-            return 0.0, 0.0
-        h, w = image.shape[:2]
-        dx_px = float(py) - h / 2.0
-        dy_px = float(px) - w / 2.0
-        offset_x_mm, offset_y_mm = usb_mosaic_offset_for_tile(self.calibration, tile)
-        stage_x = (
-            float(tile["stage_x"])
-            + offset_x_mm
-            + self.calibration["sign_x"] * dx_px * self.calibration["scale_x_mm_per_px"]
-        )
-        stage_y = (
-            float(tile["stage_y"])
-            + offset_y_mm
-            + self.calibration["sign_y"] * dy_px * self.calibration["scale_y_mm_per_px"]
-        )
-        return stage_x, stage_y
+        if not calibration_uses_affine(self.calibration):
+            raise ValueError(f"USB locator requires affine calibration: {self.calibration}")
+        return image_to_stage_from_calibration(self.calibration, px, py)
 
     def stage_to_image_for_tile(self, stage_x, stage_y, tile):
-        image = tile.get("image", None)
-        if image is None:
-            return 0.0, 0.0
-        h, w = image.shape[:2]
-        offset_x_mm, offset_y_mm = usb_mosaic_offset_for_tile(self.calibration, tile)
-        py = (
-            (float(stage_x) - float(tile["stage_x"]) - offset_x_mm)
-            / (self.calibration["sign_x"] * self.calibration["scale_x_mm_per_px"])
-            + h / 2.0
-        )
-        px = (
-            (float(stage_y) - float(tile["stage_y"]) - offset_y_mm)
-            / (self.calibration["sign_y"] * self.calibration["scale_y_mm_per_px"])
-            + w / 2.0
-        )
-        return px, py
+        if not calibration_uses_affine(self.calibration):
+            raise ValueError(f"USB locator requires affine calibration: {self.calibration}")
+        return stage_to_image_from_calibration(self.calibration, stage_x, stage_y)
 
     def stage_to_image(self, stage_x, stage_y):
         return self.stage_to_image_for_tile(stage_x, stage_y, self.current_tile())
 
     def fov_half_size_pixels(self, loc):
         loc_y_fov = loc.y_length_mm if loc.y_length_mm is not None else self.fov_h_mm
-        x_scale = abs(float(self.calibration["scale_x_mm_per_px"]))
-        y_scale = abs(float(self.calibration["scale_y_mm_per_px"]))
-        if x_scale <= 0.0 or y_scale <= 0.0:
-            raise ValueError(f"Invalid USB mosaic calibration scale: {self.calibration}")
-        h_half = (self.fov_w_mm / 2.0) / x_scale
-        w_half = (loc_y_fov / 2.0) / y_scale
-        return w_half, h_half
+        if not calibration_uses_affine(self.calibration):
+            raise ValueError(f"USB locator requires affine calibration: {self.calibration}")
+        return affine_fov_half_size_pixels(self.calibration, self.fov_w_mm, loc_y_fov)
 
     def fov_locations_for_current_view(self):
         current_tile_number = self.current_tile_index + 1
@@ -531,14 +712,27 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
             self.accept()
             return
 
+        if len(self.current_polygon) >= 3:
+            if not self.polygon_inside_valid_region(self.current_polygon):
+                QMessageBox.warning(
+                    self,
+                    "ROI outside center region",
+                    "This ROI has points outside the blue 1500x1500 center region. "
+                    "Please redraw it inside the guide rectangle.",
+                )
+                return
+            self.polygons.append(list(self.current_polygon))
+            self.current_polygon = []
+        elif len(self.current_polygon) > 0:
+            QMessageBox.warning(
+                self,
+                "Incomplete ROI",
+                "The current ROI has fewer than 3 points. Finish or clear it before finishing this region.",
+            )
+            return
+
         self._save_current_tile_state()
-        all_polygons = []
-        tile_roi_records = []
-        for tile_index, polygons in enumerate(self.tile_polygons):
-            for poly in polygons:
-                if len(poly) >= 3:
-                    all_polygons.append((tile_index, poly))
-        if not all_polygons:
+        if not self._completed_tile_polygons():
             if not self.allow_empty:
                 QMessageBox.warning(self, "Error", "No regions drawn.")
                 return
@@ -550,70 +744,58 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
             self.accept()
             return
 
-        self.generated_locations = []
-        self.sample_centers = []
-        self.final_polygons = []
-        self.final_raw_img = None
-
-        active_tile_index = self.current_tile_index
-        for idx, (tile_index, poly_pts) in enumerate(all_polygons):
-            sample_id = self.sample_id_start + idx
-            self.current_tile_index = tile_index
-            stage_poly_pts = [self.image_to_stage(p[0], p[1]) for p in poly_pts]
-            scan_plan = plan_mosaic_scan(
-                sample_id=sample_id,
-                mm_polygons=[stage_poly_pts],
-                x_fov_mm=self.fov_w_mm,
-                y_step_um=self.y_step_um,
-                stage_bounds=self.stage_bounds,
-                occupancy=self.roi_occupancy,
-                overlap=self.fov_overlap,
-                max_y_fov_mm=self.max_y_fov_mm,
-                center_mode=self.center_mode,
-            )
-            self.sample_centers.append(
-                SampleCenter(
-                    sample_id=sample_id,
-                    x=scan_plan.center_x,
-                    y=scan_plan.center_y,
-                    z=self.current_zpos,
-                )
-            )
-            for loc in scan_plan.fov_locations:
-                self.generated_locations.append(
-                    FOVLocation(
-                        sample_id=sample_id,
-                        x=loc.x,
-                        y=loc.y,
-                        z=self.current_zpos,
-                        y_length_mm=scan_plan.y_length_mm,
-                    )
-                )
-            self.final_polygons.append(list(poly_pts))
-            tile = self.tile_records[tile_index]
-            tile_roi_records.append(
-                {
-                    "sample_id": sample_id,
-                    "tile_index": tile_index + 1,
-                    "tile_stage_x": float(tile["stage_x"]),
-                    "tile_stage_y": float(tile["stage_y"]),
-                    "tile_stage_z": float(tile["stage_z"]),
-                    "pixel_polygon": [[float(x), float(y)] for x, y in poly_pts],
-                    "stage_polygon": [[float(x), float(y)] for x, y in stage_poly_pts],
-                    "center_x": float(scan_plan.center_x),
-                    "center_y": float(scan_plan.center_y),
-                }
-            )
-
-        self.current_tile_index = active_tile_index
-        self.final_tile_roi_records = tile_roi_records
+        self._rebuild_mosaic_outputs()
         self.is_finalized = True
         self.preview_ready = True
+        current_tile_number = self.current_tile_index + 1
+        current_region_records = [
+            record
+            for record in self.final_tile_roi_records
+            if int(record["tile_index"]) == current_tile_number
+        ]
+        tile = self.current_tile()
+        print(
+            "USB locator region finished: "
+            f"region={current_tile_number}/{len(self.tile_records)}, "
+            f"row={int(tile['row']) + 1}, col={int(tile['col']) + 1}, "
+            f"stage X={float(tile['stage_x']):.4f}, Y={float(tile['stage_y']):.4f}, "
+            "calibration=Fiji horizontal-flip affine matrix"
+        )
+        if not current_region_records:
+            print("USB locator region finished with no sample centers.")
+        else:
+            print("USB locator sample centers from this region:")
+            for record in current_region_records:
+                print(
+                    f"sampleID-{int(record['sample_id'])}: "
+                    f"X={float(record['center_x']):.4f}, "
+                    f"Y={float(record['center_y']):.4f}, "
+                    f"Z={float(self.current_zpos):.4f}"
+                )
+                print("  ROI coordinate mapping: GUI display px == Fiji horizontal-flip px -> stage mm")
+                display_polygon = record.get("pixel_polygon", [])
+                fiji_polygon = record.get("fiji_pixel_polygon", [])
+                stage_polygon = record.get("stage_polygon", [])
+                for idx, (display_pt, fiji_pt, stage_pt) in enumerate(
+                    zip(display_polygon, fiji_polygon, stage_polygon),
+                    start=1,
+                ):
+                    print(
+                        "    "
+                        f"P{idx}: "
+                        f"GUI=({float(display_pt[0]):.2f}, {float(display_pt[1]):.2f}) "
+                        f"Fiji=({float(fiji_pt[0]):.2f}, {float(fiji_pt[1]):.2f}) "
+                        f"Stage=({float(stage_pt[0]):.4f}, {float(stage_pt[1]):.4f})"
+                    )
         self.update_display()
-        self.ui.finishplate.setText("continue to next region")
+        if tile.get("single_frame", False):
+            self.ui.finishplate.setText("finish sample locator")
+        else:
+            self.ui.finishplate.setText("continue to next region")
+        next_step = "finish" if tile.get("single_frame", False) else "continue"
         self.tile_label.setText(
             self.tile_label.text()
-            + f"\nGenerated {len(self.generated_locations)} FOVs. Review the yellow boxes, then click continue."
+            + f"\nGenerated {len(self.generated_locations)} FOVs. Review the yellow boxes, then click {next_step}."
         )
 
     def _save_locator_records(self):
@@ -630,6 +812,7 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
                     "stage_y": float(tile["stage_y"]),
                     "stage_z": float(tile["stage_z"]),
                     "image_path": tile.get("image_path", ""),
+                    "single_frame": bool(tile.get("single_frame", False)),
                 }
                 for idx, tile in enumerate(self.tile_records)
             ],
