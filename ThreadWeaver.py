@@ -40,7 +40,10 @@ from Display_rendering import (
     render_mosaic_correction_overlay,
 )
 from DynamicPostprocessing import (
+    process_idle_dynamic_until_deadline,
+    process_next_idle_dynamic_folder,
     update_timer_readout,
+    write_stitched_idle_outputs,
 )
 from CameraUi import effective_camera_sample_count, camera_pixel_format
 from HardwareSpecs import get_objective_spec
@@ -1110,7 +1113,13 @@ class WeaverThread(QThread):
                 break
 
             if self._timed_plate_deadline is not None:
-                if not self.wait_for_processing_barrier(label="timed plate scan interval"):
+                if not self.wait_for_processing_barrier(label="offline dynamic processing"):
+                    break
+                final_message = self.process_idle_dynamic_until_deadline(
+                    self._timed_plate_deadline,
+                    final_message,
+                )
+                if not self.ui.RunButton.isChecked():
                     break
 
                 while self.ui.RunButton.isChecked() and time.time() < self._timed_plate_deadline:
@@ -1240,6 +1249,15 @@ class WeaverThread(QThread):
 
     def update_timer_readout(self, deadline):
         return update_timer_readout(self.ui, deadline)
+
+    def process_idle_dynamic_until_deadline(self, deadline, current_message):
+        return process_idle_dynamic_until_deadline(self, deadline, current_message)
+
+    def process_next_idle_dynamic_folder(self, deadline):
+        return process_next_idle_dynamic_folder(self, deadline)
+
+    def write_stitched_idle_outputs(self, sample_id, folder_path, tile_count):
+        return write_stitched_idle_outputs(self, sample_id, folder_path, tile_count)
 
     def set_time_reader_value(self, value):
         value = int(value)

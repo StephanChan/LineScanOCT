@@ -6,7 +6,7 @@ import numpy as np
 import tifffile as TIFF
 
 
-OFFLINE_DYNAMIC_PROCESSING_ENABLED = False
+OFFLINE_DYNAMIC_PROCESSING_ENABLED = True
 
 
 TILE_BLINE_RE = re.compile(

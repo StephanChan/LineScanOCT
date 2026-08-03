@@ -44,7 +44,7 @@ SAVE_SAMPLE_TIME_MODES = (
     AcqTypes.WELL_SCAN,
     AcqTypes.TIMED_PLATE_SCAN,
 )
-STITCH_MOSAIC_VOLUMES_IN_MEMORY = False
+STITCH_MOSAIC_VOLUMES_IN_MEMORY = True
 STITCH_MOSAIC_DYNAMIC_UI = False
 
 MOSAIC_DISPLAY_MODES = (
@@ -542,10 +542,18 @@ class DnSThread(QThread):
                 {
                     "mode": acq_mode,
                     "mosaic": np.array(self.SampleMosaic, copy=True),
-                    "mosaic_volume": None,
+                    "mosaic_volume": (
+                        np.array(self.SampleMosaicVolume, copy=False)
+                        if hasattr(self, "SampleMosaicVolume") and np.size(self.SampleMosaicVolume) > 0
+                        else None
+                    ),
                     "mosaic_rgb": mosaic_rgb,
                     "mosaic_hsv": mosaic_hsv,
-                    "mosaic_hsv_volume": None,
+                    "mosaic_hsv_volume": (
+                        np.array(self.SampleMosaicHSVVolume, copy=False)
+                        if hasattr(self, "SampleMosaicHSVVolume") and np.size(self.SampleMosaicHSVVolume) > 0
+                        else None
+                    ),
                     "mosaic_freq": mosaic_freq,
                     "mosaic_bandwidth": mosaic_bandwidth,
                     "mosaic_value": mosaic_value,
