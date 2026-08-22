@@ -308,7 +308,7 @@ class GPUThread(QThread):
             
             finally:
                 self.active_tasks = max(0, self.active_tasks - 1)
-            if time.time()-t1>1:
+            if time.time()-t1>0.01:
                 print('GPU thread took ', round(time.time()-t1,2), ' seconds for action: ', self.item.action)
             self.item = self.queue.get()
             # print('GPU queue size:', self.queue.qsize())

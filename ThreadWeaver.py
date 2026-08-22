@@ -770,7 +770,7 @@ class WeaverThread(QThread):
                     print(message)
                     camera_error_message = message
                     break
-                # print('time to fetch data: '+str(round(time.time()-start,3)))
+                print('time to fetch data: '+str(round(time.time()-start,3)))
                 memory_slot = an_action.memory_slot
                 # print(memory_slot)
                 data_backs += 1
