@@ -14,6 +14,7 @@ import time
 import traceback
 from ActionTypes import DnSActions, EXIT_ACTION, GPUActions
 from CameraUi import effective_camera_sample_count
+from HardwareSpecs import get_camera_spec
 from scipy.ndimage import zoom, uniform_filter
 
 # =============================================================================
@@ -87,6 +88,16 @@ DYNAMIC_SATURATION_BANDWIDTH_RANGE_HZ = (0.0, 8)
 DYNAMIC_VALUE_DYNAMIC_RANGE = (0.0, 1000.0)
 DYNAMIC_VALUE_GAMMA = 1.0
 
+# Off-axis holography X-sideband filtering ------------------------------------
+# DC-centered X notch (band-stop) filter applied in the lateral spatial-frequency
+# domain before the depth FFT. Internal reflections are plane-wave-like (kx ~= 0),
+# so this filter removes their depth-axis ghost artifacts at every depth at once.
+# Toggled live from the UI (HoloXFilterCheckBox); half-width is a fraction of the
+# X Nyquist frequency (HoloBandwidth).
+HOLO_X_FILTER_ENABLED = True
+HOLO_CENTER_BAND_HALF_WIDTH_FRACTION = 0.25
+HOLO_PRINT_FILTER_INFO = True
+
 # Static/background normalization --------------------------------------------
 # Shared small denominator protection for background X normalization and dynamic
 # normalization. Usually leave this tiny; increase only if weak-signal pixels
@@ -130,6 +141,12 @@ class GPUThread(QThread):
         self.gpu_profile_timing_print_chunks = GPU_PROFILE_TIMING_PRINT_CHUNKS
         self.background_x_normalization_eps = NORMALIZATION_EPS
         self.background_x_normalization_root_order = BACKGROUND_X_NORMALIZATION_ROOT_ORDER
+        self.holo_x_filter_enabled = HOLO_X_FILTER_ENABLED
+        self.holo_center_band_half_width_fraction = HOLO_CENTER_BAND_HALF_WIDTH_FRACTION
+        self.holo_print_filter_info = HOLO_PRINT_FILTER_INFO
+        self.holo_filter_info_printed = False
+        self.holo_filter_cache = {}
+        self.holo_filter_cpu_cache = {}
         self.dynamic_normalization_eps = NORMALIZATION_EPS
         self.dynamic_temporal_lowpass_enabled = DYNAMIC_TEMPORAL_LOWPASS_ENABLED
         self.dynamic_uniform_filter_size = DYNAMIC_TEMPORAL_LOWPASS_WINDOW_SIZE
@@ -360,6 +377,106 @@ class GPUThread(QThread):
             return self.ui.FFTresults.currentText()
         return "AMP"
 
+    def current_holo_x_filter_enabled(self):
+        widget = getattr(self.ui, "HoloXFilterCheckBox", None)
+        if widget is not None and hasattr(widget, "isChecked"):
+            try:
+                return bool(widget.isChecked())
+            except Exception:
+                pass
+        return bool(self.holo_x_filter_enabled)
+
+    def current_camera_pixel_size_m(self):
+        camera = get_camera_spec(self.ui.Camera.currentText())
+        if camera is None:
+            return 9.0e-6
+        return float(camera.pixel_size_um) * 1e-6
+
+    def current_holo_center_band_half_width_fraction(self):
+        widget = getattr(self.ui, "HoloBandwidth", None)
+        if widget is not None and hasattr(widget, "value"):
+            try:
+                value = float(widget.value())
+                if np.isfinite(value):
+                    return max(0.0, min(value, 1.0))
+            except Exception:
+                pass
+        return float(self.holo_center_band_half_width_fraction)
+
+    def holo_filter_weights_gpu(self, x_pixels):
+        x_pixels = int(x_pixels)
+        pixel_size_m = self.current_camera_pixel_size_m()
+        fraction = self.current_holo_center_band_half_width_fraction()
+        cache_key = (x_pixels, float(pixel_size_m), fraction)
+        cached = self.holo_filter_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        # Native FFT order eliminates fftshift/ifftshift around the X filter.
+        kx_axis = cupy.fft.fftfreq(x_pixels, d=pixel_size_m).astype(cupy.float32)
+        kx_axis *= cupy.float32(2.0 * np.pi)
+        kx_nyquist = np.pi / pixel_size_m
+        cutoff = fraction * kx_nyquist
+        # Sharp (rectangular) DC-centered notch: 0 inside |kx| <= cutoff
+        # (suppressed band), 1 outside (pass). No taper.
+        weights = (cupy.abs(kx_axis) > cutoff).astype(cupy.float32)
+        if self.holo_print_filter_info and not self.holo_filter_info_printed:
+            self.holo_filter_info_printed = True
+            print(
+                "Centered X notch (band-stop) filter: "
+                f"enabled={self.current_holo_x_filter_enabled()}, "
+                f"notch_half_width/Nyquist={fraction:.3f}, "
+                f"pixel={pixel_size_m * 1e6:.2f} um"
+            )
+        self.holo_filter_cache = {cache_key: weights}
+        return weights
+
+    def holo_filter_weights_cpu(self, x_pixels):
+        x_pixels = int(x_pixels)
+        pixel_size_m = self.current_camera_pixel_size_m()
+        fraction = self.current_holo_center_band_half_width_fraction()
+        cache_key = (x_pixels, float(pixel_size_m), fraction)
+        cached = self.holo_filter_cpu_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        # Native FFT order eliminates fftshift/ifftshift around the X filter.
+        kx_axis = np.fft.fftfreq(x_pixels, d=pixel_size_m).astype(np.float32)
+        kx_axis *= np.float32(2.0 * np.pi)
+        kx_nyquist = np.pi / pixel_size_m
+        cutoff = fraction * kx_nyquist
+        # Sharp (rectangular) DC-centered notch: 0 inside |kx| <= cutoff
+        # (suppressed band), 1 outside (pass). No taper.
+        weights = (np.abs(kx_axis) > cutoff).astype(np.float32)
+        if self.holo_print_filter_info and not self.holo_filter_info_printed:
+            self.holo_filter_info_printed = True
+            print(
+                "Centered X notch (band-stop) filter: "
+                f"enabled={self.current_holo_x_filter_enabled()}, "
+                f"notch_half_width/Nyquist={fraction:.3f}, "
+                f"pixel={pixel_size_m * 1e6:.2f} um"
+            )
+        self.holo_filter_cpu_cache = {cache_key: weights}
+        return weights
+
+    def apply_holo_x_filter_gpu(self, spectral_gpu, frames, x_pixels, samples):
+        field_gpu = spectral_gpu.reshape(int(frames), int(x_pixels), int(samples)).astype(
+            cupy.complex64, copy=False
+        )
+        weights_gpu = self.holo_filter_weights_gpu(x_pixels)
+        filtered_kx_gpu = cupy.fft.fft(field_gpu, axis=1)
+        filtered_kx_gpu *= weights_gpu[cupy.newaxis, :, cupy.newaxis]
+        field_gpu = cupy.fft.ifft(filtered_kx_gpu, axis=1)
+        return field_gpu.reshape(int(frames) * int(x_pixels), int(samples))
+
+    def apply_holo_x_filter_cpu(self, spectral, frames, x_pixels, samples):
+        field = spectral.reshape(int(frames), int(x_pixels), int(samples)).astype(
+            np.complex64, copy=False
+        )
+        weights = self.holo_filter_weights_cpu(x_pixels)
+        filtered_kx = np.fft.fft(field, axis=1)
+        filtered_kx *= weights[np.newaxis, :, np.newaxis]
+        field = np.fft.ifft(filtered_kx, axis=1)
+        return field.reshape(int(frames) * int(x_pixels), int(samples))
+
     def select_fft_depth_result(self, fft_data, pixel_start, pixel_range, xp):
         depth_data = fft_data[:, pixel_start:pixel_start + pixel_range]
         if self.current_fft_result_mode() == "AMP+PHASE":
@@ -470,6 +587,7 @@ class GPUThread(QThread):
             "spectral_highpass",
             "reshape_alines",
             "interpolation",
+            "off_axis_x_filter",
             "fft",
             "select_depth_result",
             "reshape_depth",
@@ -653,6 +771,11 @@ class GPUThread(QThread):
 
         if self.interp:
             self.data_CPU = self.interpolate_cpu(self.data_CPU)
+        if self.current_holo_x_filter_enabled():
+            self.data_CPU = self.apply_holo_x_filter_cpu(
+                self.data_CPU, processed_shape[0], processed_shape[1], samples
+            )
+        if self.interp:
             self.data_CPU = np.fft.fft(self.data_CPU * self.dispersion, axis=1) / samples
         else:
             self.data_CPU = np.fft.fft(self.data_CPU, axis=1) / samples
@@ -1156,6 +1279,12 @@ class GPUThread(QThread):
         self.gpu_timing_end(timing, "interpolation", step_start, stream)
         keep_alive.append(yp_gpu)
 
+        if self.current_holo_x_filter_enabled():
+            step_start = self.gpu_timing_start(stream)
+            yp_gpu = self.apply_holo_x_filter_gpu(yp_gpu, output_frames, chunk_shape[1], samples)
+            self.gpu_timing_end(timing, "off_axis_x_filter", step_start, stream)
+            keep_alive.append(yp_gpu)
+
         step_start = self.gpu_timing_start(stream)
         if self.interp:
             data_gpu = cupy.fft.fft(yp_gpu * self.dispersion_gpu, axis=1) / samples
@@ -1315,6 +1444,8 @@ class GPUThread(QThread):
         pinned_pool = getattr(cupy, "get_default_pinned_memory_pool", None)
         if pinned_pool is not None:
             pinned_pool().free_all_blocks()
+        self.holo_filter_cache = {}
+        self.holo_filter_cpu_cache = {}
 
     def load_interpolation_indices(self, filename, samples):
         raw = np.fromfile(filename, dtype=np.uint16)
