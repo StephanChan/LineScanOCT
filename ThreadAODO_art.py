@@ -300,12 +300,18 @@ class AODOThread(QThread):
 
     def ConfigTask(self):
         # Generate waveform
-        self.DOwaveform,self.AOwaveform,status = GenAODO(mode=self.ui.ACQMode.currentText(), \
+        # Use the effective acquisition mode passed by the Weaver (e.g.
+        # "FastVolumeCscan" for plate-scan FOVs routed through FastVolume) and
+        # fall back to the ACQMode combo for legacy callers.
+        mode = getattr(self.item, 'acq_mode', None) or self.ui.ACQMode.currentText()
+        self.DOwaveform,self.AOwaveform,status = GenAODO(mode=mode, \
                                                  obj = self.ui.Objective.currentText(),\
                                                  postclocks = self.ui.FlyBack.value(), \
                                                  YStepSize = self.ui.YStepSize.value(), \
                                                  YSteps =  self.ui.Ypixels.value(), \
                                                  BVG = self.ui.BlineAVG.value(),\
+                                                 MicroSteps = self.ui.MicroSteps.value(),\
+                                                 MicroFlyBack = self.ui.MicroFlyBack.value(),\
                                                  Galvo_bias = self.ui.GalvoBias.value())
         self.DOwaveform = self.DOwaveform * digital_line_mask(self.ui.SyncDO.currentText())
         if not self.ui.DynCheckBox.isChecked():
@@ -330,14 +336,14 @@ class AODOThread(QThread):
                                                   min_val=AODO_AO_VOLTAGE_MIN, max_val=AODO_AO_VOLTAGE_MAX, \
                                                   units=ni.constants.VoltageUnits.VOLTS)
             # depending on whether continuous or finite, config clock and mode
-            if self.ui.ACQMode.currentText() in ['ContinuousAline', 'ContinuousBline','ContinuousCscan']:
-                mode =  Atype.CONTINUOUS
+            if mode in ['ContinuousAline', 'ContinuousBline','ContinuousCscan']:
+                mode_acq =  Atype.CONTINUOUS
             else:
-                mode =  Atype.FINITE
+                mode_acq =  Atype.FINITE
             self.AOtask.timing.cfg_samp_clk_timing(rate=frameRate, \
                                                    # source=self.ClockTerm, \
                                                    # active_edge= Edge.RISING,\
-                                                   sample_mode=mode,samps_per_chan=len(self.AOwaveform))
+                                                   sample_mode=mode_acq,samps_per_chan=len(self.AOwaveform))
             # # Config start mode
             # self.AOtask.triggers.start_trigger.cfg_dig_edge_start_trig(self.AODOTrig)
             self.AOtask.export_signals.export_signal(signal_id = Signal.START_TRIGGER, output_terminal = self.Trigger_out)
@@ -352,7 +358,7 @@ class AODOThread(QThread):
             self.DOtask.timing.cfg_samp_clk_timing(rate=frameRate, \
                                                    # source=self.ClockTerm, \
                                                    # active_edge= Edge.RISING,\
-                                                   sample_mode=mode,samps_per_chan=len(self.DOwaveform))
+                                                   sample_mode=mode_acq,samps_per_chan=len(self.DOwaveform))
 
             # self.DOtask.triggers.start_trigger.cfg_dig_edge_start_trig(self.AODOTrig)
             self.DOtask.triggers.start_trigger.cfg_dig_edge_start_trig(self.Trigger_in)

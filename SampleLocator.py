@@ -359,7 +359,7 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
         current_zpos=0,
         y_step_um=10.0,
         stage_bounds=(0, 200, 0, 120),
-        max_y_fov_mm=5.0,
+        max_y_fov_mm=0.25,
         sample_id_start=1,
         allow_empty=False,
         initial_tile_index=0,

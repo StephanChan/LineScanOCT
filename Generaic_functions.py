@@ -159,7 +159,79 @@ def GenGalvoWave(StepSize = 1, Steps = 1000, AVG = 1, obj = '5X', postclocks = 5
     return waveform, status
 
 
-def GenAODO(mode='ContinuousBline',obj = '5X',postclocks = 50, YStepSize = 1, YSteps = 200, BVG = 1, Galvo_bias = 0):
+def GenFastVolumeWave(StepSize = 1, YSteps = 100, MicroSteps = 10, BlineAVG = 1, MicroFlyBack = 20, obj = '5X', postclocks = 50, Galvo_bias = 0):
+    """
+    FastVolumeCscan galvo waveform.
+
+    The Y range is split into micro-blocks of MicroSteps angles. Inside each
+    block the galvo makes BlineAVG fast micro-sweeps (short pixel time, one
+    camera frame per step) with a short linear micro fly-back between sweeps,
+    then steps down to the next block. A main fly-back (postclocks) returns the
+    galvo to the start once the whole C-scan is finished. A partial last block
+    is allowed when YSteps is not a multiple of MicroSteps.
+    """
+    objective = get_objective_spec(obj)
+    if objective is None:
+        status = 'objective not calibrated, abort generating FastVolumeCscan waveform'
+        return None, None, status
+    if YSteps < 1 or MicroSteps < 1 or BlineAVG < 1:
+        status = 'invalid FastVolumeCscan parameters (YSteps/MicroSteps/BlineAVG must be >= 1)'
+        return None, None, status
+
+    angle2mmratio = objective.angle_to_mm_ratio
+    Xrange = StepSize * YSteps / 1000
+    Vmax = (Xrange/2)/angle2mmratio/2 + Galvo_bias
+    Vmin = (-Xrange/2)/angle2mmratio/2 + Galvo_bias
+    if YSteps > 1:
+        delta = (Vmin - Vmax) / (YSteps - 1)
+    else:
+        delta = 0.0
+
+    fb_n = max(1, int(MicroFlyBack))
+    ao_parts = []
+    do_parts = []
+    y_cursor = 0
+    while y_cursor < YSteps:
+        steps = min(int(MicroSteps), YSteps - y_cursor)
+        start_v = Vmax + y_cursor * delta
+        end_v = start_v + (steps - 1) * delta
+        for _ in range(BlineAVG):
+            # micro-sweep over 'steps' angles, short pixel time (2 samples/step)
+            ao_parts.append(np.repeat(np.linspace(start_v, end_v, steps), 2))
+            do_parts.append(np.tile(np.array([1, 0], dtype = np.uint32), steps))
+            # micro fly-back: linear return to the block start (no triggers)
+            ao_parts.append(np.linspace(end_v, start_v, fb_n))
+            do_parts.append(np.zeros(fb_n, dtype = np.uint32))
+        y_cursor += steps
+        if y_cursor < YSteps:
+            # block transition: ramp down to the next block start (no triggers)
+            next_start = Vmax + y_cursor * delta
+            transition_n = max(2, 2 * steps)
+            ao_parts.append(np.linspace(start_v, next_start, transition_n))
+            do_parts.append(np.zeros(transition_n, dtype = np.uint32))
+
+    if not ao_parts:
+        status = 'invalid FastVolumeCscan parameters'
+        return None, None, status
+
+    ao_wave = np.concatenate(ao_parts).astype(np.float32)
+    do_wave = np.concatenate(do_parts).astype(np.uint32)
+
+    # prewave: hold at the starting angle to avoid a big galvo jump
+    ao_wave = np.concatenate([np.full(50, Vmax, dtype = np.float32), ao_wave])
+    do_wave = np.concatenate([np.zeros(50, dtype = np.uint32), do_wave])
+
+    # main fly-back: return from the final angle back to the start
+    steps2 = max(2, int(postclocks))
+    Postwave = (Vmin-Vmax)/2*np.cos(np.arange(0,np.pi,np.pi/steps2))+(Vmax+Vmin)/2
+    ao_wave = np.concatenate([ao_wave, Postwave.astype(np.float32)])
+    do_wave = np.concatenate([do_wave, np.zeros(steps2, dtype = np.uint32)])
+
+    status = 'waveform updated'
+    return ao_wave, do_wave, status
+
+
+def GenAODO(mode='ContinuousBline',obj = '5X',postclocks = 50, YStepSize = 1, YSteps = 200, BVG = 1, Galvo_bias = 0, MicroSteps = 10, MicroFlyBack = 20):
     # BVG: Bline average
     # bias: Galvo bias voltage
     # postclocks: #Aline triggers for Galvo fly-back
@@ -185,6 +257,15 @@ def GenAODO(mode='ContinuousBline',obj = '5X',postclocks = 50, YStepSize = 1, YS
         prewave = np.zeros(50, dtype = np.uint32)
         DOwaveform = np.append(np.append(prewave, DOwaveform), postDOwave)
         status = 'waveform updated'
+        return np.uint32(DOwaveform), AOwaveform, status
+
+    elif mode in ['FastVolumeCscan']:
+        # generate AO/DO waveform for the block-structured FastVolumeCscan
+        AOwaveform, DOwaveform, status = GenFastVolumeWave(
+            YStepSize, YSteps, MicroSteps, BVG, MicroFlyBack, obj, postclocks, Galvo_bias,
+        )
+        if AOwaveform is None:
+            return None, None, status
         return np.uint32(DOwaveform), AOwaveform, status
 
     else:

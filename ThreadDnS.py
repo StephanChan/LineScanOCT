@@ -22,7 +22,7 @@ import tifffile as TIFF
 import time
 from ActionTypes import AcqTypes, DnSActions, EXIT_ACTION
 from HardwareSpecs import TIFF_APPEND_WRITES_DEFAULT
-from DataShape import data_shape
+from DataShape import data_shape, fast_volume_regroup
 
 ALINE_MODES = (
     AcqTypes.FINITE_ALINE,
@@ -37,6 +37,7 @@ BLINE_MODES = (
 CSCAN_MODES = (
     AcqTypes.FINITE_CSCAN,
     AcqTypes.CONTINUOUS_CSCAN,
+    AcqTypes.FAST_VOLUME_CSCAN,
 )
 
 SAVE_SAMPLE_TIME_MODES = (
@@ -59,6 +60,27 @@ DYNAMIC_SATURATION_BANDWIDTH_RANGE_HZ = (0.0, 8.0)
 DYNAMIC_VALUE_DYNAMIC_RANGE = (0.0, 500.0)
 DYNAMIC_VALUE_GAMMA = 1.0
 DYNAMIC_HUE_HZ_PER_CONTRAST_UNIT = 15.0 / 1000.0
+
+
+def downsample_mosaic_volume(array, scale):
+    """Block-mean downsample in the first two axes (Y, X) only.
+
+    Trailing axes (Z depth, and channel dimension for HSV) are kept unchanged,
+    so the downsampled stitched volume still has the same depth planes. Used to
+    shrink the RAM held by the stitched mosaic volumes using the UI "downsample
+    scale" control (scale=1 is a no-op).
+    """
+    scale = max(1, int(scale))
+    if scale == 1 or array.ndim < 2:
+        return array
+    y, x = array.shape[:2]
+    y_c, x_c = y - y % scale, x - x % scale
+    if y_c == 0 or x_c == 0:
+        return array[::scale, ::scale]
+    view = array[:y_c, :x_c]
+    new_shape = (y_c // scale, scale, x_c // scale, scale) + tuple(array.shape[2:])
+    return view.reshape(new_shape).mean(axis=(1, 3))
+
 
 class DnSThread(QThread):
     def __init__(self):
@@ -94,6 +116,13 @@ class DnSThread(QThread):
         self.SampleMosaicFreq = []
         self.SampleMosaicBandwidth = []
         self.mosaic_y_pixels = None
+        # Stitched-volume X/Y downsample (from the UI "downsample scale" spinbox).
+        # The 2D AIP mosaic stays full-resolution; only the 3D stitched volumes
+        # (intensity / dynamic / HSV) are downsampled to save RAM.
+        self.mosaic_downsample = 1
+        self.fw_px_ds = 0
+        self.fh_px_ds = 0
+        self.mosaic_volume_shape = (0, 0)
 
     def reset_dynamic_accumulators(self):
         self.AIP = []
@@ -121,6 +150,7 @@ class DnSThread(QThread):
         self.SampleMosaicFreq = []
         self.SampleMosaicBandwidth = []
         self.mosaic_y_pixels = None
+        # Keep the stitched-volume downsample config from the last Init_Mosaic.
         
     def run(self):
         # self.Dynmax = self.ui.Dynmax.value()
@@ -152,6 +182,7 @@ class DnSThread(QThread):
                 elif self.item.action in (
                     AcqTypes.FINITE_CSCAN,
                     AcqTypes.CONTINUOUS_CSCAN,
+                    AcqTypes.FAST_VOLUME_CSCAN,
                 ):
                     self.display_actions += 1
                     if self.realtime_cscan_dynamic_enabled(self.current_acq_mode, self.item.dynamic):
@@ -234,6 +265,9 @@ class DnSThread(QThread):
 
     def current_bline_avg(self):
         return max(1, int(self.ui.BlineAVG.value()))
+
+    def current_micro_steps(self):
+        return max(1, int(self.ui.MicroSteps.value()))
 
     def realtime_mosaic_dynamic_enabled(self, acq_mode, dynamic):
         return (
@@ -582,13 +616,7 @@ class DnSThread(QThread):
             Ascan = np.mean(display_data,0)
         else:
             Ascan = display_data[0]
-        # Aline averaging if needed
-        aline_avg = self.current_aline_avg()
-        if aline_avg > 1:
-            Ascan = Ascan.reshape([Xpixels//aline_avg, aline_avg, Zpixels])
-            Ascan = np.mean(Ascan,1)
-            Xpixels = Xpixels//aline_avg
-            
+
         self.Aline = Ascan[Xpixels//2]
         if self.current_save_enabled():
             self.Save(data=data, raw=raw, acq_mode=acq_mode, gpu_avg_count=gpu_avg_count)
@@ -606,12 +634,6 @@ class DnSThread(QThread):
                 Bline = display_data[0]
         else:
             Bline = display_data[0]
-        # Aline averaging if needed
-        aline_avg = self.current_aline_avg()
-        if aline_avg > 1:
-            Bline = Bline.reshape([Xpixels//aline_avg, aline_avg, Zpixels])
-            Bline = np.mean(Bline,1)
-            Xpixels = Xpixels//aline_avg
         self.Bline = np.transpose(Bline)
         dyn_data = self.dynamic_std_data(dynamic)
         hsv_data = self.dynamic_hsv_data(dynamic)
@@ -656,12 +678,6 @@ class DnSThread(QThread):
             Bline=np.mean(display_data,0)
         else:
             Bline = display_data[0]
-        # Aline averaging if needed
-        aline_avg = self.current_aline_avg()
-        if aline_avg > 1:
-            Bline = Bline.reshape([Xpixels//aline_avg, aline_avg, Zpixels])
-            Bline = np.mean(Bline,1)
-            Xpixels = Xpixels//aline_avg
 
         self.Bline = np.transpose(Bline)
         
@@ -708,17 +724,18 @@ class DnSThread(QThread):
         # Raw data still needs repeat-frame grouping. Processed data should already be averaged in GPU.
         bline_avg = self.current_bline_avg()
         if raw and bline_avg > 1:
-            # reshape into Ypixels x Xpixels x Zpixels
-            Cscan = display_data.reshape([Ypixels, bline_avg, Xpixels,Zpixels])
-            Cscan=np.mean(Cscan,1)
+            if getattr(self.item, "fast_volume", False) and not getattr(self.item, "per_y_dynamic", False):
+                # FastVolumeCscan frames arrive in (block, repetition, step)
+                # order; regroup them into per-Y averages.
+                Cscan = fast_volume_regroup(
+                    display_data, Ypixels, self.current_micro_steps(), bline_avg
+                )
+            else:
+                # reshape into Ypixels x Xpixels x Zpixels
+                Cscan = display_data.reshape([Ypixels, bline_avg, Xpixels,Zpixels])
+                Cscan=np.mean(Cscan,1)
         else:
             Cscan = display_data.copy()
-        # Aline averaging if needed
-        aline_avg = self.current_aline_avg()
-        if aline_avg > 1:
-            Cscan = Cscan.reshape([Ypixels, Xpixels//aline_avg, aline_avg, Zpixels])
-            Cscan = np.mean(Cscan,2)
-            Xpixels = Xpixels//aline_avg
         # print(data[10,100,50:60])
         self.XYVolume = Cscan
         z_idx = self.current_z_depth_index(Zpixels)
@@ -764,18 +781,6 @@ class DnSThread(QThread):
             freq_slice = np.asarray(freq_slice, dtype=np.float32)
         if np.size(bandwidth_slice) > 0:
             bandwidth_slice = np.asarray(bandwidth_slice, dtype=np.float32)
-        aline_avg = self.current_aline_avg()
-        if aline_avg > 1:
-            bline = bline.reshape([xpixels // aline_avg, aline_avg, zpixels]).mean(axis=1)
-            dyn_slice = dyn_slice.reshape([xpixels // aline_avg, aline_avg, zpixels]).mean(axis=1)
-            if np.size(hsv_slice) > 0:
-                hsv_slice = hsv_slice.reshape([xpixels // aline_avg, aline_avg, zpixels, 3]).mean(axis=1)
-                rgb_slice = self.dynamic_hsv_to_rgb(hsv_slice)
-            if np.size(freq_slice) > 0:
-                freq_slice = freq_slice.reshape([xpixels // aline_avg, aline_avg, zpixels]).mean(axis=1)
-            if np.size(bandwidth_slice) > 0:
-                bandwidth_slice = bandwidth_slice.reshape([xpixels // aline_avg, aline_avg, zpixels]).mean(axis=1)
-            xpixels = xpixels // aline_avg
 
         if (
             not isinstance(self.MeanVolume, np.ndarray)
@@ -885,9 +890,63 @@ class DnSThread(QThread):
         self.fw_mm, self.fh_mm = fw_mm, fh_mm
         self.fw_px, self.fh_px = fw_px, fh_px
         self.mosaic_y_pixels = int(fh_px)
+
+        # Stitched 3D volumes are downsampled in X/Y only (Z unchanged) using the
+        # UI "downsample scale" spinbox, so large mosaics don't exhaust RAM.
+        # The 2D AIP mosaic above stays full-resolution (correction/overlay use it).
+        scale_control = getattr(self.ui, "scale", None)
+        self.mosaic_downsample = max(1, int(scale_control.value())) if scale_control is not None else 1
+        self.fw_px_ds = max(1, int(fw_px) // self.mosaic_downsample)
+        self.fh_px_ds = max(1, int(fh_px) // self.mosaic_downsample)
+        self.mosaic_volume_shape = (num_rows * self.fh_px_ds, num_cols * self.fw_px_ds)
+        # Expose the actual downsample used so mosaic-correction geometry and the
+        # display path stay consistent with the downsampled stitched volumes.
+        try:
+            self.ui.mosaic_display_downsample = self.mosaic_downsample
+        except Exception:
+            pass
+        if self.mosaic_downsample > 1:
+            print(
+                f"Mosaic stitched volumes downsampled by {self.mosaic_downsample} "
+                f"in X/Y (Z unchanged): volume size "
+                f"{num_rows*self.fh_px_ds}x{num_cols*self.fw_px_ds} px."
+            )
         
         print(f"Mosaic Initialized: {num_cols}x{num_rows} tiles ({mw_px}x{mh_px} px)")
         
+    def _paste_stitched_volume(self, storage_attr, source, col_idx, row_idx):
+        """Paste a per-FOV 3D volume into the stitched mosaic volume.
+
+        The source (e.g. XYVolume / DynamicVolume / DynamicHSVVolume) is
+        block-mean downsampled in X and Y only (Z depth and channel axes
+        unchanged) using the UI "downsample scale", and pasted into the
+        correspondingly downsampled stitched volume buffer.
+        """
+        if (
+            source is None
+            or not isinstance(source, np.ndarray)
+            or np.size(source) == 0
+            or self.mosaic_downsample < 1
+        ):
+            return
+        mh_v, mw_v = self.mosaic_volume_shape
+        if mh_v <= 0 or mw_v <= 0:
+            return
+        down = downsample_mosaic_volume(source, self.mosaic_downsample)
+        y1 = row_idx * self.fh_px_ds
+        x1 = col_idx * self.fw_px_ds
+        y2 = y1 + int(down.shape[0])
+        x2 = x1 + int(down.shape[1])
+        if y2 > mh_v or x2 > mw_v:
+            print(f"Warning: Volume tile at ({col_idx}, {row_idx}) is out of mosaic bounds.")
+            return
+        expected = (mh_v, mw_v) + tuple(down.shape[2:])
+        storage = getattr(self, storage_attr)
+        if not isinstance(storage, np.ndarray) or storage.shape != expected:
+            storage = np.zeros(expected, dtype=np.float32)
+            setattr(self, storage_attr, storage)
+        storage[y1:y2, x1:x2] = down
+
     def Focusing(self, cscan):
          print(cscan.shape)
 
@@ -945,10 +1004,7 @@ class DnSThread(QThread):
             # print(y1,y2,x1,x2, off_y, off_x, mh, mw)
             self.SampleMosaic[y1:y2, x1:x2] = self.AIP
             if STITCH_MOSAIC_VOLUMES_IN_MEMORY and hasattr(self, "XYVolume") and isinstance(self.XYVolume, np.ndarray) and np.size(self.XYVolume) > 0:
-                z_pixels = self.XYVolume.shape[2]
-                if not isinstance(self.SampleMosaicVolume, np.ndarray) or self.SampleMosaicVolume.shape != (mh, mw, z_pixels):
-                    self.SampleMosaicVolume = np.zeros((mh, mw, z_pixels), dtype=np.float32)
-                self.SampleMosaicVolume[y1:y2, x1:x2, :] = self.XYVolume
+                self._paste_stitched_volume("SampleMosaicVolume", self.XYVolume, col_idx, row_idx)
             if STITCH_MOSAIC_DYNAMIC_UI and (
                 hasattr(self, "DynRGB")
                 and isinstance(self.DynRGB, np.ndarray)
@@ -963,25 +1019,13 @@ class DnSThread(QThread):
                 and isinstance(self.DynamicVolume, np.ndarray)
                 and np.size(self.DynamicVolume) > 0
             ):
-                z_pixels = self.DynamicVolume.shape[2]
-                if (
-                    not isinstance(self.SampleMosaicDynamicVolume, np.ndarray)
-                    or self.SampleMosaicDynamicVolume.shape != (mh, mw, z_pixels)
-                ):
-                    self.SampleMosaicDynamicVolume = np.zeros((mh, mw, z_pixels), dtype=np.float32)
-                self.SampleMosaicDynamicVolume[y1:y2, x1:x2, :] = self.DynamicVolume
+                self._paste_stitched_volume("SampleMosaicDynamicVolume", self.DynamicVolume, col_idx, row_idx)
             if STITCH_MOSAIC_VOLUMES_IN_MEMORY and (
                 hasattr(self, "DynamicHSVVolume")
                 and isinstance(self.DynamicHSVVolume, np.ndarray)
                 and np.size(self.DynamicHSVVolume) > 0
             ):
-                z_pixels = self.DynamicHSVVolume.shape[2]
-                if (
-                    not isinstance(self.SampleMosaicHSVVolume, np.ndarray)
-                    or self.SampleMosaicHSVVolume.shape != (mh, mw, z_pixels, 3)
-                ):
-                    self.SampleMosaicHSVVolume = np.zeros((mh, mw, z_pixels, 3), dtype=np.float32)
-                self.SampleMosaicHSVVolume[y1:y2, x1:x2, :, :] = self.DynamicHSVVolume
+                self._paste_stitched_volume("SampleMosaicHSVVolume", self.DynamicHSVVolume, col_idx, row_idx)
             if STITCH_MOSAIC_DYNAMIC_UI and isinstance(self.SampleMosaicDyn, np.ndarray) and isinstance(self.Dyn, np.ndarray) and np.size(self.Dyn) > 0:
                 self.SampleMosaicDyn[y1:y2, x1:x2] = self.Dyn
             if STITCH_MOSAIC_DYNAMIC_UI and isinstance(self.SampleMosaicFreq, np.ndarray) and isinstance(self.DynFreq, np.ndarray) and np.size(self.DynFreq) > 0:
@@ -1023,18 +1067,6 @@ class DnSThread(QThread):
             FreqSlice = np.asarray(FreqSlice, dtype=np.float32)
         if np.size(BandwidthSlice) > 0:
             BandwidthSlice = np.asarray(BandwidthSlice, dtype=np.float32)
-        aline_avg = self.current_aline_avg()
-        if aline_avg > 1:
-            Bline = Bline.reshape([Xpixels // aline_avg, aline_avg, Zpixels]).mean(axis=1)
-            DynSlice = DynSlice.reshape([Xpixels // aline_avg, aline_avg, Zpixels]).mean(axis=1)
-            if np.size(HSVSlice) > 0:
-                HSVSlice = HSVSlice.reshape([Xpixels // aline_avg, aline_avg, Zpixels, 3]).mean(axis=1)
-                RGBSlice = self.dynamic_hsv_to_rgb(HSVSlice)
-            if np.size(FreqSlice) > 0:
-                FreqSlice = FreqSlice.reshape([Xpixels // aline_avg, aline_avg, Zpixels]).mean(axis=1)
-            if np.size(BandwidthSlice) > 0:
-                BandwidthSlice = BandwidthSlice.reshape([Xpixels // aline_avg, aline_avg, Zpixels]).mean(axis=1)
-            Xpixels = Xpixels // aline_avg
 
         if (
             not isinstance(self.MeanVolume, np.ndarray)

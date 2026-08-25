@@ -9,6 +9,32 @@ from PyQt5.QtGui import QPixmap, QImage, QColor, QPen, QPainter
 from PyQt5.QtCore import Qt, QPoint, QEvent, pyqtSignal, QRectF, QPointF
 import numpy as np
 
+
+def downsample_display_array(array, scale):
+    """Downsample a 2D (Y, X) or 3D (Y, X, 3) display array by an integer scale.
+
+    Only the spatial (Y, X) axes are downsampled (block-mean binning); any
+    third dimension (e.g. RGB channels) is kept unchanged. This is used for the
+    XY-plane display so that large mosaics stay renderable.
+    """
+    scale = max(1, int(scale))
+    if scale == 1:
+        return array
+    if array.ndim not in (2, 3):
+        return array
+    h, w = array.shape[:2]
+    h_crop, w_crop = h - h % scale, w - w % scale
+    if h_crop == 0 or w_crop == 0:
+        return array[::scale, ::scale]
+    if array.ndim == 2:
+        view = array[:h_crop, :w_crop]
+        out = view.reshape(h_crop // scale, scale, w_crop // scale, scale).mean(axis=(1, 3))
+    else:
+        view = array[:h_crop, :w_crop, :]
+        out = view.reshape(h_crop // scale, scale, w_crop // scale, scale, array.shape[2]).mean(axis=(1, 3))
+    return out.astype(array.dtype, copy=False)
+
+
 class InteractiveMosaicWidget(QWidget):
     # Signal to send new regions back to the Main GUI
     regions_updated = pyqtSignal(list) 
@@ -31,12 +57,18 @@ class InteractiveMosaicWidget(QWidget):
         self.debug_coordinates = False
         self.display_orientation = "usb_top_view"
         self.raw_shape = None
+        # XY-plane display downsample factor (applied to the displayed pixmap
+        # only; adj/raw_shape keep the full-resolution raw mosaic coordinates).
+        self.display_downsample = 1
 
-    def set_image(self, numpy_array, m, M, pixel_size_x=1.0, pixel_size_y=1.0):
+    def set_image(self, numpy_array, m, M, pixel_size_x=1.0, pixel_size_y=1.0, downsample=1):
         """
         Receives the stitched mosaic and the physical resolution.
         pixel_size_x: step size in mm or um for the horizontal axis
         pixel_size_y: step size in mm or um for the vertical axis
+        downsample: integer factor applied to the displayed pixmap in X and Y
+                    only (Z is unchanged). The raw mosaic (adj/raw_shape) is
+                    always kept at full resolution for coordinate mapping.
         """
         self.m_min, self.m_max = m, M
 
@@ -52,6 +84,13 @@ class InteractiveMosaicWidget(QWidget):
         # display = fliplr(raw.T). For future saved-data stitching, apply the same
         # raw/display conversion explicitly rather than changing the acquisition data.
         display_adj = self.raw_to_display_array(adj)
+
+        # 1b. Downsample the displayed pixmap (X and Y only) so large mosaics
+        # stay renderable. The raw mosaic (self.adj / self.raw_shape) is not
+        # touched, so correction/stitching coordinates remain unchanged.
+        self.display_downsample = max(1, int(downsample))
+        if self.display_downsample > 1:
+            display_adj = downsample_display_array(display_adj, self.display_downsample)
 
         # 2. Calculate aspect ratio for physical pixel stretching.
         # In USB top-view display, horizontal pixels are raw Y pixels and vertical
@@ -113,19 +152,27 @@ class InteractiveMosaicWidget(QWidget):
         return arr
 
     def raw_to_display_point(self, pt):
-        if self.display_orientation != "usb_top_view" or self.raw_shape is None:
+        if self.raw_shape is None:
             return pt
+        if self.display_orientation != "usb_top_view":
+            return (
+                float(pt[0]) / self.display_downsample,
+                float(pt[1]) / self.display_downsample,
+            )
         raw_h, _ = self.raw_shape
         raw_x, raw_y = pt
-        display_x = (raw_h - 1) - raw_y
-        display_y = raw_x
+        display_x = ((raw_h - 1) - raw_y) / self.display_downsample
+        display_y = raw_x / self.display_downsample
         return display_x, display_y
 
     def display_to_raw_point(self, pt):
-        if self.display_orientation != "usb_top_view" or self.raw_shape is None:
+        if self.raw_shape is None:
             return pt
+        display_x = float(pt[0]) * self.display_downsample
+        display_y = float(pt[1]) * self.display_downsample
+        if self.display_orientation != "usb_top_view":
+            return display_x, display_y
         raw_h, _ = self.raw_shape
-        display_x, display_y = pt
         raw_x = display_y
         raw_y = (raw_h - 1) - display_x
         return raw_x, raw_y

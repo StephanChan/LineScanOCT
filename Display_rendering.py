@@ -190,12 +190,25 @@ def set_xy_projection(
         return
     x_step_size = ui.XStepSize.value()
     y_step_size = ui.YStepSize.value()
+    # AlineAVG reduces the X pixel count (AlinesPerBline // AlineAVG), so each
+    # displayed X pixel spans AlineAVG galvo steps; keep the physical aspect
+    # ratio correct.
+    aline_avg = max(1, int(getattr(ui, "AlineAVG", 1).value() if hasattr(ui, "AlineAVG") else 1))
+    x_step_size = float(x_step_size) * aline_avg
+    # XY-plane display downsample from the UI spinbox (X/Y only; the Z-plane
+    # selection below is unchanged). scale=1 keeps the full-resolution display.
+    scale_control = getattr(ui, "scale", None)
+    downsample = max(1, int(scale_control.value())) if scale_control is not None else 1
     volume_plane = z_plane_from_volume(ui, volume)
     if volume_plane is not None:
         intensity = volume_plane
+        # The stitched volume is already downsampled in DnS by the UI scale;
+        # downsampling again on display would double the reduction.
+        downsample = 1
     hsv_volume_plane = z_plane_from_volume(ui, hsv_volume)
     if hsv_volume_plane is not None:
         hsv = hsv_volume_plane
+        downsample = 1
     if hsv is not None and np.size(hsv) > 0:
         hsv = np.asarray(hsv, dtype=np.float32)
         rgb = dynamic_metric_rgb_display_array(ui, hsv[..., 0], hsv[..., 1], hsv[..., 2], ui.XZmin, ui.XZmax)
@@ -206,7 +219,7 @@ def set_xy_projection(
             rgb = dynamic_rgb_display_array(ui, rgb, ui.XZmin, ui.XZmax)
     else:
         intensity = display_array(intensity)
-        ui.mosaic_viewer.set_image(intensity, ui.XZmin.value(), ui.XZmax.value(), x_step_size, y_step_size)
+        ui.mosaic_viewer.set_image(intensity, ui.XZmin.value(), ui.XZmax.value(), x_step_size, y_step_size, downsample=downsample)
         return
     if rgb is not None and np.size(rgb) > 0:
         ui.mosaic_viewer.set_image(
@@ -215,6 +228,7 @@ def set_xy_projection(
             255,
             x_step_size,
             y_step_size,
+            downsample=downsample,
         )
         return
 

@@ -35,25 +35,25 @@ OBJECTIVE_SPECS = {
         name="4X",
         angle_to_mm_ratio= 1.44 * 1.25* 0.9,
         magnification=4.0 * 1.10,
-        max_y_fov_mm=5.0,
+        max_y_fov_mm=0.5,
     ),
     "5X": ObjectiveSpec(
         name="5X",
         angle_to_mm_ratio=2.094 / 1.19* 0.9,
         magnification=5.0 * 1.05,
-        max_y_fov_mm=4.0,
+        max_y_fov_mm=0.5,
     ),
     "10X": ObjectiveSpec(
         name="10X",
         angle_to_mm_ratio=2.094 / 2 / 1.19 * 0.9,
         magnification=10.0 * 1.05,
-        max_y_fov_mm=2.0,
+        max_y_fov_mm=0.25,
     ),
     "20X": ObjectiveSpec(
         name="20X",
         angle_to_mm_ratio=2.094 / 1.19 / 4* 0.9,
         magnification=20.0 * 1.05,
-        max_y_fov_mm=1.0,
+        max_y_fov_mm=0.25,
     ),
 }
 
@@ -91,6 +91,9 @@ GPU_DYNAMIC_NORMALIZATION_EPS = 1e-3
 GPU_DYNAMIC_UNIFORM_FILTER_SIZE = 10
 GPU_DYNAMIC_GAUSSIAN_SMOOTHING = False
 GPU_DYNAMIC_MAGNIFICATION = 1
+# Number of initial frames (B-lines) to discard from each Y position's time
+# series before realtime dynamic metrics are computed (settling/transient guard).
+DISCARD_INITIAL_FRAMES_PER_Y = 5
 GPU_PRE_FFT_LOG_DEVIATION_THRESHOLD_PCT = 1.0
 GPU_DYNAMIC_INPUT_LOG_DEVIATION_THRESHOLD_PCT = 1.0
 GPU_PROFILE_TIMING_DEFAULT = False

@@ -15,7 +15,7 @@ except ImportError:
 
 # Spyder/default run settings. Edit these values, then press Run.
 DEFAULT_INPUT_PATH = (
-    r"E:\IOCTData\HighResData\50Hz_2s\paper\Wout_sub_background\AllOn\tissue\070726\Bline-8-Yrpt200-X1104-Z109.tif"
+    r"E:\IOCTData\vibration_test260824\SingleBline\Bline-1-Yrpt400-X1104-Z182.tif"
 )
 DEFAULT_OUTPUT_DIR = None  # None saves results beside the input stack.
 DEFAULT_NOISE_INPUT_PATH =(

@@ -13,8 +13,9 @@ import os
 import time
 import traceback
 from ActionTypes import DnSActions, EXIT_ACTION, GPUActions
+from DataShape import fast_volume_regroup
 from CameraUi import effective_camera_sample_count
-from HardwareSpecs import get_camera_spec
+from HardwareSpecs import DISCARD_INITIAL_FRAMES_PER_Y, get_camera_spec
 from scipy.ndimage import zoom, uniform_filter
 
 # =============================================================================
@@ -325,7 +326,7 @@ class GPUThread(QThread):
             
             finally:
                 self.active_tasks = max(0, self.active_tasks - 1)
-            if time.time()-t1>0.01:
+            if time.time()-t1>1:
                 print('GPU thread took ', round(time.time()-t1,2), ' seconds for action: ', self.item.action)
             self.item = self.queue.get()
             # print('GPU queue size:', self.queue.qsize())
@@ -371,6 +372,64 @@ class GPUThread(QThread):
 
     def current_y_pixels(self):
         return max(1, int(self.ui.Ypixels.value()))
+
+    def current_aline_avg(self):
+        """A-line averaging factor (number of consecutive A-lines averaged
+        together in X before background subtraction / FFT)."""
+        return max(1, int(getattr(self.ui, "AlineAVG", 1).value() if hasattr(self.ui, "AlineAVG") else 1))
+
+    @staticmethod
+    def block_mean_axis1(a, factor):
+        """Block-mean reduce axis 1 (the A-line / X axis) by an integer factor.
+
+        Trailing axes (e.g. spectral samples) are unchanged. Used to average
+        consecutive A-lines on the raw spectral chunk before background
+        subtraction. Works for cupy and numpy arrays.
+        """
+        factor = max(1, int(factor))
+        if factor == 1 or a.ndim < 2:
+            return a
+        n = a.shape[1]
+        n_crop = n - n % factor
+        if n_crop == 0:
+            return a[:, ::factor]
+        view = a[:, :n_crop]
+        new_shape = (a.shape[0], n_crop // factor, factor) + tuple(a.shape[2:])
+        return view.reshape(new_shape).mean(axis=2)
+
+    @staticmethod
+    def block_mean_axis0(a, factor):
+        """Block-mean reduce axis 0 (the A-line / X axis) of a 2-D per-X array
+        such as the background reference [X, samples]."""
+        factor = max(1, int(factor))
+        if factor == 1 or a.ndim < 1:
+            return a
+        n = a.shape[0]
+        n_crop = n - n % factor
+        if n_crop == 0:
+            return a[::factor]
+        view = a[:n_crop]
+        new_shape = (n_crop // factor, factor) + tuple(a.shape[1:])
+        return view.reshape(new_shape).mean(axis=1)
+
+    @staticmethod
+    def block_mean_axis0_1d(a, factor):
+        """Block-mean reduce a 1-D array (e.g. the per-X background normalization)
+        by an integer factor."""
+        factor = max(1, int(factor))
+        if factor == 1 or a.ndim < 1:
+            return a
+        n = a.shape[0]
+        n_crop = n - n % factor
+        if n_crop == 0:
+            return a[::factor]
+        return a[:n_crop].reshape(n_crop // factor, factor).mean(axis=1)
+
+    def current_micro_steps(self):
+        return max(1, int(self.ui.MicroSteps.value()))
+
+    def current_acq_mode(self):
+        return self.ui.ACQMode.currentText()
 
     def current_fft_result_mode(self):
         if hasattr(self.ui, "FFTresults"):
@@ -485,6 +544,18 @@ class GPUThread(QThread):
 
     def should_run_realtime_dynamic(self):
         return self.current_dynamic_enabled() and self.ui.RealtimeDynCheckBox.isChecked()
+
+    def dynamic_discard_frames(self):
+        """
+        Number of initial frames (B-lines) to discard from each Y position's
+        time series before realtime dynamic metrics are computed.
+
+        Only applies to per-Y (C-scan / mosaic) realtime dynamic processing,
+        where dynamic_bline_idx is set; other modes return 0.
+        """
+        if getattr(self.item, "dynamic_bline_idx", None) is None:
+            return 0
+        return max(0, int(DISCARD_INITIAL_FRAMES_PER_Y))
 
     def current_dynamic_temporal_filter_size(self):
         if not bool(self.dynamic_temporal_lowpass_enabled):
@@ -643,6 +714,8 @@ class GPUThread(QThread):
         Pixel_start = self.current_depth_start()
         Pixel_range = self.current_depth_range()
         shape = self.Memory[memory_slot].shape
+        aline_avg = self.current_aline_avg()
+        x_pixels_out = max(1, int(shape[1]) // aline_avg)
         pre_avg_count, effective_frames = self.pre_avg_plan(shape[0])
 
         # print('GPU data size: ', shape, ' memory_slot: ', memory_slot)
@@ -650,10 +723,15 @@ class GPUThread(QThread):
         # print('GPU receives:',self.data_CPU[0,0,0:10])
         chunk_frames = self.gpu_fft_chunk_frames(effective_frames)
         background_reference_gpu = self.determine_background_gpu(memory_slot)
+        if background_reference_gpu is not None and aline_avg > 1:
+            # A-lines are averaged before background subtraction, so the per-X
+            # background reference [X, samples] must be averaged along X (axis 0)
+            # by the same factor to match the averaged data.
+            background_reference_gpu = self.block_mean_axis0(background_reference_gpu, aline_avg)
         # Allocate output with effective frame count. In AMP+PHASE mode, keep the
         # complex FFT result through the device-to-host transfer.
         output_dtype = np.complex64 if self.current_fft_result_mode() == "AMP+PHASE" else np.float32
-        self.data_CPU = np.empty((effective_frames, shape[1], Pixel_range), dtype=output_dtype)
+        self.data_CPU = np.empty((effective_frames, x_pixels_out, Pixel_range), dtype=output_dtype)
         dynamic_gpu_stack = None
         if self.should_run_realtime_dynamic():
             stack_start = self.gpu_timing_start()
@@ -675,11 +753,19 @@ class GPUThread(QThread):
             y_slice_index,
             timing,
             dynamic_gpu_stack,
+            x_pixels_out=x_pixels_out,
         )
         del background_reference_gpu
         # print('data_CPU shape', self.data_CPU.shape)
         # print('data_CPU:', self.data_CPU[0,0,0:15])
         if self.should_run_realtime_dynamic():
+            discard = min(
+                self.dynamic_discard_frames(),
+                max(0, int(self.data_CPU.shape[0]) - 2),
+            )
+            if discard > 0:
+                self.data_CPU = self.data_CPU[discard:]
+                dynamic_gpu_stack = dynamic_gpu_stack[discard:]
             Dyn = self.compute_realtime_dynamic_gpu(
                 dynamic_gpu_stack,
                 timing,
@@ -700,6 +786,15 @@ class GPUThread(QThread):
                 frame_offset=0,
                 y_slice_index=y_slice_index,
             )
+        # FastVolumeCscan (static): regroup (block, repetition, step) frames
+        # into per-Y averages before display/save.
+        if getattr(self.item, "fast_volume", False) and not getattr(self.item, "per_y_dynamic", False):
+            self.data_CPU = fast_volume_regroup(
+                self.data_CPU,
+                self.current_y_pixels(),
+                self.current_micro_steps(),
+                self.current_bline_avg(),
+            )
         # display and save data, data type is float32
         an_action = DnSActionField(
             DnS_action,
@@ -712,6 +807,8 @@ class GPUThread(QThread):
             dynamic_bline_idx=self.item.dynamic_bline_idx,
             filename_bundle=self.item.filename_bundle,
             skip_save=self.item.skip_save,
+            fast_volume=getattr(self.item, "fast_volume", False),
+            per_y_dynamic=getattr(self.item, "per_y_dynamic", False),
         )
         self.DnSQueue.put(an_action)
 
@@ -734,6 +831,7 @@ class GPUThread(QThread):
 
         self.data_CPU = self.Memory[memory_slot].astype(np.float32, copy=True)
         shape = self.data_CPU.shape
+        aline_avg = self.current_aline_avg()
         pre_avg_count, _ = self.pre_avg_plan(shape[0])
 
         if pre_avg_count > 1:
@@ -744,6 +842,11 @@ class GPUThread(QThread):
                 self.data_CPU = self.data_CPU.reshape(new_frame_count, pre_avg_count, shape[1], shape[2]).mean(axis=1)
             else:
                 pre_avg_count = 1
+
+        # AlineAVG: average consecutive A-lines (X axis) on the raw spectral
+        # data before background subtraction and FFT.
+        if aline_avg > 1:
+            self.data_CPU = self.block_mean_axis1(self.data_CPU, aline_avg)
 
         processed_shape = self.data_CPU.shape
         log_filename = self.current_log_filename()
@@ -757,6 +860,8 @@ class GPUThread(QThread):
         )
 
         background_reference_cpu = self.determine_background_cpu(memory_slot)
+        if background_reference_cpu is not None and aline_avg > 1:
+            background_reference_cpu = self.block_mean_axis0(background_reference_cpu, aline_avg)
         self.apply_saved_background_subtraction_cpu(self.data_CPU, background_reference_cpu)
         baseline = uniform_filter1d(
             self.data_CPU,
@@ -793,6 +898,12 @@ class GPUThread(QThread):
         self.apply_background_x_normalization_cpu(self.data_CPU)
 
         if self.should_run_realtime_dynamic():
+            discard = min(
+                self.dynamic_discard_frames(),
+                max(0, int(self.data_CPU.shape[0]) - 2),
+            )
+            if discard > 0:
+                self.data_CPU = self.data_CPU[discard:]
             dyn = self.compute_realtime_dynamic_cpu(
                 frame_rate_hz=self.current_dynamic_frame_rate_hz(pre_avg_count),
             )
@@ -808,6 +919,16 @@ class GPUThread(QThread):
                 y_slice_index=y_slice_index,
             )
 
+        # FastVolumeCscan (static): regroup (block, repetition, step) frames
+        # into per-Y averages before display/save.
+        if getattr(self.item, "fast_volume", False) and not getattr(self.item, "per_y_dynamic", False):
+            self.data_CPU = fast_volume_regroup(
+                self.data_CPU,
+                self.current_y_pixels(),
+                self.current_micro_steps(),
+                self.current_bline_avg(),
+            )
+
         an_action = DnSActionField(
             DnS_action,
             acq_mode=acq_mode,
@@ -819,6 +940,8 @@ class GPUThread(QThread):
             dynamic_bline_idx=self.item.dynamic_bline_idx,
             filename_bundle=self.item.filename_bundle,
             skip_save=self.item.skip_save,
+            fast_volume=getattr(self.item, "fast_volume", False),
+            per_y_dynamic=getattr(self.item, "per_y_dynamic", False),
         )
         self.DnSQueue.put(an_action)
 
@@ -904,15 +1027,19 @@ class GPUThread(QThread):
         chunk_shape = data_cpu.shape
         if self.background_x_normalization is None:
             return False
-        if self.background_x_normalization.size != chunk_shape[1]:
+        norm = self.background_x_normalization
+        aline_avg = self.current_aline_avg()
+        if aline_avg > 1:
+            norm = self.block_mean_axis0_1d(norm, aline_avg)
+        if norm.size != chunk_shape[1]:
             print(
                 'Background X normalization mismatch. Skipped: ',
-                self.background_x_normalization.size,
+                norm.size,
                 'data X pixels:',
                 chunk_shape[1],
             )
             return False
-        data_cpu /= self.background_x_normalization[np.newaxis, :, np.newaxis]
+        data_cpu /= norm[np.newaxis, :, np.newaxis]
         return True
 
     def interpolate_cpu(self, data_cpu):
@@ -1050,20 +1177,24 @@ class GPUThread(QThread):
         chunk_shape = y_gpu.shape
         if self.background_x_normalization is None:
             return False
-        if self.background_x_normalization.size != chunk_shape[1]:
+        norm = self.background_x_normalization
+        aline_avg = self.current_aline_avg()
+        if aline_avg > 1:
+            norm = self.block_mean_axis0_1d(norm, aline_avg)
+        if norm.size != chunk_shape[1]:
             print(
                 'Background X normalization mismatch. Skipped: ',
-                self.background_x_normalization.size,
+                norm.size,
                 'data X pixels:',
                 chunk_shape[1],
             )
             return False
         if (
             self.background_x_normalization_gpu is None
-            or self.background_x_normalization_gpu.shape != self.background_x_normalization.shape
+            or self.background_x_normalization_gpu.shape != norm.shape
         ):
             self.background_x_normalization_gpu = cupy.asarray(
-                self.background_x_normalization,
+                norm,
                 dtype=cupy.float32,
             )
         y_gpu /= self.background_x_normalization_gpu[cupy.newaxis, :, cupy.newaxis]
@@ -1082,6 +1213,7 @@ class GPUThread(QThread):
         y_slice_index=None,
         timing=None,
         dynamic_gpu_stack=None,
+        x_pixels_out=None,
     ):
         if timing is None:
             timing = {}
@@ -1128,6 +1260,7 @@ class GPUThread(QThread):
                 y_slice_index,
                 timing,
                 dynamic_gpu_stack,
+                x_pixels_out=x_pixels_out,
             )
             timing["_chunks"] = timing.get("_chunks", 0) + 1
 
@@ -1164,6 +1297,7 @@ class GPUThread(QThread):
         y_slice_index=None,
         timing=None,
         dynamic_gpu_stack=None,
+        x_pixels_out=None,
     ):
         if timing is None:
             timing = {}
@@ -1178,6 +1312,7 @@ class GPUThread(QThread):
                 slot=slot,
                 stream=stream,
                 timing=timing,
+                x_pixels_out=x_pixels_out,
             )
             keep_alive.append(data_gpu)
 
@@ -1209,11 +1344,14 @@ class GPUThread(QThread):
         slot=None,
         stream=None,
         timing=None,
+        x_pixels_out=None,
     ):
         if timing is None:
             timing = {}
         chunk_shape = raw_chunk.shape
         output_frames = chunk_shape[0]
+        aline_avg = self.current_aline_avg()
+        x_pixels_out = max(1, int(chunk_shape[1]) // aline_avg) if x_pixels_out is None else int(x_pixels_out)
         keep_alive = []
 
         chunk_start = time.perf_counter() if self.gpu_profile_timing_print_chunks else None
@@ -1232,6 +1370,15 @@ class GPUThread(QThread):
             step_start = self.gpu_timing_start(stream)
             y_gpu, output_frames = self.apply_pre_avg_filter(y_gpu, pre_avg_count, slot=slot)
             self.gpu_timing_end(timing, "pre_fft_average", step_start, stream)
+
+        # AlineAVG: average consecutive A-lines (X axis) on the raw spectral
+        # data, before background subtraction and FFT. The per-X background
+        # reference was already averaged with the same factor in cudaFFT().
+        if aline_avg > 1:
+            step_start = self.gpu_timing_start(stream)
+            y_gpu = self.block_mean_axis1(y_gpu, aline_avg)
+            self.gpu_timing_end(timing, "aline_average", step_start, stream)
+            keep_alive.append(y_gpu)
 
         step_start = self.gpu_timing_start(stream)
         pre_fft_means_gpu = cupy.mean(y_gpu, axis=(1, 2))
@@ -1281,7 +1428,7 @@ class GPUThread(QThread):
 
         if self.current_holo_x_filter_enabled():
             step_start = self.gpu_timing_start(stream)
-            yp_gpu = self.apply_holo_x_filter_gpu(yp_gpu, output_frames, chunk_shape[1], samples)
+            yp_gpu = self.apply_holo_x_filter_gpu(yp_gpu, output_frames, x_pixels_out, samples)
             self.gpu_timing_end(timing, "off_axis_x_filter", step_start, stream)
             keep_alive.append(yp_gpu)
 
@@ -1297,7 +1444,7 @@ class GPUThread(QThread):
         self.gpu_timing_end(timing, "select_depth_result", step_start, stream)
 
         step_start = self.gpu_timing_start(stream)
-        data_gpu = data_gpu.reshape(output_frames, chunk_shape[1], Pixel_range)
+        data_gpu = data_gpu.reshape(output_frames, x_pixels_out, Pixel_range)
         self.gpu_timing_end(timing, "reshape_depth", step_start, stream)
 
         step_start = self.gpu_timing_start(stream)
@@ -1928,9 +2075,9 @@ class GPUThread(QThread):
         return self.frequency_hsv_metrics_from_power_gpu(power_gpu, frequencies_hz_gpu, timing=timing)
 
     def pre_avg_factor(self):
+        if getattr(self.item, "fast_volume", False) and not getattr(self.item, "per_y_dynamic", False):
+            return 1
         if self.current_dynamic_enabled():
-            if hasattr(self.ui, "PreFFTBlineAvg"):
-                return max(1, int(self.ui.PreFFTBlineAvg.value()))
             return max(1, int(self.gpu_pre_avg_factor))
         return self.current_bline_avg()
 

@@ -537,27 +537,80 @@
              <string>FOV 设定</string>
             </property>
             <layout class="QGridLayout" name="gridLayout_4">
-             <item row="2" column="1">
-              <widget class="QSpinBox" name="BlineAVG">
-               <property name="whatsThis">
-                <string extracomment="bline average"/>
+             <item row="0" column="0" colspan="2">
+              <widget class="QLabel" name="XrangeLabel">
+               <property name="maximumSize">
+                <size>
+                 <width>16777215</width>
+                 <height>16777215</height>
+                </size>
                </property>
+               <property name="text">
+                <string>X轴扫描长度(mm)：</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="2">
+              <widget class="QDoubleSpinBox" name="XLength">
+               <property name="maximum">
+                <double>10.000000000000000</double>
+               </property>
+               <property name="singleStep">
+                <double>0.100000000000000</double>
+               </property>
+               <property name="value">
+                <double>1.000000000000000</double>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="3" colspan="2">
+              <widget class="QLabel" name="YrangeLabel">
+               <property name="text">
+                <string>Y轴扫描长度(mm):</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="5">
+              <widget class="QDoubleSpinBox" name="YLength">
+               <property name="singleStep">
+                <double>0.100000000000000</double>
+               </property>
+               <property name="value">
+                <double>1.000000000000000</double>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="label_10">
+               <property name="text">
+                <string>扫描偏置（mm）：</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="2">
+              <widget class="QDoubleSpinBox" name="Xoffsetlength">
                <property name="minimum">
-                <number>1</number>
+                <double>-10.000000000000000</double>
                </property>
                <property name="maximum">
-                <number>10000</number>
+                <double>10.000000000000000</double>
+               </property>
+               <property name="singleStep">
+                <double>0.100000000000000</double>
                </property>
               </widget>
              </item>
-             <item row="2" column="0">
-              <widget class="QLabel" name="BlineAvgLabel">
+             <item row="1" column="3" colspan="2">
+              <widget class="QLabel" name="label_45">
+               <property name="enabled">
+                <bool>true</bool>
+               </property>
                <property name="text">
-                <string>重复次数：</string>
+                <string>扫描偏置（mm）：</string>
                </property>
               </widget>
              </item>
-             <item row="1" column="3">
+             <item row="1" column="5">
               <widget class="QDoubleSpinBox" name="Yoffsetlength">
                <property name="sizePolicy">
                 <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
@@ -576,20 +629,36 @@
                </property>
               </widget>
              </item>
-             <item row="1" column="1">
-              <widget class="QDoubleSpinBox" name="Xoffsetlength">
-               <property name="minimum">
-                <double>-10.000000000000000</double>
+             <item row="2" column="0">
+              <widget class="QLabel" name="XStepsizeLabel">
+               <property name="enabled">
+                <bool>false</bool>
                </property>
-               <property name="maximum">
-                <double>10.000000000000000</double>
-               </property>
-               <property name="singleStep">
-                <double>0.100000000000000</double>
+               <property name="text">
+                <string>像素长度（um）:</string>
                </property>
               </widget>
              </item>
              <item row="2" column="2">
+              <widget class="QDoubleSpinBox" name="XStepSize">
+               <property name="enabled">
+                <bool>false</bool>
+               </property>
+               <property name="decimals">
+                <number>2</number>
+               </property>
+               <property name="minimum">
+                <double>0.000000000000000</double>
+               </property>
+               <property name="maximum">
+                <double>10000.000000000000000</double>
+               </property>
+               <property name="value">
+                <double>1.000000000000000</double>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="3" colspan="2">
               <widget class="QLabel" name="YStepsizeLabel">
                <property name="enabled">
                 <bool>true</bool>
@@ -599,17 +668,7 @@
                </property>
               </widget>
              </item>
-             <item row="1" column="2">
-              <widget class="QLabel" name="label_45">
-               <property name="enabled">
-                <bool>true</bool>
-               </property>
-               <property name="text">
-                <string>扫描偏置（mm）：</string>
-               </property>
-              </widget>
-             </item>
-             <item row="2" column="3">
+             <item row="2" column="5">
               <widget class="QDoubleSpinBox" name="YStepSize">
                <property name="enabled">
                 <bool>true</bool>
@@ -628,27 +687,43 @@
                </property>
               </widget>
              </item>
-             <item row="0" column="2">
-              <widget class="QLabel" name="YrangeLabel">
+             <item row="3" column="0">
+              <widget class="QLabel" name="AlineAvgLabel">
                <property name="text">
-                <string>Y轴扫描长度(mm):</string>
+                <string>Aline 平均次数</string>
                </property>
               </widget>
              </item>
-             <item row="0" column="3">
-              <widget class="QDoubleSpinBox" name="YLength">
-               <property name="singleStep">
-                <double>0.100000000000000</double>
+             <item row="3" column="2">
+              <widget class="QSpinBox" name="AlineAVG">
+               <property name="minimum">
+                <number>1</number>
+               </property>
+               <property name="maximum">
+                <number>10000</number>
                </property>
                <property name="value">
-                <double>1.000000000000000</double>
+                <number>1</number>
                </property>
               </widget>
              </item>
-             <item row="1" column="0">
-              <widget class="QLabel" name="label_10">
+             <item row="3" column="3" colspan="2">
+              <widget class="QLabel" name="BlineAvgLabel">
                <property name="text">
-                <string>扫描偏置（mm）：</string>
+                <string>Bline 平均次数：</string>
+               </property>
+              </widget>
+             </item>
+             <item row="3" column="5">
+              <widget class="QSpinBox" name="BlineAVG">
+               <property name="whatsThis">
+                <string extracomment="bline average"/>
+               </property>
+               <property name="minimum">
+                <number>1</number>
+               </property>
+               <property name="maximum">
+                <number>10000</number>
                </property>
               </widget>
              </item>
@@ -671,32 +746,6 @@
                </property>
                <property name="checkable">
                 <bool>false</bool>
-               </property>
-              </widget>
-             </item>
-             <item row="0" column="0">
-              <widget class="QLabel" name="XrangeLabel">
-               <property name="maximumSize">
-                <size>
-                 <width>16777215</width>
-                 <height>16777215</height>
-                </size>
-               </property>
-               <property name="text">
-                <string>X轴扫描长度(mm)：</string>
-               </property>
-              </widget>
-             </item>
-             <item row="0" column="1">
-              <widget class="QDoubleSpinBox" name="XLength">
-               <property name="maximum">
-                <double>10.000000000000000</double>
-               </property>
-               <property name="singleStep">
-                <double>0.100000000000000</double>
-               </property>
-               <property name="value">
-                <double>1.000000000000000</double>
                </property>
               </widget>
              </item>
@@ -758,13 +807,6 @@
              <string/>
             </property>
             <layout class="QGridLayout" name="gridLayout_12">
-             <item row="0" column="0">
-              <widget class="QCheckBox" name="DynCheckBox">
-               <property name="text">
-                <string>DOCT模式请勾选此框</string>
-               </property>
-              </widget>
-             </item>
              <item row="1" column="0" colspan="3">
               <widget class="QCheckBox" name="RealtimeDynCheckBox">
                <property name="text">
@@ -776,6 +818,27 @@
               <widget class="QLabel" name="FFTDeviceLabel">
                <property name="text">
                 <string>FFT设备</string>
+               </property>
+              </widget>
+             </item>
+             <item row="3" column="1" colspan="2">
+              <widget class="QComboBox" name="FFTresults">
+               <item>
+                <property name="text">
+                 <string>AMP</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>AMP+PHASE</string>
+                </property>
+               </item>
+              </widget>
+             </item>
+             <item row="3" column="0">
+              <widget class="QLabel" name="FFTResultsLabel">
+               <property name="text">
+                <string>FFT结果</string>
                </property>
               </widget>
              </item>
@@ -798,80 +861,47 @@
                </item>
               </widget>
              </item>
-             <item row="3" column="0">
-              <widget class="QLabel" name="FFTResultsLabel">
+             <item row="0" column="0">
+              <widget class="QCheckBox" name="DynCheckBox">
                <property name="text">
-                <string>FFT结果</string>
+                <string>DOCT模式请勾选此框</string>
                </property>
               </widget>
              </item>
-             <item row="3" column="1" colspan="2">
-              <widget class="QComboBox" name="FFTresults">
+             <item row="4" column="0">
+              <widget class="QLabel" name="ObjectiveLabel">
+               <property name="text">
+                <string>物镜选择：</string>
+               </property>
+              </widget>
+             </item>
+             <item row="4" column="1">
+              <widget class="QComboBox" name="Objective">
                <item>
                 <property name="text">
-                 <string>AMP</string>
+                 <string>10X</string>
                 </property>
                </item>
                <item>
                 <property name="text">
-                 <string>AMP+PHASE</string>
+                 <string>4X</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>5X</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>20X</string>
                 </property>
                </item>
               </widget>
              </item>
-             <item row="4" column="0" colspan="2">
-              <widget class="QLabel" name="label_5">
-               <property name="text">
-                <string>DOCT频率降采样</string>
-               </property>
-              </widget>
-             </item>
-              <item row="4" column="2">
-               <widget class="QSpinBox" name="PreFFTBlineAvg">
-                <property name="value">
-                 <number>4</number>
-                </property>
-               </widget>
-              </item>
-              <item row="5" column="0" colspan="3">
-               <widget class="QCheckBox" name="HoloXFilterCheckBox">
-                <property name="text">
-                 <string>X方向陷波滤波(去内部反射)</string>
-                </property>
-                <property name="checked">
-                 <bool>true</bool>
-                </property>
-               </widget>
-              </item>
-              <item row="6" column="0">
-               <widget class="QLabel" name="HoloBandwidthLabel">
-                <property name="text">
-                 <string>陷波半宽(×Nyquist)</string>
-                </property>
-               </widget>
-              </item>
-              <item row="6" column="1" colspan="2">
-               <widget class="QDoubleSpinBox" name="HoloBandwidth">
-                <property name="decimals">
-                 <number>3</number>
-                </property>
-                <property name="minimum">
-                 <double>0.000</double>
-                </property>
-                <property name="maximum">
-                 <double>1.000</double>
-                </property>
-                <property name="singleStep">
-                 <double>0.050</double>
-                </property>
-                <property name="value">
-                 <double>0.250</double>
-                </property>
-               </widget>
-              </item>
-             </layout>
-            </widget>
-           </item>
+            </layout>
+           </widget>
+          </item>
           <item row="0" column="4">
            <spacer name="horizontalSpacer_5">
             <property name="orientation">
@@ -1748,7 +1778,7 @@
              <item>
               <widget class="QLabel" name="label_24">
                <property name="enabled">
-                <bool>false</bool>
+                <bool>true</bool>
                </property>
                <property name="maximumSize">
                 <size>
@@ -1764,7 +1794,7 @@
              <item>
               <widget class="QSpinBox" name="scale">
                <property name="enabled">
-                <bool>false</bool>
+                <bool>true</bool>
                </property>
                <property name="maximumSize">
                 <size>
@@ -1819,40 +1849,17 @@
           <string>隐藏参数</string>
          </attribute>
          <layout class="QGridLayout" name="gridLayout_3">
-          <item row="3" column="0">
-           <widget class="QLabel" name="label_31">
+          <item row="0" column="0">
+           <widget class="QLabel" name="YstepsLabel">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
             <property name="text">
-             <string>相机品牌</string>
+             <string>扫描线长（像素）：</string>
             </property>
            </widget>
           </item>
-          <item row="6" column="2">
-           <widget class="QLabel" name="DepthRangeLabel">
-            <property name="minimumSize">
-             <size>
-              <width>200</width>
-              <height>0</height>
-             </size>
-            </property>
-            <property name="maximumSize">
-             <size>
-              <width>150</width>
-              <height>20</height>
-             </size>
-            </property>
-            <property name="text">
-             <string>Dsplay Range(pixel)</string>
-            </property>
-           </widget>
-          </item>
-          <item row="5" column="0">
-           <widget class="QLabel" name="ObjectiveLabel">
-            <property name="text">
-             <string>物镜选择：</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="1">
+          <item row="0" column="2">
            <widget class="QSpinBox" name="AlinesPerBline">
             <property name="enabled">
              <bool>false</bool>
@@ -1871,75 +1878,7 @@
             </property>
            </widget>
           </item>
-          <item row="1" column="1">
-           <widget class="QSpinBox" name="offsetH">
-            <property name="enabled">
-             <bool>false</bool>
-            </property>
-            <property name="maximum">
-             <number>1100</number>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="2">
-           <widget class="QLabel" name="label_58">
-            <property name="enabled">
-             <bool>false</bool>
-            </property>
-            <property name="text">
-             <string>扫描偏置（电压）：</string>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="3" colspan="2">
-           <widget class="QDoubleSpinBox" name="GalvoBias">
-            <property name="enabled">
-             <bool>false</bool>
-            </property>
-            <property name="minimum">
-             <double>-2.000000000000000</double>
-            </property>
-            <property name="maximum">
-             <double>2.000000000000000</double>
-            </property>
-            <property name="singleStep">
-             <double>0.100000000000000</double>
-            </property>
-            <property name="value">
-             <double>0.000000000000000</double>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="1">
-           <widget class="QDoubleSpinBox" name="XStepSize">
-            <property name="enabled">
-             <bool>false</bool>
-            </property>
-            <property name="decimals">
-             <number>2</number>
-            </property>
-            <property name="minimum">
-             <double>0.000000000000000</double>
-            </property>
-            <property name="maximum">
-             <double>10000.000000000000000</double>
-            </property>
-            <property name="value">
-             <double>1.000000000000000</double>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="0">
-           <widget class="QLabel" name="YstepsLabel">
-            <property name="enabled">
-             <bool>false</bool>
-            </property>
-            <property name="text">
-             <string>扫描线长（像素）：</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="2">
+          <item row="0" column="3">
            <widget class="QLabel" name="label_32">
             <property name="enabled">
              <bool>false</bool>
@@ -1949,54 +1888,20 @@
             </property>
            </widget>
           </item>
-          <item row="1" column="0">
-           <widget class="QLabel" name="label_43">
+          <item row="0" column="4">
+           <widget class="QSpinBox" name="Ypixels">
             <property name="enabled">
              <bool>false</bool>
             </property>
-            <property name="text">
-             <string>扫描偏置（像素）：</string>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="0">
-           <widget class="QLabel" name="XStepsizeLabel">
-            <property name="enabled">
-             <bool>false</bool>
-            </property>
-            <property name="text">
-             <string>像素长度（um）:</string>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="2">
-           <widget class="QLabel" name="label_12">
-            <property name="text">
-             <string>振镜返回步数</string>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="3" colspan="2">
-           <widget class="QSpinBox" name="FlyBack">
             <property name="maximum">
-             <number>1000</number>
+             <number>99998</number>
             </property>
             <property name="value">
-             <number>50</number>
+             <number>200</number>
             </property>
            </widget>
           </item>
-          <item row="3" column="2">
-           <widget class="QLabel" name="AlineAvgLabel">
-            <property name="enabled">
-             <bool>false</bool>
-            </property>
-            <property name="text">
-             <string>Aline average</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="5" rowspan="10">
+          <item row="0" column="5" rowspan="5">
            <widget class="QLabel" name="XwaveformLabel">
             <property name="enabled">
              <bool>false</bool>
@@ -2021,57 +1926,130 @@
             </property>
            </widget>
           </item>
-          <item row="0" column="3" colspan="2">
-           <widget class="QSpinBox" name="Ypixels">
+          <item row="0" column="6">
+           <spacer name="horizontalSpacer_13">
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="label_43">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="text">
+             <string>扫描偏置（像素）：</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QSpinBox" name="offsetH">
             <property name="enabled">
              <bool>false</bool>
             </property>
             <property name="maximum">
-             <number>99998</number>
-            </property>
-            <property name="value">
-             <number>200</number>
+             <number>1100</number>
             </property>
            </widget>
           </item>
-          <item row="3" column="3" colspan="2">
-           <widget class="QSpinBox" name="AlineAVG">
+          <item row="1" column="3">
+           <widget class="QLabel" name="label_58">
             <property name="enabled">
              <bool>false</bool>
+            </property>
+            <property name="text">
+             <string>扫描偏置（电压）：</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="4">
+           <widget class="QDoubleSpinBox" name="GalvoBias">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="minimum">
+             <double>-2.000000000000000</double>
+            </property>
+            <property name="maximum">
+             <double>2.000000000000000</double>
+            </property>
+            <property name="singleStep">
+             <double>0.100000000000000</double>
+            </property>
+            <property name="value">
+             <double>0.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="3">
+           <widget class="QLabel" name="label_12">
+            <property name="text">
+             <string>振镜返回步数</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="4">
+           <widget class="QSpinBox" name="FlyBack">
+            <property name="maximum">
+             <number>1000</number>
+            </property>
+            <property name="value">
+             <number>50</number>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="0">
+           <widget class="QLabel" name="MicroStepsLabel">
+            <property name="text">
+             <string>微块步数：</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="2">
+           <widget class="QSpinBox" name="MicroSteps">
+            <property name="minimum">
+             <number>1</number>
             </property>
             <property name="maximum">
              <number>10000</number>
             </property>
             <property name="value">
-             <number>1</number>
+             <number>6</number>
             </property>
            </widget>
           </item>
-          <item row="5" column="1">
-           <widget class="QComboBox" name="Objective">
-            <item>
-             <property name="text">
-              <string>10X</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>4X</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>5X</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>20X</string>
-             </property>
-            </item>
+          <item row="3" column="3">
+           <widget class="QLabel" name="MicroFlyBackLabel">
+            <property name="text">
+             <string>微扫返回步数</string>
+            </property>
            </widget>
           </item>
-          <item row="3" column="1">
+          <item row="3" column="4">
+           <widget class="QSpinBox" name="MicroFlyBack">
+            <property name="maximum">
+             <number>1000</number>
+            </property>
+            <property name="value">
+             <number>4</number>
+            </property>
+           </widget>
+          </item>
+          <item row="4" column="0">
+           <widget class="QLabel" name="label_31">
+            <property name="text">
+             <string>相机品牌</string>
+            </property>
+           </widget>
+          </item>
+          <item row="4" column="1" colspan="2">
            <widget class="QComboBox" name="Camera">
             <item>
              <property name="text">
@@ -2090,42 +2068,7 @@
             </item>
            </widget>
           </item>
-          <item row="6" column="3">
-           <widget class="QSpinBox" name="DepthRange">
-            <property name="maximumSize">
-             <size>
-              <width>150</width>
-              <height>30</height>
-             </size>
-            </property>
-            <property name="whatsThis">
-             <string extracomment="bline average"/>
-            </property>
-            <property name="minimum">
-             <number>0</number>
-            </property>
-            <property name="maximum">
-             <number>10000</number>
-            </property>
-            <property name="value">
-             <number>300</number>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="6">
-           <spacer name="horizontalSpacer_13">
-            <property name="orientation">
-             <enum>Qt::Horizontal</enum>
-            </property>
-            <property name="sizeHint" stdset="0">
-             <size>
-              <width>40</width>
-              <height>20</height>
-             </size>
-            </property>
-           </spacer>
-          </item>
-          <item row="6" column="0">
+          <item row="5" column="0" colspan="2">
            <widget class="QLabel" name="DepthStartLabel">
             <property name="minimumSize">
              <size>
@@ -2144,7 +2087,7 @@
             </property>
            </widget>
           </item>
-          <item row="6" column="1">
+          <item row="5" column="2">
            <widget class="QSpinBox" name="DepthStart">
             <property name="maximumSize">
              <size>
@@ -2157,6 +2100,47 @@
             </property>
             <property name="maximum">
              <number>10000</number>
+            </property>
+           </widget>
+          </item>
+          <item row="5" column="3">
+           <widget class="QLabel" name="DepthRangeLabel">
+            <property name="minimumSize">
+             <size>
+              <width>200</width>
+              <height>0</height>
+             </size>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>150</width>
+              <height>20</height>
+             </size>
+            </property>
+            <property name="text">
+             <string>Dsplay Range(pixel)</string>
+            </property>
+           </widget>
+          </item>
+          <item row="5" column="4">
+           <widget class="QSpinBox" name="DepthRange">
+            <property name="maximumSize">
+             <size>
+              <width>150</width>
+              <height>30</height>
+             </size>
+            </property>
+            <property name="whatsThis">
+             <string extracomment="bline average"/>
+            </property>
+            <property name="minimum">
+             <number>0</number>
+            </property>
+            <property name="maximum">
+             <number>10000</number>
+            </property>
+            <property name="value">
+             <number>300</number>
             </property>
            </widget>
           </item>
@@ -2226,10 +2210,41 @@
                 </property>
                </widget>
               </item>
+              <item row="0" column="4">
+               <widget class="QLabel" name="label_51">
+                <property name="text">
+                 <string>TriggerOnOff</string>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="5">
+               <widget class="QComboBox" name="TriggerON_DH">
+                <item>
+                 <property name="text">
+                  <string>On</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Off</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
               <item row="1" column="0">
                <widget class="QLabel" name="label_40">
                 <property name="text">
                  <string>Current Gain:</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="QDoubleSpinBox" name="DGain_display_DH">
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+                <property name="decimals">
+                 <number>0</number>
                 </property>
                </widget>
               </item>
@@ -2238,6 +2253,34 @@
                 <property name="text">
                  <string>Set Gain:</string>
                 </property>
+               </widget>
+              </item>
+              <item row="1" column="3">
+               <widget class="QDoubleSpinBox" name="DGain_DH">
+                <property name="decimals">
+                 <number>0</number>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="4">
+               <widget class="QLabel" name="label_36">
+                <property name="text">
+                 <string>TriggerSource</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="5">
+               <widget class="QComboBox" name="TriggerSource_DH">
+                <item>
+                 <property name="text">
+                  <string>Line0</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Line2</string>
+                 </property>
+                </item>
                </widget>
               </item>
               <item row="2" column="0">
@@ -2293,6 +2336,55 @@
                 </item>
                </widget>
               </item>
+              <item row="2" column="4">
+               <widget class="QLabel" name="label_46">
+                <property name="text">
+                 <string>TriggerActivation</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="5">
+               <widget class="QComboBox" name="TriggerActivation_DH">
+                <property name="enabled">
+                 <bool>true</bool>
+                </property>
+                <item>
+                 <property name="text">
+                  <string>RisingEdge</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>FallingEdge</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>AnyEdge</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+              <item row="3" column="0">
+               <widget class="QLabel" name="label_37">
+                <property name="enabled">
+                 <bool>true</bool>
+                </property>
+                <property name="text">
+                 <string>帧率：</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="1">
+               <widget class="QSpinBox" name="FrameRate_DH">
+                <property name="maximum">
+                 <number>10000</number>
+                </property>
+                <property name="value">
+                 <number>400</number>
+                </property>
+               </widget>
+              </item>
               <item row="3" column="2">
                <widget class="QLabel" name="XstepsLabel_2">
                 <property name="text">
@@ -2322,108 +2414,6 @@
                 </property>
                </widget>
               </item>
-              <item row="4" column="2">
-               <widget class="QLabel" name="label_48">
-                <property name="text">
-                 <string>波长偏置（像素）:</string>
-                </property>
-               </widget>
-              </item>
-              <item row="4" column="3">
-               <widget class="QSpinBox" name="offsetW_DH">
-                <property name="maximum">
-                 <number>1600</number>
-                </property>
-               </widget>
-              </item>
-              <item row="1" column="3">
-               <widget class="QDoubleSpinBox" name="DGain_DH">
-                <property name="decimals">
-                 <number>0</number>
-                </property>
-               </widget>
-              </item>
-              <item row="1" column="1">
-               <widget class="QDoubleSpinBox" name="DGain_display_DH">
-                <property name="enabled">
-                 <bool>false</bool>
-                </property>
-                <property name="decimals">
-                 <number>0</number>
-                </property>
-               </widget>
-              </item>
-              <item row="0" column="4">
-               <widget class="QLabel" name="label_51">
-                <property name="text">
-                 <string>TriggerOnOff</string>
-                </property>
-               </widget>
-              </item>
-              <item row="1" column="4">
-               <widget class="QLabel" name="label_36">
-                <property name="text">
-                 <string>TriggerSource</string>
-                </property>
-               </widget>
-              </item>
-              <item row="2" column="4">
-               <widget class="QLabel" name="label_46">
-                <property name="text">
-                 <string>TriggerActivation</string>
-                </property>
-               </widget>
-              </item>
-              <item row="0" column="5">
-               <widget class="QComboBox" name="TriggerON_DH">
-                <item>
-                 <property name="text">
-                  <string>On</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>Off</string>
-                 </property>
-                </item>
-               </widget>
-              </item>
-              <item row="1" column="5">
-               <widget class="QComboBox" name="TriggerSource_DH">
-                <item>
-                 <property name="text">
-                  <string>Line0</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>Line2</string>
-                 </property>
-                </item>
-               </widget>
-              </item>
-              <item row="2" column="5">
-               <widget class="QComboBox" name="TriggerActivation_DH">
-                <property name="enabled">
-                 <bool>true</bool>
-                </property>
-                <item>
-                 <property name="text">
-                  <string>RisingEdge</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>FallingEdge</string>
-                 </property>
-                </item>
-                <item>
-                 <property name="text">
-                  <string>AnyEdge</string>
-                 </property>
-                </item>
-               </widget>
-              </item>
               <item row="3" column="4">
                <widget class="QLabel" name="label_39">
                 <property name="text">
@@ -2438,34 +2428,28 @@
                 </property>
                </widget>
               </item>
-              <item row="3" column="0">
-               <widget class="QLabel" name="label_37">
-                <property name="enabled">
-                 <bool>true</bool>
-                </property>
+              <item row="4" column="2">
+               <widget class="QLabel" name="label_48">
                 <property name="text">
-                 <string>帧率：</string>
+                 <string>波长偏置（像素）:</string>
                 </property>
                </widget>
               </item>
-              <item row="3" column="1">
-               <widget class="QSpinBox" name="FrameRate_DH">
+              <item row="4" column="3">
+               <widget class="QSpinBox" name="offsetW_DH">
                 <property name="maximum">
-                 <number>10000</number>
-                </property>
-                <property name="value">
-                 <number>400</number>
+                 <number>1600</number>
                 </property>
                </widget>
               </item>
-              <item row="4" column="0">
+              <item row="4" column="4">
                <widget class="QLabel" name="label_41">
                 <property name="text">
                  <string>波长降采样：</string>
                 </property>
                </widget>
               </item>
-              <item row="4" column="1">
+              <item row="4" column="5">
                <widget class="QSpinBox" name="SpectralDS_DH">
                 <property name="minimum">
                  <number>1</number>
@@ -3154,36 +3138,13 @@
           <string>图像优化</string>
          </attribute>
          <layout class="QGridLayout" name="gridLayout_11">
-          <item row="2" column="2">
-           <widget class="QPushButton" name="LoadSurface">
-            <property name="enabled">
-             <bool>true</bool>
-            </property>
+          <item row="0" column="1">
+           <widget class="QPushButton" name="redoBG">
             <property name="text">
-             <string>Load surface</string>
+             <string>Do Background</string>
             </property>
-           </widget>
-          </item>
-          <item row="1" column="1">
-           <widget class="QLineEdit" name="BG_DIR">
-            <property name="minimumSize">
-             <size>
-              <width>0</width>
-              <height>100</height>
-             </size>
-            </property>
-            <property name="maximumSize">
-             <size>
-              <width>300</width>
-              <height>16777215</height>
-             </size>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="1">
-           <widget class="QPushButton" name="LoadBG">
-            <property name="text">
-             <string>Load Background files</string>
+            <property name="checkable">
+             <bool>false</bool>
             </property>
            </widget>
           </item>
@@ -3203,14 +3164,20 @@
             </property>
            </widget>
           </item>
-          <item row="2" column="0">
-           <widget class="QPushButton" name="LoadInD">
+          <item row="0" column="3">
+           <widget class="QLabel" name="label_27">
+            <property name="layoutDirection">
+             <enum>Qt::LeftToRight</enum>
+            </property>
             <property name="text">
-             <string>Load Interpolation files</string>
+             <string>Dynamic contrast</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
             </property>
            </widget>
           </item>
-          <item row="1" column="0">
+          <item row="1" column="0" rowspan="3">
            <widget class="QLineEdit" name="InD_DIR">
             <property name="minimumSize">
              <size>
@@ -3226,17 +3193,23 @@
             </property>
            </widget>
           </item>
-          <item row="0" column="1">
-           <widget class="QPushButton" name="redoBG">
-            <property name="text">
-             <string>Do Background</string>
+          <item row="1" column="1" rowspan="3">
+           <widget class="QLineEdit" name="BG_DIR">
+            <property name="minimumSize">
+             <size>
+              <width>0</width>
+              <height>100</height>
+             </size>
             </property>
-            <property name="checkable">
-             <bool>false</bool>
+            <property name="maximumSize">
+             <size>
+              <width>300</width>
+              <height>16777215</height>
+             </size>
             </property>
            </widget>
           </item>
-          <item row="1" column="2">
+          <item row="1" column="2" rowspan="3">
            <widget class="QLineEdit" name="Surf_DIR">
             <property name="enabled">
              <bool>true</bool>
@@ -3255,29 +3228,6 @@
             </property>
            </widget>
           </item>
-          <item row="0" column="3">
-           <widget class="QLabel" name="label_27">
-            <property name="layoutDirection">
-             <enum>Qt::LeftToRight</enum>
-            </property>
-            <property name="text">
-             <string>Dynamic contrast</string>
-            </property>
-            <property name="alignment">
-             <set>Qt::AlignCenter</set>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="3">
-           <widget class="QSlider" name="DynContrast">
-            <property name="value">
-             <number>50</number>
-            </property>
-            <property name="orientation">
-             <enum>Qt::Horizontal</enum>
-            </property>
-           </widget>
-          </item>
           <item row="1" column="4">
            <spacer name="horizontalSpacer_15">
             <property name="orientation">
@@ -3290,6 +3240,76 @@
              </size>
             </property>
            </spacer>
+          </item>
+          <item row="2" column="3">
+           <widget class="QSlider" name="DynContrast">
+            <property name="value">
+             <number>50</number>
+            </property>
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="3" colspan="2">
+           <widget class="QCheckBox" name="HoloXFilterCheckBox">
+            <property name="text">
+             <string>X方向陷波滤波(去内部反射)</string>
+            </property>
+            <property name="checked">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item row="4" column="0">
+           <widget class="QPushButton" name="LoadInD">
+            <property name="text">
+             <string>Load Interpolation files</string>
+            </property>
+           </widget>
+          </item>
+          <item row="4" column="1">
+           <widget class="QPushButton" name="LoadBG">
+            <property name="text">
+             <string>Load Background files</string>
+            </property>
+           </widget>
+          </item>
+          <item row="4" column="2">
+           <widget class="QPushButton" name="LoadSurface">
+            <property name="enabled">
+             <bool>true</bool>
+            </property>
+            <property name="text">
+             <string>Load surface</string>
+            </property>
+           </widget>
+          </item>
+          <item row="4" column="3">
+           <widget class="QLabel" name="HoloBandwidthLabel">
+            <property name="text">
+             <string>陷波半宽(×Nyquist)</string>
+            </property>
+           </widget>
+          </item>
+          <item row="4" column="4">
+           <widget class="QDoubleSpinBox" name="HoloBandwidth">
+            <property name="decimals">
+             <number>3</number>
+            </property>
+            <property name="minimum">
+             <double>0.000000000000000</double>
+            </property>
+            <property name="maximum">
+             <double>1.000000000000000</double>
+            </property>
+            <property name="singleStep">
+             <double>0.050000000000000</double>
+            </property>
+            <property name="value">
+             <double>0.250000000000000</double>
+            </property>
+           </widget>
           </item>
          </layout>
         </widget>
@@ -3466,6 +3486,29 @@ p, li { white-space: pre-wrap; }
              </size>
             </property>
            </spacer>
+          </item>
+          <item row="3" column="0">
+           <widget class="QComboBox" name="SampleCenterSelector">
+            <property name="minimumSize">
+             <size>
+              <width>110</width>
+              <height>30</height>
+             </size>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="QPushButton" name="GotoSampleCenter">
+            <property name="minimumSize">
+             <size>
+              <width>0</width>
+              <height>30</height>
+             </size>
+            </property>
+            <property name="text">
+             <string>电机到中心</string>
+            </property>
+           </widget>
           </item>
          </layout>
         </widget>

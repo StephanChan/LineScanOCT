@@ -75,6 +75,7 @@ FINITE_ACQ_MODES = (
     AcqTypes.FINITE_ALINE,
     AcqTypes.FINITE_BLINE,
     AcqTypes.FINITE_CSCAN,
+    AcqTypes.FAST_VOLUME_CSCAN,
     AcqTypes.PLATE_PRESCAN,
     AcqTypes.PLATE_SCAN,
     AcqTypes.WELL_SCAN,
@@ -401,17 +402,10 @@ class GUI(MainWindow):
         return 300.0
 
     def _add_sample_center_controls(self):
-        if not hasattr(self.ui, "gridLayout_4") or not hasattr(self.ui, "groupBox"):
+        # The widgets are declared in GUI.ui (TestTab); here we only connect the
+        # button and populate the selector.
+        if not hasattr(self.ui, "SampleCenterSelector") or not hasattr(self.ui, "GotoSampleCenter"):
             return
-        self.ui.SampleCenterSelector = QW.QComboBox(self.ui.groupBox)
-        self.ui.SampleCenterSelector.setObjectName("SampleCenterSelector")
-        self.ui.SampleCenterSelector.setMinimumSize(qc.QSize(110, 30))
-        self.ui.GotoSampleCenter = QW.QPushButton(self.ui.groupBox)
-        self.ui.GotoSampleCenter.setObjectName("GotoSampleCenter")
-        self.ui.GotoSampleCenter.setMinimumSize(qc.QSize(0, 30))
-        self.ui.GotoSampleCenter.setText("\u7535\u673a\u5230\u4e2d\u5fc3")
-        self.ui.gridLayout_4.addWidget(self.ui.SampleCenterSelector, 4, 1, 1, 1)
-        self.ui.gridLayout_4.addWidget(self.ui.GotoSampleCenter, 4, 2, 1, 2)
         self.ui.GotoSampleCenter.clicked.connect(self.GotoSelectedSampleCenter)
         self.refresh_sample_center_selector()
 
@@ -1242,7 +1236,7 @@ class GUI(MainWindow):
             payload = self._last_display_payloads.get("bline")
             if payload is not None:
                 render_bline_ready(self.ui, payload)
-        elif acq_mode in ["FiniteCscan", "ContinuousCscan"]:
+        elif acq_mode in ["FiniteCscan", "ContinuousCscan", "FastVolumeCscan"]:
             payload = self._last_display_payloads.get("cscan")
             if payload is not None:
                 render_cscan_ready(self.ui, payload)

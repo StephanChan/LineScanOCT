@@ -40,12 +40,13 @@ from Display_rendering import (
     render_mosaic_correction_overlay,
 )
 from DynamicPostprocessing import (
-    process_idle_dynamic_until_deadline,
     process_next_idle_dynamic_folder,
+    process_pending_dynamic_folders,
     update_timer_readout,
     write_stitched_idle_outputs,
 )
 from CameraUi import effective_camera_sample_count, camera_pixel_format
+from DataShape import fast_volume_ring_count
 from HardwareSpecs import get_objective_spec
 from ScanSession import (
     load_session_data,
@@ -67,6 +68,7 @@ BLINE_MODES = (
 CSCAN_MODES = (
     AcqTypes.FINITE_CSCAN,
     AcqTypes.CONTINUOUS_CSCAN,
+    AcqTypes.FAST_VOLUME_CSCAN,
 )
 
 CONTINUOUS_MODES = (
@@ -91,6 +93,11 @@ SAVE_SAMPLE_TIME_MODES = (
 
 AUTO_BACKGROUND_PER_FOV_ENABLED = False
 SKIP_PLATE_PRESCAN_FULL_SAMPLE_SCAN = True
+
+# Temporary: route PlateScan / WellScan / TimedPlateScan FOV acquisitions through
+# the FastVolumeCscan path (micro-sweep scan pattern). Set False to revert to the
+# standard FiniteCscan-based mosaic acquisition.
+PLATE_SCAN_USES_FAST_VOLUME = True
 
 class WeaverThread(QThread):
     def __init__(self):
@@ -141,6 +148,7 @@ class WeaverThread(QThread):
                     AcqTypes.FINITE_ALINE,
                     AcqTypes.FINITE_BLINE,
                     AcqTypes.FINITE_CSCAN,
+                    AcqTypes.FAST_VOLUME_CSCAN,
                 ):
                     if not self.wait_for_processing_barrier(label=f"starting {self.item.action}"):
                         message = f"{self.item.action} stopped by user."
@@ -280,6 +288,21 @@ class WeaverThread(QThread):
     def current_acq_mode(self):
         return self.ui.ACQMode.currentText()
 
+    def fast_volume_acquisition(self, acq_mode):
+        """True when the given acquisition mode actually uses the FastVolumeCscan
+        scan path (either selected directly or routed through the plate-scan
+        modes by PLATE_SCAN_USES_FAST_VOLUME)."""
+        if acq_mode == AcqTypes.FAST_VOLUME_CSCAN:
+            return True
+        return (
+            PLATE_SCAN_USES_FAST_VOLUME
+            and acq_mode in (
+                AcqTypes.PLATE_SCAN,
+                AcqTypes.WELL_SCAN,
+                AcqTypes.TIMED_PLATE_SCAN,
+            )
+        )
+
     def current_fft_device(self):
         return self.ui.FFTDevice.currentText()
 
@@ -297,6 +320,15 @@ class WeaverThread(QThread):
 
     def current_y_pixels(self):
         return max(1, int(self.ui.Ypixels.value()))
+
+    def current_mosaic_display_downsample(self):
+        """Downsample factor applied by DnS to the stitched mosaic volumes.
+
+        Set by ThreadDnS.Init_Mosaic from the UI "downsample scale" spinbox;
+        used to scale the mosaic-correction pixel->stage-mm conversion so it
+        stays correct when the displayed mosaic image is downsampled in X/Y.
+        """
+        return max(1, int(getattr(self.ui, "mosaic_display_downsample", 1)))
 
     def current_max_y_fov_mm(self):
         objective = get_objective_spec(self.ui.Objective.currentText())
@@ -317,6 +349,8 @@ class WeaverThread(QThread):
         return self.current_dynamic_enabled() and self.ui.RealtimeDynCheckBox.isChecked()
 
     def current_pre_avg_factor(self):
+        if self.fast_volume_acquisition(self.current_acq_mode()) and not self.current_dynamic_enabled():
+            return 1
         fft_device = self.current_fft_device()
         if fft_device not in ['GPU', 'CPU']:
             return 1
@@ -358,7 +392,11 @@ class WeaverThread(QThread):
 
         raw_shape = self.Memory[memory_slot].shape
         raw_frames = int(raw_shape[0])
-        x_pixels = int(raw_shape[1])
+        aline_avg = max(1, int(getattr(self.ui, "AlineAVG", 1).value() if hasattr(self.ui, "AlineAVG") else 1))
+        # The GPU averages A-lines (X) before the FFT, so the FFT output and its
+        # saved filenames use AlinesPerBline // AlineAVG. Raw spectral data is
+        # not averaged and keeps the full X count.
+        x_pixels = int(raw_shape[1]) if raw else int(raw_shape[1]) // aline_avg
         z_pixels = self.current_nsamples() if raw else self.current_depth_range()
         repeat_count = raw_frames if raw else self.current_processed_repeat_count(raw_frames)
         y_pixels = self.current_y_pixels()
@@ -587,8 +625,34 @@ class WeaverThread(QThread):
             data_type =  np.uint8
         else:
             data_type =  np.uint16
-            
-        for ii in range(self.memoryCount):
+
+        # FastVolumeCscan dynamic needs a larger per-Y ring: each Y-slot is
+        # reused ~2*MicroSteps positions later, which gives the GPU roughly one
+        # full micro-block to drain the slot before it is overwritten.
+        memory_count = self.memoryCount
+        if (
+            self.fast_volume_acquisition(configured_acq_mode)
+            and configured_dynamic
+        ):
+            micro_steps = max(1, int(self.ui.MicroSteps.value()))
+            memory_count = fast_volume_ring_count(micro_steps)
+            while len(self.Memory) < memory_count:
+                self.Memory.append(None)
+            slot_bytes = int(
+                configured_bline_avg
+                * alines_per_bline
+                * samples
+                * (1 if data_type == np.uint8 else 2)
+            )
+            message = (
+                f"FastVolumeCscan dynamic: using {memory_count} per-Y memory "
+                f"slots ({memory_count * slot_bytes / 1024.0 ** 3:.1f} GB) for "
+                f"MicroSteps={micro_steps}."
+            )
+            print(message)
+            self.emit_status(message)
+
+        for ii in range(memory_count):
              if configured_acq_mode in (
                  AcqTypes.FINITE_ALINE,
                  AcqTypes.CONTINUOUS_ALINE,
@@ -602,6 +666,7 @@ class WeaverThread(QThread):
                  self.NAcq = 1
              elif configured_acq_mode in (
                  AcqTypes.FINITE_CSCAN,
+                 AcqTypes.FAST_VOLUME_CSCAN,
                  AcqTypes.PLATE_PRESCAN,
                  AcqTypes.PLATE_SCAN,
                  AcqTypes.WELL_SCAN,
@@ -623,22 +688,30 @@ class WeaverThread(QThread):
             return f"{DnS_action} stopped by user."
         self.drain_continuous_backlog(reason=f"before {DnS_action}")
         fft_device = self.current_fft_device()
+        # FastVolume routing flags, computed once and passed explicitly to every
+        # downstream component (no re-reading the ACQMode combo).
+        fast_volume = self.fast_volume_acquisition(acq_mode)
+        per_y_dynamic = fast_volume and self.current_dynamic_enabled()
+        # For FastVolume acquisitions pass the explicit effective mode so the
+        # camera/AODO generate the FastVolume waveform; otherwise pass None so
+        # they fall back to the ACQMode combo exactly as before.
+        effective_mode = AcqTypes.FAST_VOLUME_CSCAN if fast_volume else None
         t0=time.time()
         # print(self.DbackQueue.qsize())
-        an_action = DActionField('ConfigureBoard')
+        an_action = DActionField('ConfigureBoard', acq_mode=effective_mode, per_y_dynamic=per_y_dynamic)
         self.DQueue.put(an_action)
         # self.DbackQueue.get()
         t1=time.time()
         ###########################################################################################
         # start AODO 
-        an_action = AODOActionField('ConfigTask')
+        an_action = AODOActionField('ConfigTask', acq_mode=effective_mode)
         self.AODOQueue.put(an_action)
         self.StagebackQueue.get()
         t2=time.time()
         # start camera
 
         self.drain_queue(self.DbackQueue, "DbackQueue")
-        an_action = DActionField('Acquire')
+        an_action = DActionField('Acquire', acq_mode=effective_mode, per_y_dynamic=per_y_dynamic)
         self.DQueue.put(an_action)
         self.DbackQueue.get()
         t3=time.time()
@@ -694,6 +767,8 @@ class WeaverThread(QThread):
                                 dynamic_bline_idx=dynamic_bline_idx,
                                 filename_bundle=filename_bundle,
                                 skip_save=skip_save,
+                                fast_volume=fast_volume,
+                                per_y_dynamic=per_y_dynamic,
                             )
                             self.DnSQueue.put(an_action)
                             message = f"{DnS_action} completed."
@@ -708,6 +783,8 @@ class WeaverThread(QThread):
                             dynamic_bline_idx=dynamic_bline_idx,
                             filename_bundle=filename_bundle,
                             skip_save=skip_save,
+                            fast_volume=fast_volume,
+                            per_y_dynamic=per_y_dynamic,
                         )
                         self.GPUQueue.put(an_action)
                         message = f"{DnS_action} completed."
@@ -770,7 +847,7 @@ class WeaverThread(QThread):
                     print(message)
                     camera_error_message = message
                     break
-                print('time to fetch data: '+str(round(time.time()-start,3)))
+                # print('time to fetch data: '+str(round(time.time()-start,3)))
                 memory_slot = an_action.memory_slot
                 # print(memory_slot)
                 data_backs += 1
@@ -1074,6 +1151,11 @@ class WeaverThread(QThread):
                 ):
                     return "Plate scan stopped by user."
                 self.update_timer_readout(getattr(self, "_timed_plate_deadline", None))
+                if self.current_save_enabled():
+                    self.process_pending_dynamic_folders(
+                        label=f"sampleID-{sample_center.sample_id} plate scan stitching",
+                        deadline=getattr(self, "_timed_plate_deadline", None),
+                    )
                 message = "Plate scan completed."
             else:
                 message = "Plate scan stopped by user."
@@ -1113,15 +1195,10 @@ class WeaverThread(QThread):
                 break
 
             if self._timed_plate_deadline is not None:
-                if not self.wait_for_processing_barrier(label="offline dynamic processing"):
-                    break
-                final_message = self.process_idle_dynamic_until_deadline(
-                    self._timed_plate_deadline,
-                    final_message,
-                )
-                if not self.ui.RunButton.isChecked():
-                    break
-
+                # Tile stitching already happened inside PlateScan() via
+                # process_pending_dynamic_folders(..., deadline=this deadline);
+                # here we only wait out the remainder of the interval so the
+                # next time point starts on schedule.
                 while self.ui.RunButton.isChecked() and time.time() < self._timed_plate_deadline:
                     self.update_timer_readout(self._timed_plate_deadline)
                     time.sleep(min(60.0, self._timed_plate_deadline - time.time()))
@@ -1157,6 +1234,11 @@ class WeaverThread(QThread):
             stop_if_run_unchecked=False,
         ):
             return "Well scan stopped by user."
+        if self.current_save_enabled():
+            self.process_pending_dynamic_folders(
+                label=f"sampleID-{requested_sample_id} well scan stitching",
+                deadline=getattr(self, "_timed_plate_deadline", None),
+            )
         return(message) 
 
     def AdjustZstage(self, sample_id, start_from_current_z=False):
@@ -1250,14 +1332,18 @@ class WeaverThread(QThread):
     def update_timer_readout(self, deadline):
         return update_timer_readout(self.ui, deadline)
 
-    def process_idle_dynamic_until_deadline(self, deadline, current_message):
-        return process_idle_dynamic_until_deadline(self, deadline, current_message)
-
     def process_next_idle_dynamic_folder(self, deadline):
         return process_next_idle_dynamic_folder(self, deadline)
 
     def write_stitched_idle_outputs(self, sample_id, folder_path, tile_count):
         return write_stitched_idle_outputs(self, sample_id, folder_path, tile_count)
+
+    def process_pending_dynamic_folders(self, label="post-scan dynamic stitching", deadline=None):
+        """Stitch any saved per-tile dynamic volumes into stitched mosaic volumes
+        once (used after PlateScan / WellScan complete). TimedPlateScan passes its
+        interval deadline so the stitching stops at the boundary and resumes on
+        the next time point."""
+        return process_pending_dynamic_folders(self, label, deadline)
 
     def set_time_reader_value(self, value):
         value = int(value)
@@ -1382,13 +1468,14 @@ class WeaverThread(QThread):
 
         # Convert the interactive widget polygons back to mm coordinates
         source_y_length = self.current_location_y_length()
+        mosaic_ds = self.current_mosaic_display_downsample()
         correction_geometry = mosaic_polygons_to_stage_mm(
             raw_polygons=new_polygons,
             current_fov_locations=self.CurrentSampleLocations,
             x_fov_mm=self.ui.XLength.value(),
             source_y_length_mm=source_y_length,
-            x_step_um=self.ui.XStepSize.value(),
-            y_step_um=self.ui.YStepSize.value(),
+            x_step_um=self.ui.XStepSize.value() * mosaic_ds,
+            y_step_um=self.ui.YStepSize.value() * mosaic_ds,
         )
         mm_polygons = correction_geometry["mm_polygons"]
         px_w_mm = correction_geometry["px_w_mm"]
@@ -1498,8 +1585,8 @@ class WeaverThread(QThread):
             x_fov_mm=XFOV,
             y_fov_mm=YFOV,
             source_y_length_mm=mosaic_source_y_fov,
-            x_step_um=self.ui.XStepSize.value(),
-            y_step_um=self.ui.YStepSize.value(),
+            x_step_um=self.ui.XStepSize.value() * self.current_mosaic_display_downsample(),
+            y_step_um=self.ui.YStepSize.value() * self.current_mosaic_display_downsample(),
         )
         self.render_mosaic_correction_overlay(sample_id, self.overlay_images[sample_id])
         self.CurrentSampleLocations = new_fov_locations        

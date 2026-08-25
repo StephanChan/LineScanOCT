@@ -75,6 +75,19 @@ def collect_tile_bline_files(folder_path):
     return tile_groups
 
 
+def collect_tile_volume_files(folder_path):
+    """Return the set of tile ids that already have a per-tile dynamic volume
+    file (realtime dynamic path: tile-<id>-Dyn-...)."""
+    tile_ids = set()
+    if not os.path.isdir(folder_path):
+        return tile_ids
+    for filename in os.listdir(folder_path):
+        match = TILE_DYN_RE.match(filename)
+        if match is not None:
+            tile_ids.add(int(match.group("tile")))
+    return tile_ids
+
+
 def dynamic_output_path(folder_path, tile_id, volume_shape):
     ypix, xpix, zpix = volume_shape
     filename = f"tile-{tile_id}-Dyn-Y{ypix}-X{xpix}-Z{zpix}.tif"
@@ -138,18 +151,6 @@ def update_timer_readout(ui, deadline):
     return remaining_hours
 
 
-def process_idle_dynamic_until_deadline(weaver, deadline, current_message):
-    if not OFFLINE_DYNAMIC_PROCESSING_ENABLED:
-        return current_message
-    while weaver.ui.RunButton.isChecked() and time.time() < deadline:
-        processed = process_next_idle_dynamic_folder(weaver, deadline)
-        update_timer_readout(weaver.ui, deadline)
-        if not processed:
-            return "Timed plate scan idle processing finished: no pending dynamic folders."
-        current_message = "Timed plate scan idle processing completed one sample/time folder."
-    return current_message
-
-
 def process_next_idle_dynamic_folder(weaver, deadline):
     if not OFFLINE_DYNAMIC_PROCESSING_ENABLED:
         return False
@@ -161,12 +162,17 @@ def process_next_idle_dynamic_folder(weaver, deadline):
 
     for sample_id, time_id, folder_path in list_sample_time_dirs(root_dir):
         tile_groups = collect_tile_bline_files(folder_path)
-        if not tile_groups:
+        volume_tile_ids = collect_tile_volume_files(folder_path)
+        if not tile_groups and not volume_tile_ids:
             continue
 
         processed_any = False
         expected_tile_count = len(weaver.sample_fov_locations(sample_id))
-        tile_count = len(tile_groups)
+        # Tiles can come from the non-realtime path (per-Y Bline time-trace
+        # stacks, from which Dyn/Mean are computed below) or already exist as
+        # per-tile Dyn/Mean volumes from the realtime path. Both feed the same
+        # stitched output.
+        tile_count = max(len(tile_groups), len(volume_tile_ids))
         for tile_id in sorted(tile_groups):
             if tile_outputs_exist(folder_path, tile_id):
                 continue
@@ -290,3 +296,38 @@ def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
         append=False,
     )
     return True
+
+
+def process_pending_dynamic_folders(weaver, label="post-scan dynamic stitching", deadline=None):
+    """Run the offline tile stitching once for every pending sample/time folder.
+
+    Used by PlateScan / WellScan after a scan completes, and by TimedPlateScan
+    through its embedded PlateScan call (which passes the time-point deadline so
+    the stitching stops at the interval boundary and resumes on the next slice).
+    Requires saved per-tile volumes (or per-Y Bline stacks) and an idle GPU
+    thread. With deadline=None the stitching runs to completion.
+    """
+    if not OFFLINE_DYNAMIC_PROCESSING_ENABLED:
+        message = f"{label}: offline dynamic processing is disabled."
+        print(message)
+        weaver.emit_status(message)
+        return message
+    if deadline is None:
+        deadline = time.time() + 3600.0
+    processed_any = False
+    while weaver.ui.RunButton.isChecked() and time.time() < deadline:
+        processed = process_next_idle_dynamic_folder(weaver, deadline)
+        if not processed:
+            break
+        processed_any = True
+    if processed_any:
+        message = f"{label}: stitched one or more sample/time folders."
+    elif not weaver.ui.RunButton.isChecked():
+        message = f"{label}: stopped by user."
+    elif time.time() >= deadline:
+        message = f"{label}: reached the time deadline with folders still pending."
+    else:
+        message = f"{label}: no pending dynamic folders."
+    print(message)
+    weaver.emit_status(message)
+    return message

@@ -11,6 +11,7 @@ class AcqTypes:
     FINITE_BLINE = "FiniteBline"
     CONTINUOUS_CSCAN = "ContinuousCscan"
     FINITE_CSCAN = "FiniteCscan"
+    FAST_VOLUME_CSCAN = "FastVolumeCscan"
     LOCATION_CAMERA_LIVE = "LocationCameraLive"
     MOSAIC = "Mosaic"
     PLATE_PRESCAN = "PlatePreScan"

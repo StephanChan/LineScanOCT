@@ -9,7 +9,7 @@ from ScanModels import FOVLocation
 
 ROI_OCCUPANCY_TARGET = 0.80
 FOV_OVERLAP = 0.01
-MAX_Y_FOV_MM = 5.0
+MAX_Y_FOV_MM = 0.25
 CENTER_MODE = "bounds"  # "bounds" or "centroid"
 DEBUG_SCAN_PLANNER = False
 

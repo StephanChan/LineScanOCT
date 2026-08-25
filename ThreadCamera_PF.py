@@ -38,6 +38,7 @@ except Exception as error:
     SIM = True
 
 from ActionFields import DbackActionField, DActionField
+from DataShape import fast_volume_frame_map, fast_volume_ring_count
 from CameraUi import (
     downsample_spectral_axis,
     effective_camera_sample_count,
@@ -213,11 +214,14 @@ class Camera(QThread):
         self.ProcessedSamples = effective_camera_sample_count(self.ui)
         self.CameraWidth, self.CameraHeight = self.camera_roi_shape()
         self.CameraOffsetX, self.CameraOffsetY = self.camera_roi_offsets()
-        if self.ui.ACQMode.currentText() in ['FiniteBline', 'FiniteAline']:
+        # Use the effective acquisition mode passed by the Weaver (explicit),
+        # falling back to the ACQMode combo for legacy callers.
+        acq_mode = getattr(self.item, "acq_mode", None) or self.ui.ACQMode.currentText()
+        if acq_mode in ['FiniteBline', 'FiniteAline']:
             self.BlinesPerAcq = self.ui.BlineAVG.value() 
-        elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousAline','ContinuousCscan']:
+        elif acq_mode in ['ContinuousBline', 'ContinuousAline','ContinuousCscan']:
             self.BlinesPerAcq = CONTINUOUS
-        elif self.ui.ACQMode.currentText() in ['FiniteCscan','PlateScan','PlatePreScan', 'WellScan','TimedPlateScan']:
+        elif acq_mode in ['FiniteCscan','FastVolumeCscan','PlateScan','PlatePreScan', 'WellScan','TimedPlateScan']:
             self.BlinesPerAcq = self.ui.Ypixels.value() * self.ui.BlineAVG.value()
         if not (SIM or self.SIM):
             # get all camera features
@@ -228,14 +232,14 @@ class Camera(QThread):
             #     print(elem.Name)
             # print('\r')
             
-            if self.ui.ACQMode.currentText() in ['FiniteBline', 'FiniteAline','FiniteCscan','PlateScan','PlatePreScan', 'WellScan','TimedPlateScan']:
+            if acq_mode in ['FiniteBline', 'FiniteAline','FiniteCscan','FastVolumeCscan','PlateScan','PlatePreScan', 'WellScan','TimedPlateScan']:
                 pfResult = self.pfCam.SetFeatureEnum("AcquisitionMode", "MultiFrame")
                 if pfResult != pf.Error.NONE:
                     self.ExitWithErrorPrompt("Could not set acquisitionMode", pfResult)
                 pfResult = self.pfCam.SetFeatureInt("AcquisitionFrameCount", self.BlinesPerAcq)
                 if pfResult != pf.Error.NONE:
                     self.ExitWithErrorPrompt("Could not set acquisition Frame Count", pfResult)
-            elif self.ui.ACQMode.currentText() in ['ContinuousBline', 'ContinuousAline','ContinuousCscan']:
+            elif acq_mode in ['ContinuousBline', 'ContinuousAline','ContinuousCscan']:
                 pfResult = self.pfCam.SetFeatureEnum("AcquisitionMode", "Continuous")
                 if pfResult != pf.Error.NONE:
                     self.ExitWithErrorPrompt("Could not set acquisitionMode", pfResult)
@@ -493,6 +497,19 @@ class Camera(QThread):
         self._spectral_axis_mode = None
         NBlines = self.Memory[0].shape[0]
         start_memory_slot = self.MemoryLoc
+        # FastVolumeCscan per-Y dynamic: re-order every acquired frame into its
+        # (Y position, repetition) destination so the downstream realtime /
+        # non-realtime dynamic processing sees the standard per-Y layout
+        # unchanged. The per_y_dynamic flag is passed explicitly by the Weaver.
+        fast_volume_map = None
+        ring_count = self.memoryCount
+        if getattr(self.item, "per_y_dynamic", False):
+            fast_volume_map = fast_volume_frame_map(
+                int(self.ui.Ypixels.value()),
+                int(self.ui.MicroSteps.value()),
+                int(self.ui.BlineAVG.value()),
+            )
+            ring_count = fast_volume_ring_count(int(self.ui.MicroSteps.value()))
         mono8 = self.ui.PixelFormat_display_PF.text() in ['Mono8']
         worker_count = PHOTONFOCUS_CONSUMER_WORKERS
         grab_q = queue.Queue(maxsize=128)
@@ -529,7 +546,10 @@ class Camera(QThread):
                 profile[key] += value
 
         def mark_frame_complete(frame_number):
-            block_id = frame_number // NBlines
+            if fast_volume_map is not None:
+                block_id = int(fast_volume_map[0][frame_number])
+            else:
+                block_id = frame_number // NBlines
             with completion_lock:
                 completed = completed_blocks.get(block_id, 0) + 1
                 completed_blocks[block_id] = completed
@@ -538,7 +558,7 @@ class Camera(QThread):
                     del completed_blocks[block_id]
                     while next_block_to_emit[0] in completed_block_ids:
                         emit_block_id = next_block_to_emit[0]
-                        memory_slot = (start_memory_slot + emit_block_id) % self.memoryCount
+                        memory_slot = (start_memory_slot + emit_block_id) % ring_count
                         self.DatabackQueue.put(DbackActionField(memory_slot))
                         with profile_lock:
                             profile["max_databack_queue"] = max(
@@ -571,9 +591,13 @@ class Camera(QThread):
                     if item is grab_stop:
                         break
                     pf_buffer, frame_number = item
-                    block_id = frame_number // NBlines
-                    memory_slot = (start_memory_slot + block_id) % self.memoryCount
-                    frame_index = frame_number % NBlines
+                    if fast_volume_map is not None:
+                        block_id = int(fast_volume_map[0][frame_number])
+                        frame_index = int(fast_volume_map[1][frame_number])
+                    else:
+                        block_id = frame_number // NBlines
+                        frame_index = frame_number % NBlines
+                    memory_slot = (start_memory_slot + block_id) % ring_count
                     try:
                         t_image = time.perf_counter()
                         pf_buffer.GetImage(pf_image)
@@ -658,7 +682,7 @@ class Camera(QThread):
         for worker in workers:
             worker.join()
 
-        self.MemoryLoc = (start_memory_slot + next_block_to_emit[0]) % self.memoryCount
+        self.MemoryLoc = (start_memory_slot + next_block_to_emit[0]) % ring_count
         total = time.perf_counter() - total_t0
         queue_put_fraction = profile["queue_put"] / max(total, 1e-9)
         if blines_count > 1000:

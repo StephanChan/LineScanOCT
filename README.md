@@ -232,6 +232,7 @@ Main acquisition modes:
 - `FiniteBline`
 - `ContinuousCscan`
 - `FiniteCscan`
+- `FastVolumeCscan`
 - `LocationCameraLive`
 - `Mosaic`
 - `PlatePreScan`
@@ -306,6 +307,18 @@ This section is intended to mirror the current control logic closely enough to d
    - dynamic + realtime off: `Save(...)` writes one repeated B-line stack per Y slice using `cscan_bline`
    - dynamic + realtime on: `SaveRealtimeCscanDynamicVolumes(...)` writes only `CscanDyn-...` and `CscanMean-...` at the final Y slice.
 
+### FastVolumeCscan
+
+1. `ThreadWeaver.py::QueueOut()` matches `FastVolumeCscan` (a finite C-scan mode), waits for the barrier, calls `InitMemory()`, then calls `SingleScan(DnS_action=FastVolumeCscan, acq_mode=FastVolumeCscan)`.
+2. Concept: instead of dwelling at every Y position for `BlineAVG` frames (B-line repetition), the Y range is split into micro-blocks of `MicroSteps` angles; each block is swept `BlineAVG` times with a short pixel time (micro-scan repetition), with a short **micro fly-back** (`MicroFlyBack`) between sweeps and the existing **main fly-back** (`FlyBack` / `postclocks`) at the very end of the whole C-scan.
+3. `Generaic_functions.GenFastVolumeWave()` builds the block-structured AO waveform; the DO waveform triggers the camera only on micro-sweep steps (total = `Ypixels * BlineAVG` frames). A partial last block is allowed when `Ypixels` is not a multiple of `MicroSteps`.
+4. `InitMemory()` uses the same layouts as `FiniteCscan`:
+   - **static** (dynamic off): one full-volume acquisition `[Ypixels*BlineAVG, X, Z]`, `NAcq=1`, with GPU pre-avg disabled and `DataShape.fast_volume_regroup()` averaging the `BlineAVG` repetitions (applied post-FFT in `ThreadGPU`, and for the raw/`None` FFT path in `ThreadDnS`);
+   - **dynamic** (dynamic on, realtime or non-realtime): per-Y layout `[BlineAVG, X, Z]`, `NAcq=Ypixels`.
+5. For **dynamic** FastVolumeCscan the camera thread re-orders each acquired frame into its `(Y, repetition)` destination (`DataShape.fast_volume_frame_map`) while writing shared memory, so the downstream realtime / non-realtime dynamic processing in `ThreadGPU` and `ThreadDnS` sees the standard per-Y layout and runs **unchanged**. The per-Y memory ring is automatically sized to `2*MicroSteps + 2` slots (`DataShape.fast_volume_ring_count`), so each slot is reused only after roughly one full micro-block, which is enough for the GPU to drain it before overwrite; `InitMemory` prints the slot count and estimated ring RAM.
+6. Save behavior: static writes one standard `Cscan-...` volume; dynamic uses the same save conventions as `FiniteCscan` dynamic (per-Y B-line time-trace stacks, or `CscanDyn-...`/`CscanMean-...` for realtime).
+7. **Temporary plate-scan routing**: with `ThreadWeaver.PLATE_SCAN_USES_FAST_VOLUME = True`, `PlateScan` / `WellScan` / `TimedPlateScan` FOVs are acquired with the FastVolumeCscan scan path (static, non-realtime dynamic, and realtime dynamic all supported). The Weaver computes `fast_volume` / `per_y_dynamic` once and passes them explicitly through the action fields (`DActionField`, `AODOActionField`, `GPUActionField`, `DnSActionField`), so the camera reorder/ring, waveform, and GPU/DnS regroup decisions never re-read the ACQMode combo. Set the flag to `False` to revert to the standard FiniteCscan-based mosaic acquisition.
+
 ### ContinuousCscan
 
 1. `ThreadWeaver.py::QueueOut()` matches `ContinuousCscan`, waits for the barrier, calls `InitMemory()`, then runs `RptScan(DnS_action=ContinuousCscan, acq_mode=ContinuousCscan)`.
@@ -333,12 +346,13 @@ This section is intended to mirror the current control logic closely enough to d
    - non-realtime mosaic paths save per-FOV outputs through `Save(...)`
    - realtime dynamic mosaic paths accumulate `MeanVolume` and `DynamicVolume` in `Process_Mosaic_RealtimeDynamic(...)` and save them with `SaveRealtimeMosaicDynamicVolumes(...)` when the last Y slice of the tile arrives.
 6. After the full plate scan returns to Weaver, `QueueOut()` increments `timeReader` when saving is enabled.
+7. When saving is enabled, `PlateScan()` (and `WellScan()`) call `process_pending_dynamic_folders(...)` after the sample-level barrier so the per-tile dynamic volumes (saved by DnS) are stitched into `stitched-Dyn-*` / `stitched-Mean-*` mosaic volumes in `sampleID-*/Time-*`. `TimedPlateScan()` relies on the same call inside its embedded `PlateScan()`, passing its interval deadline so the stitching stops at the boundary and resumes on the next time point.
 
 ### TimedPlateScan
 
 1. `ThreadWeaver.py::QueueOut()` ensures the saved plate plan exists, then calls `TimedPlateScan(acq_mode=TimedPlateScan, context=...)`.
 2. `TimedPlateScan()` runs `PlateScan(...)` once per time point, using `CuSlice` / `SliceTotal` / `Timer` to control the loop and the next deadline.
-3. After each time point, if there is idle time before the next deadline, Weaver waits for the processing barrier, then calls `process_idle_dynamic_until_deadline(...)` for offline dynamic work.
+3. After each time point, the tile stitching happens inside the embedded `PlateScan()` (via `process_pending_dynamic_folders(...)` with the interval deadline); `TimedPlateScan` then only sleeps until the next deadline so the time-point cadence stays on schedule.
 4. When a session is complete and another one remains, Weaver increments `timeReader` and `CuSlice` through `set_time_reader_value(...)`.
 5. The per-sample and per-FOV acquisition logic inside each timed session is the same as `PlateScan()`.
 
@@ -401,6 +415,9 @@ Dynamic processing currently supports:
 - loaded-background subtraction by default
 - optional first-frame background mode in GPU code
 - GPU and CPU helper paths for dynamic calculation from saved stacks
+- per-Y realtime dynamic discards the first `DISCARD_INITIAL_FRAMES_PER_Y` frames
+  (default 10, in `HardwareSpecs.py`) of each Y position's time series before
+  computing dynamic metrics; the mean image uses the same retained frames
 
 ## Processing Barrier
 
