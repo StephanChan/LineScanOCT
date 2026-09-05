@@ -1295,6 +1295,14 @@ class WeaverThread(QThread):
         an_action = GPUActionField(GPUActions.INIT_MOSAIC, context=[self.CurrentSampleLocations, (Xpixels, Ypixels), (XFOV, YFOV)])
         self.GPUQueue.put(an_action)
         self.ui.ACQMode.setCurrentText(acq_mode)
+        # Start tile numbering at 1 for every scan so the saved tile files always
+        # match tile_positions.json. Repeated or interrupted scans of the same
+        # sample/time folder would otherwise continue the counter (e.g. a stopped
+        # 25-tile run followed by a 102-FOV scan produces tiles 26..127 while the
+        # manifest enumerates 1..102), which leaves stale/offset tile files and
+        # breaks the stitch completeness check.
+        if self.file_naming is not None:
+            self.file_naming.reset_tilenum()
 
         for fov_location in self.CurrentSampleLocations:
             if self.ui.RunButton.isChecked():

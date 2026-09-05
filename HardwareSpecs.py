@@ -47,13 +47,13 @@ OBJECTIVE_SPECS = {
         name="10X",
         angle_to_mm_ratio=2.094 / 2 / 1.19 * 0.9,
         magnification=10.0 * 1.05,
-        max_y_fov_mm=0.25,
+        max_y_fov_mm=0.5,
     ),
     "20X": ObjectiveSpec(
         name="20X",
         angle_to_mm_ratio=2.094 / 1.19 / 4* 0.9,
         magnification=20.0 * 1.05,
-        max_y_fov_mm=0.25,
+        max_y_fov_mm=0.5,
     ),
 }
 

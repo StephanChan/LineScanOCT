@@ -16,7 +16,7 @@
   <widget class="QWidget" name="centralwidget">
    <layout class="QGridLayout" name="gridLayout_14">
     <item row="0" column="0">
-     <layout class="QGridLayout" name="gridLayout" rowstretch="1,0,0" columnstretch="0,0,0,0,0,0,0,0,0,0,0,0,0">
+     <layout class="QGridLayout" name="gridLayout" rowstretch="1,0,0" columnstretch="0,0,0,0,0,0,0,0,0,0,0,0,0,0">
       <property name="verticalSpacing">
        <number>6</number>
       </property>
@@ -33,7 +33,7 @@
         </property>
        </spacer>
       </item>
-      <item row="0" column="10">
+      <item row="0" column="11">
        <widget class="QDoubleSpinBox" name="TimerRead">
         <property name="enabled">
          <bool>false</bool>
@@ -51,7 +51,7 @@
         </property>
        </widget>
       </item>
-      <item row="0" column="12">
+      <item row="0" column="13">
        <widget class="QPushButton" name="ConfigButton">
         <property name="minimumSize">
          <size>
@@ -75,6 +75,19 @@
         </property>
        </widget>
       </item>
+      <item row="0" column="3">
+       <widget class="QLabel" name="label_59">
+        <property name="maximumSize">
+         <size>
+          <width>200</width>
+          <height>16777215</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>拍摄模式：</string>
+        </property>
+       </widget>
+      </item>
       <item row="0" column="7">
        <widget class="QComboBox" name="sampleSelector">
         <property name="minimumSize">
@@ -87,19 +100,6 @@
          <font>
           <pointsize>15</pointsize>
          </font>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="3">
-       <widget class="QLabel" name="label_59">
-        <property name="maximumSize">
-         <size>
-          <width>200</width>
-          <height>16777215</height>
-         </size>
-        </property>
-        <property name="text">
-         <string>拍摄模式：</string>
         </property>
        </widget>
       </item>
@@ -130,25 +130,7 @@
         </property>
        </widget>
       </item>
-      <item row="0" column="6">
-       <widget class="QPushButton" name="SampleLocateButton">
-        <property name="minimumSize">
-         <size>
-          <width>0</width>
-          <height>50</height>
-         </size>
-        </property>
-        <property name="font">
-         <font>
-          <pointsize>15</pointsize>
-         </font>
-        </property>
-        <property name="text">
-         <string>定位样品</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="0" colspan="13">
+      <item row="1" column="0" colspan="14">
        <layout class="QHBoxLayout" name="horizontalLayout" stretch="1,1">
         <property name="spacing">
          <number>1</number>
@@ -354,7 +336,7 @@
         </item>
        </layout>
       </item>
-      <item row="0" column="11">
+      <item row="0" column="12">
        <widget class="QPushButton" name="PauseButton">
         <property name="minimumSize">
          <size>
@@ -380,6 +362,32 @@
          <bool>true</bool>
         </property>
        </widget>
+      </item>
+      <item row="0" column="8">
+       <spacer name="horizontalSpacer_11">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item row="0" column="2">
+       <spacer name="horizontalSpacer_3">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
       </item>
       <item row="0" column="4">
        <widget class="QComboBox" name="ACQMode">
@@ -433,6 +441,11 @@
         </item>
         <item>
          <property name="text">
+          <string>FastVolumeCscan</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
           <string>ContinuousCscan</string>
          </property>
         </item>
@@ -463,33 +476,7 @@
         </item>
        </widget>
       </item>
-      <item row="0" column="8">
-       <spacer name="horizontalSpacer_11">
-        <property name="orientation">
-         <enum>Qt::Horizontal</enum>
-        </property>
-        <property name="sizeHint" stdset="0">
-         <size>
-          <width>40</width>
-          <height>20</height>
-         </size>
-        </property>
-       </spacer>
-      </item>
-      <item row="0" column="2">
-       <spacer name="horizontalSpacer_3">
-        <property name="orientation">
-         <enum>Qt::Horizontal</enum>
-        </property>
-        <property name="sizeHint" stdset="0">
-         <size>
-          <width>40</width>
-          <height>20</height>
-         </size>
-        </property>
-       </spacer>
-      </item>
-      <item row="0" column="9">
+      <item row="0" column="10">
        <widget class="QLabel" name="label_29">
         <property name="font">
          <font>
@@ -501,7 +488,7 @@
         </property>
        </widget>
       </item>
-      <item row="2" column="0" colspan="13">
+      <item row="2" column="0" colspan="14">
        <widget class="QTabWidget" name="Tabs">
         <property name="enabled">
          <bool>true</bool>
@@ -3512,6 +3499,24 @@ p, li { white-space: pre-wrap; }
           </item>
          </layout>
         </widget>
+       </widget>
+      </item>
+      <item row="0" column="9">
+       <widget class="QPushButton" name="SampleLocateButton">
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>15</pointsize>
+         </font>
+        </property>
+        <property name="text">
+         <string>定位样品</string>
+        </property>
        </widget>
       </item>
      </layout>

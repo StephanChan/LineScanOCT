@@ -7,25 +7,48 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tifffile as TIFF
 
-try:
-    import pandas as pd
-except ImportError:
-    pd = None
-
 
 # Spyder/default run settings. Edit these values, then press Run.
 DEFAULT_INPUT_PATH = (
-    r"E:\IOCTData\vibration_test260824\SingleBline\Bline-1-Yrpt400-X1104-Z182.tif"
+    r"E:\IOCTData\vibration_test260824\100Cscans\TranditionCscan\Cscan-1-Bline-20-Yrpt100-X1104-Z182.tif"
 )
 DEFAULT_OUTPUT_DIR = None  # None saves results beside the input stack.
 DEFAULT_NOISE_INPUT_PATH =(
     r"E:\IOCTData\HighResData\50Hz_2s\noise\Wout_sub_background\AllOn\070726\Bline-9-Yrpt200-X1104-Z109.tif"
 )  # Set a noise-only saved AMP+PHASE TIFF here.
-DEFAULT_FRAME_RATE_HZ = 50.0
+DEFAULT_FRAME_RATE_HZ = 40.0
 DEFAULT_CENTER_WAVELENGTH_NM = 840.0
 DEFAULT_REFRACTIVE_INDEX = 1.0
 DEFAULT_ANALYSIS_START_DEPTH = 15
 DEFAULT_NOISE_ANALYSIS_START_DEPTH = 50
+# Number of leading frames to discard from the SIGNAL stack before the
+# phase-noise calculation (e.g. settling/warm-up frames). The noise stack is
+# always used in full. Set to 0 to keep every signal frame.
+DEFAULT_DISCARD_FIRST_FRAMES = 5
+# --- Complex-STD / ROI CNR analysis ---
+# Master switch: compute the temporal complex-signal STD map and let the user
+# draw two rectangle ROIs (tissue on the signal stack, background on the noise
+# stack) to compute the per-ROI CNR.
+DEFAULT_ENABLE_COMPLEX_STD_ROI_ANALYSIS = True
+# Image shown for ROI drawing and on the saved ROI figure: "complex_std"
+# (default - the log-scaled temporal complex-STD map, i.e. the exact map used
+# for the CNR metrics) or "mean_amplitude" (log-scaled B-scan).
+DEFAULT_ROI_DISPLAY_IMAGE = "complex_std"
+# Optional preset rectangle ROIs as (x0, x1, z0, z1) pixel tuples. If both are
+# set, the interactive selection window is skipped (useful for repeat/headless
+# runs). Set both to None to draw interactively.
+DEFAULT_PRESET_TISSUE_ROI = None
+DEFAULT_PRESET_BACKGROUND_ROI = None
+# TEMPORARY ROLLBACK: draw/measure the background ROI on the SAME tissue
+# B-line image as the tissue ROI. Set back to True to use the noise stack for
+# the background ROI again.
+DEFAULT_ROI_BACKGROUND_ON_NOISE_STACK = False
+# Fractional-dynamics CNR (power-normalized): temporal complex-STD /
+# amplitude-STD maps divided by the per-pixel mean amplitude. The metric is
+# invariant to the overall signal level (e.g. laser power), so it stays
+# meaningful for dynamic samples while reproducing the no-contrast result for
+# static/dead tissue. Reported in addition to the complex/amplitude-STD CNR.
+DEFAULT_ENABLE_FRACTIONAL_DYNAMICS = True
 DEFAULT_SNR_BIN_WIDTH_DB = 2.0
 DEFAULT_MAX_G1_LAG = 200
 DEFAULT_G1_MAX_PIXELS = 20000
@@ -794,83 +817,6 @@ def style_all_axes(fig):
         ax.tick_params(axis="both", labelsize=FONT_SIZES["tick"])
 
 
-def save_results_tables(metrics, output_base):
-    pixel_metrics = metrics["pixel_metrics"]
-    binned = metrics["binned"]
-    summary = metrics["summary"]
-    g1 = metrics["g1"]
-    representatives = metrics["representatives"]
-
-    pixel_table = {
-        key: np.asarray(value)
-        for key, value in pixel_metrics.items()
-    }
-    binned_table = binned
-    summary_table = [{"metric": key, "value": value} for key, value in summary.items()]
-    g1_table = {
-        "lag_frames": np.asarray(g1["lag_frames"]),
-        "g1_abs": np.asarray(g1["g1_abs"]),
-    }
-
-    trace_rows = []
-    for trace_info in representatives:
-        trace = trace_info["phase_trace_rad"]
-        for frame_idx, phase_value in enumerate(trace):
-            trace_rows.append(
-                {
-                    "target_snr_db": trace_info["target_snr_db"],
-                    "actual_snr_db": trace_info["actual_snr_db"],
-                    "x": trace_info["x"],
-                    "z": trace_info["z"],
-                    "frame": frame_idx,
-                    "phase_rad": float(phase_value),
-                }
-            )
-
-    if pd is not None:
-        excel_path = f"{output_base}_phase_noise_metrics.xlsx"
-        try:
-            with pd.ExcelWriter(excel_path) as writer:
-                pd.DataFrame(pixel_table).to_excel(writer, sheet_name="pixel_metrics", index=False)
-                pd.DataFrame(binned_table).to_excel(writer, sheet_name="snr_bins", index=False)
-                pd.DataFrame(summary_table).to_excel(writer, sheet_name="summary", index=False)
-                pd.DataFrame(g1_table).to_excel(writer, sheet_name="g1", index=False)
-                pd.DataFrame(trace_rows).to_excel(writer, sheet_name="phase_traces", index=False)
-            print(f"Saved Excel metrics: {excel_path}")
-            return
-        except Exception as error:
-            print(f"Could not save Excel workbook ({error}); saving CSV files instead.")
-
-    csv_paths = {
-        "pixel_metrics": (pixel_table, f"{output_base}_pixel_metrics.csv"),
-        "snr_bins": (binned_table, f"{output_base}_snr_bins.csv"),
-        "summary": (summary_table, f"{output_base}_summary.csv"),
-        "g1": (g1_table, f"{output_base}_g1.csv"),
-        "phase_traces": (trace_rows, f"{output_base}_phase_traces.csv"),
-    }
-    for _, (table, path) in csv_paths.items():
-        save_csv_table(table, path)
-        print(f"Saved CSV metrics: {path}")
-
-
-def save_csv_table(table, path):
-    if isinstance(table, dict):
-        keys = list(table.keys())
-        rows = zip(*[np.asarray(table[key]).reshape(-1) for key in keys])
-    else:
-        rows = table
-        keys = sorted({key for row in rows for key in row.keys()}) if rows else []
-
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(",".join(keys) + "\n")
-        for row in rows:
-            if isinstance(row, dict):
-                values = [row.get(key, "") for key in keys]
-            else:
-                values = row
-            handle.write(",".join(str(value) for value in values) + "\n")
-
-
 def output_base_for_input(input_path, output_dir):
     input_path = Path(input_path)
     if output_dir is None:
@@ -879,6 +825,617 @@ def output_base_for_input(input_path, output_dir):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
     return str(Path(output_dir) / input_path.stem)
+
+
+# ---------------------------------------------------------------------------
+# Complex-signal STD map + ROI CNR analysis
+# ---------------------------------------------------------------------------
+def compute_complex_std_map(depth_complex):
+    """Temporal complex-field fluctuation (std) map plus mean amplitude.
+
+    For every pixel: complex_std = sqrt( mean_t |E(t) - <E>_t|^2 ).
+    Input depth_complex: [frames, x, z] complex64.
+    """
+    depth_complex = np.asarray(depth_complex, dtype=np.complex64)
+    mean_complex = np.mean(depth_complex, axis=0, dtype=np.complex64)
+    centered = depth_complex - mean_complex[np.newaxis, :, :]
+    complex_std_map = np.sqrt(
+        np.mean(np.abs(centered) ** 2, axis=0, dtype=np.float32)
+    ).astype(np.float32, copy=False)
+    amplitude = np.abs(depth_complex).astype(np.float32, copy=False)
+    mean_amplitude_map = np.mean(amplitude, axis=0, dtype=np.float32)
+    amplitude_std_map = np.std(amplitude, axis=0, dtype=np.float32)
+    # Fractional dynamics: temporal fluctuation normalized by the per-pixel
+    # mean amplitude (power / signal-level invariant contrast).
+    with np.errstate(divide="ignore", invalid="ignore"):
+        normalized_complex_std_map = (complex_std_map / mean_amplitude_map).astype(
+            np.float32, copy=False
+        )
+        normalized_amplitude_std_map = (amplitude_std_map / mean_amplitude_map).astype(
+            np.float32, copy=False
+        )
+    normalized_complex_std_map[~np.isfinite(normalized_complex_std_map)] = np.nan
+    normalized_amplitude_std_map[~np.isfinite(normalized_amplitude_std_map)] = np.nan
+    return {
+        "mean_complex": mean_complex,
+        "complex_std_map": complex_std_map,
+        "mean_amplitude_map": mean_amplitude_map,
+        "amplitude_std_map": amplitude_std_map,
+        "normalized_complex_std_map": normalized_complex_std_map,
+        "normalized_amplitude_std_map": normalized_amplitude_std_map,
+    }
+
+
+def rect_roi_mask(roi, image_shape):
+    """Boolean mask [x, z] for a rectangle ROI given as (x0, x1, z0, z1)."""
+    x0, x1, z0, z1 = [int(round(float(v))) for v in roi]
+    x0, x1 = sorted((max(0, x0), min(image_shape[0], x1)))
+    z0, z1 = sorted((max(0, z0), min(image_shape[1], z1)))
+    if x1 <= x0 or z1 <= z0:
+        raise ValueError(f"ROI rectangle has zero area: {roi}")
+    mask = np.zeros(image_shape, dtype=bool)
+    mask[x0:x1, z0:z1] = True
+    return mask
+
+
+def select_one_rect_roi(display_image, title, roi_label="ROI", color="green"):
+    """Interactive matplotlib window: draw a single rectangle ROI.
+
+    Press-drag-release draws the rectangle; the window closes automatically.
+    Press Esc to redo. Returns (x0, x1, z0, z1) as a pixel tuple.
+    """
+    try:
+        from matplotlib.widgets import RectangleSelector
+    except ImportError as error:
+        raise RuntimeError(
+            "matplotlib.widgets.RectangleSelector is not available; "
+            "set DEFAULT_PRESET_TISSUE_ROI / DEFAULT_PRESET_BACKGROUND_ROI "
+            "to run without the interactive window."
+        ) from error
+
+    fig, ax = plt.subplots(figsize=(10.0, 6.5))
+    ax.imshow(np.asarray(display_image).T, aspect="auto", origin="lower", cmap="gray")
+    ax.set_title(title, fontsize=12)
+    ax.set_xlabel("X pixel")
+    ax.set_ylabel("Depth pixel")
+
+    state = {"roi": None}
+
+    instruction = ax.text(
+        0.01,
+        0.99,
+        f"Drag to draw the {roi_label} ROI ({color}). Esc to redo.",
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=10,
+        color="white",
+        bbox={"facecolor": "black", "alpha": 0.55, "edgecolor": "none"},
+    )
+
+    def onselect(eclick, erelease):
+        x0, x1 = sorted((eclick.xdata, erelease.xdata))
+        y0, y1 = sorted((eclick.ydata, erelease.ydata))
+        if (x1 - x0) < 2.0 or (y1 - y0) < 2.0:
+            return
+        state["roi"] = (x0, x1, y0, y1)
+        for patch in list(ax.patches):
+            patch.remove()
+        ax.add_patch(
+            plt.Rectangle(
+                (x0, y0),
+                x1 - x0,
+                y1 - y0,
+                fill=False,
+                edgecolor=color,
+                linewidth=2.5,
+            )
+        )
+        instruction.set_text(f"{roi_label} ROI selected. Closing...")
+        fig.canvas.draw_idle()
+        plt.close(fig)
+
+    def onkey(event):
+        if event.key == "escape":
+            state["roi"] = None
+            for patch in list(ax.patches):
+                patch.remove()
+            instruction.set_text(f"Redo: drag to draw the {roi_label} ROI.")
+            fig.canvas.draw_idle()
+
+    rect_props = {
+        "facecolor": color,
+        "edgecolor": color,
+        "alpha": 0.2,
+        "linewidth": 1.8,
+    }
+    try:
+        selector = RectangleSelector(
+            ax,
+            onselect,
+            useblit=True,
+            button=[1],
+            interactive=True,
+            props=rect_props,
+        )
+    except TypeError:
+        selector = RectangleSelector(
+            ax,
+            onselect,
+            useblit=True,
+            button=[1],
+            interactive=True,
+            rectprops=rect_props,
+        )
+
+    fig.canvas.mpl_connect("key_press_event", onkey)
+    plt.show(block=True)
+    selector.disconnect_events()
+
+    if state["roi"] is None:
+        raise RuntimeError(
+            "ROI selection window was closed before a rectangle was drawn."
+        )
+    return tuple(int(round(float(v))) for v in state["roi"])
+
+
+def compute_roi_cnr_metrics(
+    signal_complex_std_map,
+    signal_amplitude_std_map,
+    noise_complex_std_map,
+    noise_amplitude_std_map,
+    signal_normalized_complex_std_map,
+    signal_normalized_amplitude_std_map,
+    noise_normalized_complex_std_map,
+    noise_normalized_amplitude_std_map,
+    tissue_roi,
+    background_roi,
+):
+    """Per-ROI CNR computed on the complex-STD / amplitude-STD maps and on the
+    power-normalized (fractional-dynamics) maps.
+
+    Tissue statistics are taken from the SIGNAL stack maps; background
+    statistics from the NOISE stack maps (the background ROI is selected on the
+    noise stack, so it measures the true noise floor). The fractional-dynamics
+    maps divide the temporal STDs by the per-pixel mean amplitude, making the
+    CNR invariant to the overall signal level (e.g. laser power).
+
+    Returns cnr_complex_std, cnr_amplitude_std, cnr_fractional_complex,
+    cnr_fractional_amplitude and the per-ROI std of the underlying values.
+    """
+
+    def roi_mean_std(mask, image):
+        values = np.asarray(image[mask], dtype=np.float32).reshape(-1)
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            return np.nan, np.nan
+        mean = float(np.mean(values))
+        std = float(np.std(values, ddof=1)) if values.size > 1 else np.nan
+        return mean, std
+
+    tissue_mask = rect_roi_mask(tissue_roi, signal_complex_std_map.shape)
+    background_mask = rect_roi_mask(background_roi, noise_complex_std_map.shape)
+
+    cstd_t_mean, cstd_t_std = roi_mean_std(tissue_mask, signal_complex_std_map)
+    cstd_b_mean, cstd_b_std = roi_mean_std(background_mask, noise_complex_std_map)
+    astd_t_mean, astd_t_std = roi_mean_std(tissue_mask, signal_amplitude_std_map)
+    astd_b_mean, astd_b_std = roi_mean_std(background_mask, noise_amplitude_std_map)
+
+    def ratio(numerator, denominator):
+        if np.isfinite(denominator) and denominator > 0:
+            return float(numerator / denominator)
+        return np.nan
+
+    cnr_complex_std = ratio(cstd_t_mean - cstd_b_mean, cstd_b_std)
+    cnr_amplitude_std = ratio(astd_t_mean - astd_b_mean, astd_b_std)
+
+    # Fractional (power-normalized) dynamics metrics.
+    fcstd_t_mean, fcstd_t_std = roi_mean_std(
+        tissue_mask, signal_normalized_complex_std_map
+    )
+    fcstd_b_mean, fcstd_b_std = roi_mean_std(
+        background_mask, noise_normalized_complex_std_map
+    )
+    fastd_t_mean, fastd_t_std = roi_mean_std(
+        tissue_mask, signal_normalized_amplitude_std_map
+    )
+    fastd_b_mean, fastd_b_std = roi_mean_std(
+        background_mask, noise_normalized_amplitude_std_map
+    )
+
+    cnr_fractional_complex = ratio(fcstd_t_mean - fcstd_b_mean, fcstd_b_std)
+    cnr_fractional_amplitude = ratio(fastd_t_mean - fastd_b_mean, fastd_b_std)
+
+    return {
+        "tissue_roi": tuple(int(v) for v in tissue_roi),
+        "background_roi": tuple(int(v) for v in background_roi),
+        "cnr_complex_std": cnr_complex_std,
+        "cnr_amplitude_std": cnr_amplitude_std,
+        "complex_std_tissue_mean": cstd_t_mean,
+        "complex_std_background_mean": cstd_b_mean,
+        "complex_std_tissue_std": cstd_t_std,
+        "complex_std_background_std": cstd_b_std,
+        "amplitude_std_tissue_std": astd_t_std,
+        "amplitude_std_background_std": astd_b_std,
+        "cnr_fractional_complex": cnr_fractional_complex,
+        "cnr_fractional_amplitude": cnr_fractional_amplitude,
+        "fractional_complex_tissue_mean": fcstd_t_mean,
+        "fractional_complex_background_mean": fcstd_b_mean,
+        "fractional_complex_background_std": fcstd_b_std,
+        "fractional_amplitude_tissue_std": fastd_t_std,
+        "fractional_amplitude_background_std": fastd_b_std,
+    }
+
+
+def roi_display_image(complex_std_map, mean_amplitude_map):
+    """Log-scaled image shown for ROI drawing / on the saved ROI figure,
+    selected by DEFAULT_ROI_DISPLAY_IMAGE ("complex_std" or "mean_amplitude")."""
+    if DEFAULT_ROI_DISPLAY_IMAGE == "complex_std":
+        return np.log1p(np.asarray(complex_std_map, dtype=np.float32))
+    return np.log1p(np.asarray(mean_amplitude_map, dtype=np.float32))
+
+
+def plot_roi_cnr_figure(
+    signal_display_image,
+    signal_display_label,
+    noise_display_image,
+    noise_display_label,
+    result,
+    output_path,
+    show_figures=False,
+    background_panel_title="Noise stack (background ROI)",
+):
+    """Two-panel ROI figure: signal image with the tissue ROI (left) and the
+    background image (noise stack, or tissue stack during the temporary
+    rollback) with the background ROI (right), annotated with the CNR
+    metrics."""
+    tissue_roi = result["tissue_roi"]
+    background_roi = result["background_roi"]
+
+    fig, axes = plt.subplots(1, 2, figsize=(20.0, 6.5), constrained_layout=True)
+
+    def draw_panel(ax, image, label, roi, roi_color, roi_label):
+        im = ax.imshow(np.asarray(image).T, aspect="auto", origin="lower", cmap="gray")
+        fig.colorbar(im, ax=ax, label=label)
+        x0, x1, z0, z1 = roi
+        ax.add_patch(
+            plt.Rectangle(
+                (x0, z0),
+                x1 - x0,
+                z1 - z0,
+                fill=False,
+                edgecolor=roi_color,
+                linewidth=2.5,
+                label=roi_label,
+            )
+        )
+        ax.set_xlabel("X pixel", fontsize=FONT_SIZES["label"])
+        ax.set_ylabel("Depth pixel", fontsize=FONT_SIZES["label"])
+        ax.legend(fontsize=FONT_SIZES["legend"], loc="best")
+
+    draw_panel(
+        axes[0],
+        signal_display_image,
+        signal_display_label,
+        tissue_roi,
+        "lime",
+        "Tissue ROI",
+    )
+    draw_panel(
+        axes[1],
+        noise_display_image,
+        noise_display_label,
+        background_roi,
+        "red",
+        "Background ROI",
+    )
+    axes[0].set_title("Signal stack (tissue ROI)", fontsize=FONT_SIZES["title"])
+    axes[1].set_title(background_panel_title, fontsize=FONT_SIZES["title"])
+
+    info = (
+        f"CNR (complex std) = {result['cnr_complex_std']:.3f}\n"
+        f"CNR (amplitude std) = {result['cnr_amplitude_std']:.3f}"
+    )
+    if DEFAULT_ENABLE_FRACTIONAL_DYNAMICS:
+        info += (
+            f"\nCNR (fractional dyn., complex) = {result['cnr_fractional_complex']:.3f}\n"
+            f"CNR (fractional dyn., amplitude) = {result['cnr_fractional_amplitude']:.3f}"
+        )
+    fig.text(
+        0.5,
+        0.02,
+        info,
+        ha="center",
+        va="bottom",
+        fontsize=FONT_SIZES["annotation"],
+        bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"},
+    )
+
+    style_all_axes(fig)
+    fig.savefig(output_path, dpi=DEFAULT_SAVE_DPI, bbox_inches="tight")
+    if show_figures:
+        plt.show(block=True)
+    plt.close(fig)
+
+
+def plot_fractional_dynamics_figure(
+    normalized_complex_map,
+    normalized_amplitude_map,
+    result,
+    output_path,
+    show_figures=False,
+):
+    """Two-panel figure of the power-normalized (fractional-dynamics) maps with
+    the tissue and background ROIs overlaid, annotated with the fractional CNR.
+
+    Fractional dynamics = temporal complex-STD / mean amplitude (and the
+    amplitude-STD equivalent). The metric is invariant to the overall signal
+    level (e.g. laser power), so it stays meaningful for dynamic samples.
+    """
+    tissue_roi = result["tissue_roi"]
+    background_roi = result["background_roi"]
+
+    fig, axes = plt.subplots(1, 2, figsize=(20.0, 6.5), constrained_layout=True)
+
+    def draw_panel(ax, image, title):
+        im = ax.imshow(np.asarray(image).T, aspect="auto", origin="lower", cmap="gray")
+        fig.colorbar(im, ax=ax)
+        for roi, roi_color, roi_label in (
+            (tissue_roi, "lime", "Tissue ROI"),
+            (background_roi, "red", "Background ROI"),
+        ):
+            x0, x1, z0, z1 = roi
+            ax.add_patch(
+                plt.Rectangle(
+                    (x0, z0),
+                    x1 - x0,
+                    z1 - z0,
+                    fill=False,
+                    edgecolor=roi_color,
+                    linewidth=2.5,
+                    label=roi_label,
+                )
+            )
+        ax.set_title(title, fontsize=FONT_SIZES["title"])
+        ax.set_xlabel("X pixel", fontsize=FONT_SIZES["label"])
+        ax.set_ylabel("Depth pixel", fontsize=FONT_SIZES["label"])
+        ax.legend(fontsize=FONT_SIZES["legend"], loc="best")
+
+    draw_panel(
+        axes[0],
+        normalized_complex_map,
+        "Normalized dynamics (complex std / mean amplitude)",
+    )
+    draw_panel(
+        axes[1],
+        normalized_amplitude_map,
+        "Normalized dynamics (amplitude std / mean amplitude)",
+    )
+
+    info = (
+        f"CNR (fractional dyn., complex) = {result['cnr_fractional_complex']:.3f}\n"
+        f"CNR (fractional dyn., amplitude) = {result['cnr_fractional_amplitude']:.3f}\n"
+        f"mean fractional complex dynamics: tissue = "
+        f"{result['fractional_complex_tissue_mean']:.4g}, "
+        f"bg = {result['fractional_complex_background_mean']:.4g}\n"
+        f"spatial std of fractional complex dynamics in bg = "
+        f"{result['fractional_complex_background_std']:.4g}"
+    )
+    fig.text(
+        0.5,
+        0.02,
+        info,
+        ha="center",
+        va="bottom",
+        fontsize=FONT_SIZES["annotation"],
+        bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"},
+    )
+
+    style_all_axes(fig)
+    fig.savefig(output_path, dpi=DEFAULT_SAVE_DPI, bbox_inches="tight")
+    if show_figures:
+        plt.show(block=True)
+    plt.close(fig)
+
+
+def run_complex_std_cnr_analysis(
+    signal_complex,
+    noise_complex,
+    output_base,
+    show_figures=False,
+):
+    """Compute complex-STD / amplitude-STD maps, collect the tissue ROI and the
+    background ROI, and report the per-ROI CNR.
+
+    By default (DEFAULT_ROI_BACKGROUND_ON_NOISE_STACK = False, temporary
+    rollback) both ROIs are drawn and measured on the tissue B-line image. Set
+    that flag to True to draw/measure the background ROI on the noise stack.
+    """
+    signal_maps = compute_complex_std_map(signal_complex)
+    signal_complex_std_map = signal_maps["complex_std_map"]
+    signal_amplitude_std_map = signal_maps["amplitude_std_map"]
+    signal_normalized_complex_std_map = signal_maps["normalized_complex_std_map"]
+    signal_normalized_amplitude_std_map = signal_maps["normalized_amplitude_std_map"]
+    signal_display = roi_display_image(signal_complex_std_map, signal_maps["mean_amplitude_map"])
+    display_label = f"log(1 + {DEFAULT_ROI_DISPLAY_IMAGE})"
+
+    background_on_noise = bool(DEFAULT_ROI_BACKGROUND_ON_NOISE_STACK)
+    if background_on_noise:
+        noise_maps = compute_complex_std_map(noise_complex)
+        noise_complex_std_map = noise_maps["complex_std_map"]
+        noise_amplitude_std_map = noise_maps["amplitude_std_map"]
+        noise_normalized_complex_std_map = noise_maps["normalized_complex_std_map"]
+        noise_normalized_amplitude_std_map = noise_maps["normalized_amplitude_std_map"]
+        bg_display = roi_display_image(noise_complex_std_map, noise_maps["mean_amplitude_map"])
+        bg_title = "Noise stack (background ROI)"
+    else:
+        noise_complex_std_map = signal_complex_std_map
+        noise_amplitude_std_map = signal_amplitude_std_map
+        noise_normalized_complex_std_map = signal_normalized_complex_std_map
+        noise_normalized_amplitude_std_map = signal_normalized_amplitude_std_map
+        bg_display = signal_display
+        bg_title = "Signal stack (background ROI)"
+
+    tissue_roi = DEFAULT_PRESET_TISSUE_ROI
+    background_roi = DEFAULT_PRESET_BACKGROUND_ROI
+    if tissue_roi is None or background_roi is None:
+        tissue_roi = select_one_rect_roi(
+            signal_display,
+            "Draw TISSUE ROI on the SIGNAL stack (green)",
+            roi_label="TISSUE",
+            color="green",
+        )
+        print(f"Tissue ROI (signal stack): {tuple(tissue_roi)}")
+        background_roi = select_one_rect_roi(
+            bg_display,
+            f"Draw BACKGROUND ROI on the {'NOISE' if background_on_noise else 'SIGNAL'} "
+            "stack (red)",
+            roi_label="BACKGROUND",
+            color="red",
+        )
+        print(f"Background ROI ({'noise' if background_on_noise else 'signal'} stack): "
+              f"{tuple(background_roi)}")
+
+    result = compute_roi_cnr_metrics(
+        signal_complex_std_map,
+        signal_amplitude_std_map,
+        noise_complex_std_map,
+        noise_amplitude_std_map,
+        signal_normalized_complex_std_map,
+        signal_normalized_amplitude_std_map,
+        noise_normalized_complex_std_map,
+        noise_normalized_amplitude_std_map,
+        tissue_roi,
+        background_roi,
+    )
+
+    png_path = f"{output_base}_roi_cnr.png"
+    plot_roi_cnr_figure(
+        signal_display,
+        display_label,
+        bg_display,
+        display_label,
+        result,
+        png_path,
+        show_figures=show_figures,
+        background_panel_title=bg_title,
+    )
+    print(f"Saved figure: {png_path}")
+
+    if DEFAULT_ENABLE_FRACTIONAL_DYNAMICS:
+        fractional_png_path = f"{output_base}_fractional_dynamics.png"
+        plot_fractional_dynamics_figure(
+            signal_normalized_complex_std_map,
+            signal_normalized_amplitude_std_map,
+            result,
+            fractional_png_path,
+            show_figures=show_figures,
+        )
+        print(f"Saved figure: {fractional_png_path}")
+
+    print(
+        "Complex-STD / ROI CNR summary:\n"
+        f"  Tissue ROI     (x,z): {tuple(result['tissue_roi'])}\n"
+        f"  Background ROI (x,z): {tuple(result['background_roi'])}\n"
+        f"  CNR (complex std) = {result['cnr_complex_std']:.4g}\n"
+        f"  CNR (amplitude std) = {result['cnr_amplitude_std']:.4g}\n"
+        f"  mean complex std: tissue = {result['complex_std_tissue_mean']:.4g}, "
+        f"bg = {result['complex_std_background_mean']:.4g}\n"
+        f"  spatial std of complex std: tissue = "
+        f"{result['complex_std_tissue_std']:.4g}, "
+        f"bg = {result['complex_std_background_std']:.4g}\n"
+        f"  per-ROI std of amplitude std: tissue = "
+        f"{result['amplitude_std_tissue_std']:.4g}, "
+        f"bg = {result['amplitude_std_background_std']:.4g}"
+    )
+    if DEFAULT_ENABLE_FRACTIONAL_DYNAMICS:
+        print(
+            "  Fractional dynamics (power-normalized, complex std / mean amp):\n"
+            f"  CNR (fractional dyn., complex) = {result['cnr_fractional_complex']:.4g}\n"
+            f"  CNR (fractional dyn., amplitude) = {result['cnr_fractional_amplitude']:.4g}\n"
+            f"  mean fractional complex dynamics: tissue = "
+            f"{result['fractional_complex_tissue_mean']:.4g}, "
+            f"bg = {result['fractional_complex_background_mean']:.4g}\n"
+            f"  spatial std of fractional complex dynamics in bg = "
+            f"{result['fractional_complex_background_std']:.4g}"
+        )
+    return result
+
+
+def plot_phase_variance_fit_figure(metrics, output_path, show_figures=False):
+    """Standalone phase-variance-vs-SNR fitting figure with the large
+    publication fonts used in the scan-mode bar-plot style."""
+    pixel_metrics = metrics["pixel_metrics"]
+    phase_variance_fit = metrics.get("phase_variance_fit")
+    phase_variance_fit_upper = metrics.get("phase_variance_fit_upper")
+
+    fig, ax = plt.subplots(figsize=(20.0, 18.0), constrained_layout=True)
+    ax.scatter(
+        pixel_metrics["snr_db"],
+        pixel_metrics["phase_variance_rad2"],
+        s=12,
+        alpha=0.15,
+        edgecolors="none",
+        color="0.35",
+    )
+
+    snr_curve_db = np.linspace(
+        max(0.0, float(np.nanpercentile(pixel_metrics["snr_db"], 0.5))),
+        max(60.0, float(np.nanpercentile(pixel_metrics["snr_db"], 99.5))),
+        300,
+    )
+    theory_variance = phase_variance_from_snr_db(
+        snr_curve_db,
+        DEFAULT_THEORY_VARIANCE_COEFFICIENT,
+    )
+    ax.plot(snr_curve_db, theory_variance, color="red", lw=6.0, label="Theory C=0.5")
+    if phase_variance_fit is not None:
+        fit_variance = (
+            phase_variance_from_snr_db(
+                snr_curve_db,
+                phase_variance_fit["coefficient"],
+            )
+            + phase_variance_fit["sigma_floor2_rad2"]
+        )
+        ax.plot(
+            snr_curve_db,
+            fit_variance,
+            color="dodgerblue",
+            lw=5.0,
+            ls="--",
+            label="Median fit",
+        )
+    if phase_variance_fit_upper is not None:
+        fit_variance_upper = (
+            phase_variance_from_snr_db(
+                snr_curve_db,
+                phase_variance_fit_upper["coefficient"],
+            )
+            + phase_variance_fit_upper["sigma_floor2_rad2"]
+        )
+        ax.plot(
+            snr_curve_db,
+            fit_variance_upper,
+            color="darkorange",
+            lw=5.0,
+            ls=":",
+            label="Upper-percentile fit",
+        )
+
+    ax.set_yscale("log")
+    ax.set_xlabel("Pixel SNR (dB)", fontsize=42)
+    ax.set_ylabel("Phase variance (rad$^2$)", fontsize=42)
+    ax.tick_params(labelsize=36)
+    ax.legend(fontsize=33, frameon=False)
+    ax.set_xlim(-10, 50)
+    ax.set_ylim(1e-4, 10)
+    ax.grid(True, which="both", alpha=0.25)
+
+    fig.savefig(output_path, dpi=600, bbox_inches="tight")
+    if show_figures:
+        plt.show(block=True)
+    plt.close(fig)
+    print(f"Saved figure: {output_path}")
 
 
 def main():
@@ -914,7 +1471,6 @@ def main():
             "Measured external sigma_q from noise stack XZ range "
             f"({noise_start_depth} <= depth < {noise_analysis_stop_depth}): {external_sigma_q:.6g}"
         )
-        del noise_complex
     else:
         raise ValueError(
             "A separate noise TIFF stack is required for SNR_limited_phase_analysis. "
@@ -926,6 +1482,22 @@ def main():
     depth_complex = reconstruct_complex_from_amp_phase_stack(saved_stack)
     del saved_stack
     print("Input treated as saved AMP+PHASE FFT-domain B-line stack.")
+
+    # Discard the first frames of the SIGNAL stack only (warm-up/settling
+    # frames). The noise stack above is intentionally kept in full.
+    discard_frames = int(DEFAULT_DISCARD_FIRST_FRAMES)
+    if discard_frames > 0:
+        if depth_complex.shape[0] <= discard_frames:
+            raise ValueError(
+                f"Cannot discard {discard_frames} leading frame(s): "
+                f"signal stack has only {depth_complex.shape[0]} frames."
+            )
+        depth_complex = depth_complex[discard_frames:, :, :]
+        print(
+            f"Discarded first {discard_frames} signal frame(s); analysis uses "
+            f"frames {discard_frames}..{discard_frames + depth_complex.shape[0] - 1} "
+            f"({depth_complex.shape[0]} frames)."
+        )
 
     analysis_stop_depth = full_depth_stop(
         depth_complex.shape[2],
@@ -965,7 +1537,21 @@ def main():
     )
     print(f"Saved figure: {temporal_path}")
 
-    save_results_tables(metrics, output_base)
+    phase_fit_path = f"{output_base}_phase_variance_fit.png"
+    plot_phase_variance_fit_figure(
+        metrics,
+        phase_fit_path,
+        show_figures=DEFAULT_SHOW_FIGURES,
+    )
+
+    if DEFAULT_ENABLE_COMPLEX_STD_ROI_ANALYSIS:
+        run_complex_std_cnr_analysis(
+            depth_complex,
+            noise_complex,
+            output_base=output_base,
+            show_figures=DEFAULT_SHOW_FIGURES,
+        )
+    del noise_complex
 
     summary = metrics["summary"]
     print(

@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -24,6 +25,77 @@ STITCHED_DYN_RE = re.compile(
 STITCHED_MEAN_RE = re.compile(
     r"^stitched-Mean-Y(?P<y>\d+)-X(?P<x>\d+)-Z(?P<z>\d+)\.tif$"
 )
+# Non-dynamic (static) per-tile Cscan volumes: tile-<id>-Y...-X...-Z....tif
+TILE_STATIC_RE = re.compile(
+    r"^tile-(?P<tile>\d+)-Y(?P<y>\d+)-X(?P<x>\d+)-Z(?P<z>\d+)\.tif$"
+)
+STITCHED_STATIC_RE = re.compile(
+    r"^stitched-Y(?P<y>\d+)-X(?P<x>\d+)-Z(?P<z>\d+)\.tif$"
+)
+
+# Fallback XY downsample for the stitched output (applied along both spatial
+# axes Y and X, keeping the depth Z unchanged, for both dynamic Dyn/Mean and
+# static full-volume stitching). The active factor is read from the UI
+# "downsample scale" spinbox (ui.scale) at stitch time; this constant is only
+# the default when that widget is not present (e.g. offline test scripts).
+STITCHED_XY_DOWNSAMPLE = 2
+
+
+def stitch_xy_downsample(weaver):
+    """Return the XY downsample factor for offline stitched volumes.
+
+    Read from the UI "downsample scale" spinbox (``ui.scale``) - the same
+    widget ThreadDnS uses for the realtime stitched mosaic volumes. Falls back
+    to ``STITCHED_XY_DOWNSAMPLE`` when the widget is not available (e.g.
+    offline test/processing scripts).
+    """
+    scale_control = getattr(weaver.ui, "scale", None)
+    if scale_control is not None:
+        try:
+            value = int(scale_control.value())
+        except (TypeError, ValueError):
+            value = 0
+        if value >= 1:
+            return value
+    return STITCHED_XY_DOWNSAMPLE
+
+
+def read_volume_stack(path):
+    """Read a multi-page TIFF volume as one 3D array.
+
+    Tile files written frame-by-frame with ``TIFF.imwrite(..., append=True)``
+    store every page as its own series in tifffile, so a plain ``imread``
+    returns only the first page. Stacking the pages explicitly recovers the
+    full ``[Y, X, Z]`` volume (also works for normally-written single-series
+    stacks and single-page images).
+    """
+    with TIFF.TiffFile(path) as tif:
+        if len(tif.pages) <= 1:
+            return tif.pages[0].asarray()
+        if len(tif.series) == len(tif.pages):
+            return np.stack([page.asarray() for page in tif.pages])
+        return tif.series[0].asarray()
+
+
+def block_mean_xy(array, factor):
+    """Average Y (axis 0) and X (axis 1) in ``factor``-sized blocks.
+
+    All remaining axes (e.g. Z) are kept unchanged, so the stitched output
+    can be downsampled in-plane without touching the depth axis.
+    """
+    factor = max(1, int(factor))
+    if factor <= 1 or array.ndim < 2:
+        return array
+    y_len, x_len = array.shape[0], array.shape[1]
+    y_trim = y_len - y_len % factor
+    x_trim = x_len - x_len % factor
+    if y_trim == 0 or x_trim == 0:
+        return array[::factor, ::factor]
+    view = array[:y_trim, :x_trim]
+    reshaped = view.reshape(
+        (y_trim // factor, factor, x_trim // factor, factor) + tuple(view.shape[2:])
+    )
+    return reshaped.mean(axis=(1, 3))
 
 
 def list_sample_time_dirs(root_dir):
@@ -88,6 +160,19 @@ def collect_tile_volume_files(folder_path):
     return tile_ids
 
 
+def collect_tile_static_files(folder_path):
+    """Return the set of tile ids that have a static per-tile Cscan volume
+    file (non-dynamic path: tile-<id>-Y...-X...-Z....tif)."""
+    tile_ids = set()
+    if not os.path.isdir(folder_path):
+        return tile_ids
+    for filename in os.listdir(folder_path):
+        match = TILE_STATIC_RE.match(filename)
+        if match is not None:
+            tile_ids.add(int(match.group("tile")))
+    return tile_ids
+
+
 def dynamic_output_path(folder_path, tile_id, volume_shape):
     ypix, xpix, zpix = volume_shape
     filename = f"tile-{tile_id}-Dyn-Y{ypix}-X{xpix}-Z{zpix}.tif"
@@ -127,9 +212,16 @@ def stitched_mean_output_path(folder_path, volume_shape):
     return os.path.join(folder_path, filename)
 
 
+def stitched_static_output_path(folder_path, volume_shape):
+    ypix, xpix, zpix = volume_shape
+    filename = f"stitched-Y{ypix}-X{xpix}-Z{zpix}.tif"
+    return os.path.join(folder_path, filename)
+
+
 def stitched_outputs_exist(folder_path):
     dyn_exists = False
     mean_exists = False
+    static_exists = False
     if not os.path.isdir(folder_path):
         return False
     for filename in os.listdir(folder_path):
@@ -137,9 +229,36 @@ def stitched_outputs_exist(folder_path):
             dyn_exists = True
         if not mean_exists and STITCHED_MEAN_RE.match(filename):
             mean_exists = True
-        if dyn_exists and mean_exists:
+        if not static_exists and (
+            STITCHED_STATIC_RE.match(filename)
+            or (filename.startswith("stitched-offline-") and filename.endswith(".tif"))
+        ):
+            static_exists = True
+        if (dyn_exists and mean_exists) or static_exists:
             return True
     return False
+
+
+def load_tile_positions_manifest(folder_path):
+    """Return the tile records from ``tile_positions.json``, or ``None``.
+
+    The manifest is the source of truth for which tile files belong to the
+    current scan: ``tile_index`` is the tile file number and ``tile_filename``
+    the exact saved filename. ``None`` is returned when the file is missing or
+    malformed.
+    """
+    path = os.path.join(folder_path, "tile_positions.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            manifest = json.load(file)
+    except (OSError, ValueError):
+        return None
+    records = manifest.get("tiles")
+    if not isinstance(records, list) or not records:
+        return None
+    return records
 
 
 def update_timer_readout(ui, deadline):
@@ -163,16 +282,17 @@ def process_next_idle_dynamic_folder(weaver, deadline):
     for sample_id, time_id, folder_path in list_sample_time_dirs(root_dir):
         tile_groups = collect_tile_bline_files(folder_path)
         volume_tile_ids = collect_tile_volume_files(folder_path)
-        if not tile_groups and not volume_tile_ids:
+        static_tile_ids = collect_tile_static_files(folder_path)
+        if not tile_groups and not volume_tile_ids and not static_tile_ids:
             continue
 
         processed_any = False
         expected_tile_count = len(weaver.sample_fov_locations(sample_id))
         # Tiles can come from the non-realtime path (per-Y Bline time-trace
-        # stacks, from which Dyn/Mean are computed below) or already exist as
-        # per-tile Dyn/Mean volumes from the realtime path. Both feed the same
-        # stitched output.
-        tile_count = max(len(tile_groups), len(volume_tile_ids))
+        # stacks, from which Dyn/Mean are computed below), already exist as
+        # per-tile Dyn/Mean volumes from the realtime path, or be static
+        # per-tile Cscan volumes. All feed the same stitched output.
+        tile_count = max(len(tile_groups), len(volume_tile_ids), len(static_tile_ids))
         for tile_id in sorted(tile_groups):
             if tile_outputs_exist(folder_path, tile_id):
                 continue
@@ -184,7 +304,7 @@ def process_next_idle_dynamic_folder(weaver, deadline):
             for entry in tile_groups[tile_id]:
                 if time.time() >= deadline or not weaver.ui.RunButton.isChecked():
                     return processed_any
-                stack = TIFF.imread(entry["path"])
+                stack = read_volume_stack(entry["path"])
                 if stack.ndim == 2:
                     stack = stack[np.newaxis, :, :]
                 for log_entry in gpu_thread.dynamic_deviation_entries(
@@ -212,11 +332,45 @@ def process_next_idle_dynamic_folder(weaver, deadline):
 
         stitched_created = False
         if (
-            expected_tile_count > 1
+            (tile_groups or volume_tile_ids)
+            and expected_tile_count > 1
             and tile_count == expected_tile_count
             and not stitched_outputs_exist(folder_path)
         ):
             stitched_created = write_stitched_idle_outputs(weaver, sample_id, folder_path, expected_tile_count)
+
+        # Static (non-dynamic) per-tile Cscan volumes are stitched into one
+        # full-resolution stack as well. When tile_positions.json is present
+        # and complete it is the source of truth for the expected tiles, so
+        # stale/offset files left behind by an interrupted repeat scan do not
+        # break the completeness check.
+        manifest_records = load_tile_positions_manifest(folder_path)
+        manifest_complete = False
+        if manifest_records is not None and len(manifest_records) > 1:
+            manifest_complete = True
+            for record in manifest_records:
+                filename = record.get("tile_filename")
+                if not filename or not os.path.isfile(
+                    os.path.join(folder_path, filename)
+                ):
+                    manifest_complete = False
+                    break
+        static_ready = manifest_complete or (
+            bool(static_tile_ids)
+            and expected_tile_count > 1
+            and len(static_tile_ids) == expected_tile_count
+        )
+        if static_ready and not stitched_outputs_exist(folder_path):
+            stitched_created = (
+                write_stitched_static_outputs(
+                    weaver,
+                    sample_id,
+                    folder_path,
+                    expected_tile_count,
+                    manifest_records=manifest_records if manifest_complete else None,
+                )
+                or stitched_created
+            )
 
         if processed_any or stitched_created:
             remaining = update_timer_readout(weaver.ui, deadline)
@@ -237,6 +391,7 @@ def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
     sample_locations = weaver.sample_fov_locations(sample_id)
     if not sample_locations:
         return False
+    downsample = stitch_xy_downsample(weaver)
 
     tile_dynamic_volumes = {}
     tile_mean_volumes = {}
@@ -253,8 +408,15 @@ def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
                 break
         if dyn_path is None or mean_path is None:
             return False
-        tile_dynamic_volumes[tile_id] = TIFF.imread(dyn_path)
-        tile_mean_volumes[tile_id] = TIFF.imread(mean_path)
+        tile_dynamic_volumes[tile_id] = read_volume_stack(dyn_path)
+        tile_mean_volumes[tile_id] = read_volume_stack(mean_path)
+        if downsample > 1:
+            tile_dynamic_volumes[tile_id] = block_mean_xy(
+                tile_dynamic_volumes[tile_id], downsample
+            )
+            tile_mean_volumes[tile_id] = block_mean_xy(
+                tile_mean_volumes[tile_id], downsample
+            )
 
     first_tile = tile_dynamic_volumes[1]
     fh_px, fw_px, z_px = first_tile.shape
@@ -293,6 +455,119 @@ def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
     TIFF.imwrite(
         stitched_mean_output_path(folder_path, stitched_mean.shape),
         stitched_mean,
+        append=False,
+    )
+    return True
+
+
+def write_stitched_static_outputs(
+    weaver, sample_id, folder_path, tile_count, manifest_records=None
+):
+    """Stitch static (non-dynamic) per-tile Cscan volumes into one stack.
+
+    Each static tile is a full ``[Y, X, Z]`` volume saved as
+    ``tile-<id>-Y...-X...-Z....tif``. Tiles are placed on the FOV grid and the
+    result is written as ``stitched-Y...-X...-Z....tif`` (in-plane downsampled
+    by the UI "downsample scale" spinbox, depth kept unchanged).
+
+    Positions come from ``weaver.sample_fov_locations(sample_id)`` unless
+    ``manifest_records`` is given, in which case each record's
+    ``stage_x_mm``/``stage_y_mm`` and ``tile_filename`` (from
+    ``tile_positions.json``) are used as the source of truth.
+    """
+    if not OFFLINE_DYNAMIC_PROCESSING_ENABLED:
+        return False
+
+    downsample = stitch_xy_downsample(weaver)
+
+    if manifest_records is not None:
+        entries = []
+        for record in manifest_records:
+            filename = record.get("tile_filename")
+            if not filename:
+                return False
+            path = os.path.join(folder_path, filename)
+            if not os.path.isfile(path):
+                return False
+            y_length = record.get("y_length_mm")
+            entries.append(
+                (
+                    float(record["stage_x_mm"]),
+                    float(record["stage_y_mm"]),
+                    float(y_length) if y_length is not None else None,
+                    path,
+                )
+            )
+        fw_mm = float(
+            manifest_records[0].get("x_length_mm", weaver.ui.XLength.value())
+        )
+        first_y_length = entries[0][2]
+        fh_mm = float(
+            first_y_length if first_y_length is not None else weaver.ui.YLength.value()
+        )
+    else:
+        sample_locations = weaver.sample_fov_locations(sample_id)
+        if not sample_locations:
+            return False
+        entries = [(loc.x, loc.y, loc.y_length_mm, None) for loc in sample_locations]
+        fw_mm = float(weaver.ui.XLength.value())
+        first_y_length = sample_locations[0].y_length_mm
+        fh_mm = float(
+            first_y_length if first_y_length is not None else weaver.ui.YLength.value()
+        )
+
+    def _tile_path(tile_id):
+        for filename in os.listdir(folder_path):
+            if filename.startswith(f"tile-{tile_id}-Y"):
+                return os.path.join(folder_path, filename)
+        return None
+
+    first_path = entries[0][3] if entries[0][3] is not None else _tile_path(1)
+    if first_path is None:
+        return False
+    first_volume = read_volume_stack(first_path)
+    if first_volume.ndim < 3:
+        first_volume = first_volume[np.newaxis, ...]
+    if downsample > 1:
+        first_volume = block_mean_xy(first_volume, downsample)
+    fh_px, fw_px, z_px = first_volume.shape
+
+    xs = [entry[0] for entry in entries]
+    ys = [entry[1] for entry in entries]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    num_cols = int(round((max_x - min_x) / fw_mm)) + 1
+    num_rows = int(round((max_y - min_y) / fh_mm)) + 1
+
+    stitched = np.zeros(
+        (num_rows * fh_px, num_cols * fw_px, z_px),
+        dtype=np.float32,
+    )
+
+    for tile_id, (x, y, _y_len, path) in enumerate(entries, start=1):
+        if tile_id == 1:
+            volume = first_volume
+        else:
+            if path is None:
+                path = _tile_path(tile_id)
+            if path is None:
+                continue
+            volume = read_volume_stack(path)
+            if volume.ndim < 3:
+                volume = volume[np.newaxis, ...]
+            if downsample > 1:
+                volume = block_mean_xy(volume, downsample)
+        col_idx = int(round((x - min_x) / fw_mm))
+        row_idx = int(round((y - min_y) / fh_mm))
+        y1 = row_idx * fh_px
+        y2 = y1 + fh_px
+        x1 = col_idx * fw_px
+        x2 = x1 + fw_px
+        stitched[y1:y2, x1:x2, :] = volume
+
+    TIFF.imwrite(
+        stitched_static_output_path(folder_path, stitched.shape),
+        stitched,
         append=False,
     )
     return True

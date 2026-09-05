@@ -347,6 +347,7 @@ This section is intended to mirror the current control logic closely enough to d
    - realtime dynamic mosaic paths accumulate `MeanVolume` and `DynamicVolume` in `Process_Mosaic_RealtimeDynamic(...)` and save them with `SaveRealtimeMosaicDynamicVolumes(...)` when the last Y slice of the tile arrives.
 6. After the full plate scan returns to Weaver, `QueueOut()` increments `timeReader` when saving is enabled.
 7. When saving is enabled, `PlateScan()` (and `WellScan()`) call `process_pending_dynamic_folders(...)` after the sample-level barrier so the per-tile dynamic volumes (saved by DnS) are stitched into `stitched-Dyn-*` / `stitched-Mean-*` mosaic volumes in `sampleID-*/Time-*`. `TimedPlateScan()` relies on the same call inside its embedded `PlateScan()`, passing its interval deadline so the stitching stops at the boundary and resumes on the next time point.
+8. Static (non-dynamic) scans are stitched the same way into `stitched-Y...-X...-Z....tif` (in-plane downsampled by the UI "downsample scale" spinbox — the same widget used for the realtime stitched volumes — with depth unchanged). `iterate_FOVs()` resets the tile counter at the start of every scan so saved tiles always match `tile_positions.json`, and when that manifest is present and complete it is used as the source of truth for the expected tiles — so stale/offset files left behind by an interrupted or repeated scan of the same sample/time folder no longer block stitching.
 
 ### TimedPlateScan
 
