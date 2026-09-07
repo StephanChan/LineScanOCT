@@ -46,7 +46,9 @@ SAVE_SAMPLE_TIME_MODES = (
     AcqTypes.TIMED_PLATE_SCAN,
 )
 STITCH_MOSAIC_VOLUMES_IN_MEMORY = True
-STITCH_MOSAIC_DYNAMIC_UI = False
+# Mosaic live 2-D HSV / RGB / freq / bandwidth buffers are built and emitted for
+# real-time display (all dynamic-capable modes show HSV, never bare std).
+STITCH_MOSAIC_DYNAMIC_UI = True
 
 MOSAIC_DISPLAY_MODES = (
     AcqTypes.PLATE_PRESCAN,
@@ -185,6 +187,12 @@ class DnSThread(QThread):
                     AcqTypes.FAST_VOLUME_CSCAN,
                 ):
                     self.display_actions += 1
+                    # Dynamic results (HSV; the std is only the HSV value
+                    # channel) are produced exclusively by the realtime path,
+                    # which requires BOTH the DOCT checkbox (DynCheckBox) and the
+                    # realtime-dynamic checkbox (RealtimeDynCheckBox) to be on.
+                    # If realtime is off, no dynamic result is computed, saved,
+                    # or displayed at all - the frame is treated as static.
                     if self.realtime_cscan_dynamic_enabled(self.current_acq_mode, self.item.dynamic):
                         self.Process_Cscan_RealtimeDynamic(
                             self.item.data,
@@ -192,8 +200,6 @@ class DnSThread(QThread):
                             self.current_acq_mode,
                             self.item.gpu_avg_count,
                         )
-                    elif self.current_dynamic_enabled():
-                        self.Process_Cscan_Dynamic(self.item.data, self.item.dynamic, self.current_acq_mode, self.item.gpu_avg_count)
                     else:
                         self.Process_Cscan(self.item.data, self.item.raw, self.current_acq_mode, self.item.gpu_avg_count)
                     self._emit_display(kind="cscan")
@@ -891,27 +897,28 @@ class DnSThread(QThread):
         self.fw_px, self.fh_px = fw_px, fh_px
         self.mosaic_y_pixels = int(fh_px)
 
-        # Stitched 3D volumes are downsampled in X/Y only (Z unchanged) using the
-        # UI "downsample scale" spinbox, so large mosaics don't exhaust RAM.
-        # The 2D AIP mosaic above stays full-resolution (correction/overlay use it).
+        # Individual tiles are saved at FULL resolution during acquisition. The
+        # in-RAM stitched volumes used for LIVE display are downsampled in X/Y
+        # by the UI "downsample scale" spinbox so the display stays light; the
+        # FULL-resolution stitched mosaic is produced later (offline) from the
+        # saved full-res tiles by DynamicPostprocessing.
         scale_control = getattr(self.ui, "scale", None)
         self.mosaic_downsample = max(1, int(scale_control.value())) if scale_control is not None else 1
         self.fw_px_ds = max(1, int(fw_px) // self.mosaic_downsample)
         self.fh_px_ds = max(1, int(fh_px) // self.mosaic_downsample)
         self.mosaic_volume_shape = (num_rows * self.fh_px_ds, num_cols * self.fw_px_ds)
-        # Expose the actual downsample used so mosaic-correction geometry and the
-        # display path stay consistent with the downsampled stitched volumes.
+        # Expose the display downsample so mosaic-correction geometry and the
+        # display path stay consistent with the downsampled in-RAM volumes.
         try:
             self.ui.mosaic_display_downsample = self.mosaic_downsample
         except Exception:
             pass
         if self.mosaic_downsample > 1:
             print(
-                f"Mosaic stitched volumes downsampled by {self.mosaic_downsample} "
-                f"in X/Y (Z unchanged): volume size "
+                f"In-RAM stitched volumes downsampled by {self.mosaic_downsample} "
+                f"in X/Y (display only); tiles stay full resolution: volume size "
                 f"{num_rows*self.fh_px_ds}x{num_cols*self.fw_px_ds} px."
             )
-        
         print(f"Mosaic Initialized: {num_cols}x{num_rows} tiles ({mw_px}x{mh_px} px)")
         
     def _paste_stitched_volume(self, storage_attr, source, col_idx, row_idx):
@@ -988,6 +995,13 @@ class DnSThread(QThread):
         # We determine how many FOV-widths away from the minimum X/Y we are
         col_idx = int(round((fov_x - min_x) / self.fw_mm))
         row_idx = int(round((fov_y - min_y) / self.fh_mm))
+        # Trial: reverse the paste order in BOTH directions (right-to-left and
+        # top-to-bottom) without rotating the tile pixels. If neighbouring tile
+        # edges stop lining up, the tile content also needs a matching flip.
+        grid_cols = max(1, int(round(self.SampleMosaic.shape[1] / max(1, self.fw_px))))
+        grid_rows = max(1, int(round(self.SampleMosaic.shape[0] / max(1, self.fh_px))))
+        col_idx = grid_cols - 1 - col_idx
+        row_idx = grid_rows - 1 - row_idx
         # 3. Calculate pixel offsets
         off_x = col_idx * self.fw_px
         off_y = row_idx * self.fh_px

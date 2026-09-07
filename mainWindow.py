@@ -90,6 +90,18 @@ from InteractiveWidget import InteractiveMosaicWidget
 #             # self.setLayout(layout)
 #             # self.ui.setParent(self)
 
+class _PanelWindow(QW.QWidget):
+    """Small pop-up panel window. Emits ``closed`` when the user closes it with
+    the window button so the matching (checkable) menu-bar action can be
+    unchecked, keeping the menu check state in sync with the panel window."""
+
+    closed = qc.pyqtSignal()
+
+    def closeEvent(self, event):
+        self.closed.emit()
+        super().closeEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -99,22 +111,21 @@ class MainWindow(QMainWindow):
         self.setStageMinMax()
         self.Calculate_CameraWidth_settings()
         self.Calculate_Galvo_settings()
-        ##################### Swap the old label for the new widget in your layout
-        # 1. Initialize the interactive widget
-        # We attach it directly to the existing self.ui container
-        self.ui.mosaic_viewer = InteractiveMosaicWidget(self.ui.XYplane.parent())
+        ##################### Swap the intensity XY label for the interactive widget
+        # 1. Initialize the interactive widget (structure view + ROI drawing).
+        # It replaces the XYplaneInt intensity view (XYplaneDyn stays a pure
+        # dynamic display label).
+        self.ui.mosaic_viewer = InteractiveMosaicWidget(self.ui.XYplaneInt.parent())
 
         # 2. Replace the static QLabel in the layout
-        # This ensures the new widget appears exactly where XYplane was designed
-        layout = self.ui.XYplane.parentWidget().layout()
-        layout.replaceWidget(self.ui.XYplane, self.ui.mosaic_viewer)
+        layout = self.ui.XYplaneInt.parentWidget().layout()
+        layout.replaceWidget(self.ui.XYplaneInt, self.ui.mosaic_viewer)
 
         # 3. Clean up the old reference
-        self.ui.XYplane.hide()
+        self.ui.XYplaneInt.hide()
 
-        # 4. (Optional) If you want ThreadDnS to keep using the old name 'XYplane'
-        # to avoid changing too much code, just reassign it:
-        self.ui.XYplane = self.ui.mosaic_viewer
+        # 4. Keep a convenience alias used by the display code.
+        self.ui.XYplaneInt = self.ui.mosaic_viewer
         #################### load configuration settings
 
         # self.Update_laser()
@@ -124,6 +135,9 @@ class MainWindow(QMainWindow):
         # self.ui.DepthEndBar.setValue(0)
         self.Adjust_Bline_Height()
         self.connectActions()
+        # Detach each (hidden) Tabs page into its own pop-up window and wire the
+        # matching menu-bar actions that were declared in GUI.ui.
+        self._setup_popup_panels()
 
     def setStageMinMax(self):
         self.ui.XPosition.setMinimum(self.ui.Xmin.value())
@@ -387,6 +401,77 @@ class MainWindow(QMainWindow):
         self.ui.LoadSurface.clicked.connect(self.chooseSurfaceFile)
         # self.ui.LoadDarkField.clicked.connect(self.chooseDarkFieldFile)
         # self.ui.LoadFlatField.clicked.connect(self.chooseFlatFieldFile)
+
+    def _setup_popup_panels(self):
+        """Move every page of the (now permanently hidden) Tabs widget into its own
+        independent top-level window, and toggle each window from the corresponding
+        menu-bar action that is declared in GUI.ui. The old bottom tab strip stays
+        hidden so the central OCT display uses the full height of the window."""
+        ui = self.ui
+
+        # The old Tabs strip carried a 15 pt font that all its pages inherited.
+        # Keep that same font on the pop-ups and pages, otherwise controls without
+        # an explicit font fall back to the small default application font.
+        panel_font = ui.Tabs.font()
+
+        # 1) Detach every page from the hidden QTabWidget. removeTab() does NOT
+        # delete the page; the widget (and every live control inside it) keeps its
+        # identity, object name and signal wiring.
+        panel_specs = []
+        while ui.Tabs.count() > 0:
+            page = ui.Tabs.widget(0)
+            label = ui.Tabs.tabText(0)
+            ui.Tabs.removeTab(0)
+            panel_specs.append((label, page))
+
+        # 2) Keep the (now empty) tab widget hidden - the .ui already hides it,
+        # this is just a safety net in case the ui file is regenerated differently.
+        ui.Tabs.setVisible(False)
+
+        # 3) Build one independent window per panel (Option A).
+        self.panel_windows = {}
+        screen = QW.QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        step = 26
+        for k, (label, page) in enumerate(panel_specs):
+            win = _PanelWindow(self, qc.Qt.Window)
+            win.setWindowTitle(label)
+            win.setFont(panel_font)
+            layout = QVBoxLayout(win)
+            layout.setContentsMargins(0, 0, 0, 0)
+            page.setParent(win)
+            page.setFont(panel_font)
+            layout.addWidget(page)
+            # removeTab() hides the page, so it must be shown again inside its
+            # new window; otherwise the pop-up appears empty.
+            page.show()
+
+            # Give the window a sensible initial size based on its content.
+            hint = page.sizeHint()
+            width = hint.width() if hint.isValid() else 640
+            height = hint.height() if hint.isValid() else 480
+            if available is not None:
+                width = min(max(width, 320), available.width() - 80)
+                height = min(max(height, 240), available.height() - 80)
+            win.resize(width, height)
+
+            # Cascade the panels under the menu bar so they do not fully cover the
+            # central display when several are open at once.
+            base = self.frameGeometry()
+            win.move(base.left() + 20 + step * k, base.top() + 80 + step * k)
+            win.hide()
+            self.panel_windows[label] = win
+
+        # 4) Wire the actionPanel_* menu actions (declared in GUI.ui) to their
+        # panel windows. Both lists come from GUI.ui in the same order, so the
+        # pairing is positional - renaming a tab title or an action text in Qt
+        # Designer will not break the wiring. Action checked == panel visible.
+        panel_actions = [a for a in ui.menubar.actions()
+                         if a.objectName().startswith("actionPanel_")]
+        for action, (label, _page) in zip(panel_actions, panel_specs):
+            win = self.panel_windows[label]
+            action.triggered.connect(lambda checked, w=win: w.setVisible(checked))
+            win.closed.connect(lambda a=action: a.setChecked(False))
 
     def chooseSurfaceFile(self):
         fileName_choose, filetype = QFileDialog.getOpenFileName(self,

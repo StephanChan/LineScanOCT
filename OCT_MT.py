@@ -39,17 +39,13 @@ from ActionFields import *
 from ActionTypes import AcqTypes, DnSActions, GPUActions, WeaverActions
 from FileNaming import FileNaming
 from Generaic_functions import LOG
+from ScanSession import load_session_data, populate_sample_selector, save_session_data
 import time
 from SampleLocator import (
     MosaicUSBSampleScanner,
-    USB_MOSAIC_GRID_X,
-    USB_MOSAIC_GRID_Y,
-    USB_MOSAIC_X_MAX_MM,
-    USB_MOSAIC_X_MIN_MM,
-    USB_MOSAIC_Y_MAX_MM,
-    USB_MOSAIC_Y_MIN_MM,
     blank_usb_frame,
     capture_usb_frame,
+    capture_usb_frame_averaged,
     default_usb_mosaic_calibration,
 )
 from Display_rendering import (
@@ -57,6 +53,7 @@ from Display_rendering import (
     render_aline_ready,
     render_bline_ready,
     render_cscan_ready,
+    render_cscan_xz_from_volume,
     render_mosaic_ready,
 )
 from HardwareSpecs import PHOTONFOCUS_STATIC_NORMALIZATION_MEAN, get_objective_spec
@@ -67,9 +64,11 @@ CONTINUOUS_ACQ_MODES = (
     AcqTypes.CONTINUOUS_CSCAN,
 )
 
-USB_OFFSET_CALIBRATION_ROW = 4
-USB_OFFSET_CALIBRATION_COL = 1
 SAMPLE_LOCATOR_Z_MM = 1.0
+
+# Axial (depth) pixel size in micrometres, used for the XZ-plane display aspect
+# ratio (µm per depth pixel).
+AXIAL_PIXEL_SIZE_UM = 4.6 # in air, 3.5um in water
 
 FINITE_ACQ_MODES = (
     AcqTypes.FINITE_ALINE,
@@ -229,6 +228,8 @@ class UiBridge(QObject):
 class GUI(MainWindow):
     def __init__(self):
         super().__init__()
+        # Axial (depth) pixel size used for XZ-plane aspect-ratio display.
+        self.ui.axial_pixel_size_um = AXIAL_PIXEL_SIZE_UM
         # if use_maya:
         #     self.addMaya()
         self.log = LOG(self.ui)
@@ -242,6 +243,14 @@ class GUI(MainWindow):
         self.ui.RunButton.clicked.connect(self.run_task)
         self.ui.PauseButton.clicked.connect(self.Pause_task)
         self.ui.CenterGalvo.clicked.connect(self.CenterGalvo)
+        # YGalvoBias live DC update to the second (Y) galvo through the AODO
+        # thread. Debounced so continuous spin-box dragging collapses into a
+        # single AO write instead of flooding the AODO queue.
+        self._ygalvo_timer = qc.QTimer(self)
+        self._ygalvo_timer.setSingleShot(True)
+        self._ygalvo_timer.setInterval(150)
+        self._ygalvo_timer.timeout.connect(self._apply_ygalvo_voltage)
+        self.ui.YGalvoBias.valueChanged.connect(self._schedule_ygalvo_voltage)
         self._add_sample_center_controls()
         self.ui.SampleLocateButton.clicked.connect(self.LocateSample)
         # set window length for FFT
@@ -258,6 +267,10 @@ class GUI(MainWindow):
         if hasattr(self.ui, "ZDepthBar"):
             self.ui.ZDepthBar.valueChanged.connect(self.Update_contrast)
         self.ui.DynContrast.valueChanged.connect(self.Update_contrast)
+        if hasattr(self.ui, "DynBrightness"):
+            self.ui.DynBrightness.valueChanged.connect(self.Update_contrast)
+        if hasattr(self.ui, "YBar"):
+            self.ui.YBar.valueChanged.connect(self._on_ybar_changed)
         # self.ui.Dynmax.valueChanged.connect(self.Update_contrast_Dyn)
         # self.ui.Dynmin.valueChanged.connect(self.Update_contrast_Dyn)
 
@@ -305,7 +318,7 @@ class GUI(MainWindow):
         self.ui.SliceN.valueChanged.connect(self._on_slice_n_changed)
         
         # testing buttons
-        self.ui.TestButten1.clicked.connect(self.TestButton1Func)
+        self.ui.TestButten1.clicked.connect(self.StartCoordinateCalibration)
         self.ui.TestButten2.clicked.connect(self.TestButton2Func)
         self.ui.TestButten3.clicked.connect(self.TestButton3Func)
 
@@ -327,6 +340,8 @@ class GUI(MainWindow):
             "cscan": None,
             "mosaic": None,
         }
+        # Last C-scan volume kept for live YBar XZ re-slicing.
+        self._last_cscan_render_payload = None
         self._acquisition_lock_depth = 0
         self._locked_widget_states = {}
         
@@ -402,31 +417,20 @@ class GUI(MainWindow):
         return 300.0
 
     def _add_sample_center_controls(self):
-        # The widgets are declared in GUI.ui (TestTab); here we only connect the
-        # button and populate the selector.
-        if not hasattr(self.ui, "SampleCenterSelector") or not hasattr(self.ui, "GotoSampleCenter"):
+        # GotoSampleCenter is declared in GUI.ui (TestTab). It is always enabled so
+        # the user can jump to the center of the sample selected in the main
+        # top-bar sampleSelector.
+        button = getattr(self.ui, "GotoSampleCenter", None)
+        if button is None:
             return
-        self.ui.GotoSampleCenter.clicked.connect(self.GotoSelectedSampleCenter)
-        self.refresh_sample_center_selector()
+        button.setEnabled(True)
+        button.clicked.connect(self.GotoSelectedSampleCenter)
 
     def refresh_sample_center_selector(self):
-        selector = getattr(self.ui, "SampleCenterSelector", None)
+        # Legacy call sites only. The Testing-popup SampleCenterSelector no longer
+        # exists, so this simply re-asserts that the center-stage button stays
+        # enabled.
         button = getattr(self.ui, "GotoSampleCenter", None)
-        if selector is None:
-            return
-        selector.clear()
-        sample_centers = sorted(
-            list(getattr(self, "sample_centers", []) or []),
-            key=lambda center: int(center.sample_id),
-        )
-        if not sample_centers:
-            selector.addItem("sampleID-", None)
-            if button is not None:
-                button.setEnabled(False)
-            return
-        for center in sample_centers:
-            sample_id = int(center.sample_id)
-            selector.addItem(f"sampleID-{sample_id}", sample_id)
         if button is not None:
             button.setEnabled(True)
 
@@ -571,9 +575,31 @@ class GUI(MainWindow):
 
     def _on_cscan_ready(self, payload: dict):
         self._last_display_payloads["cscan"] = payload
+        # Keep the last volume so YBar can re-slice the XZ view immediately.
+        self._last_cscan_render_payload = {
+            "volume": payload.get("volume"),
+            "hsv_volume": payload.get("hsv_volume"),
+        }
+        volume = payload.get("volume", None)
+        if volume is not None and np.size(volume) > 0 and hasattr(self.ui, "YBar"):
+            y_pixels = int(np.asarray(volume).shape[0])
+            bar = self.ui.YBar
+            if bar.maximum() != y_pixels - 1:
+                bar.setMaximum(y_pixels - 1)
+                if bar.value() == 0:
+                    bar.setValue(max(0, (y_pixels - 1) // 2))
         if not self._fps_ok("cscan"):
             return
         render_cscan_ready(self.ui, payload)
+
+    def _on_ybar_changed(self, *_args):
+        payload = getattr(self, "_last_cscan_render_payload", None)
+        if payload is None:
+            return
+        try:
+            render_cscan_xz_from_volume(self.ui, payload)
+        except Exception as error:
+            print(f"YBar re-render failed: {error}")
 
     def _on_mosaic_ready(self, payload: dict):
         self._last_display_payloads["mosaic"] = payload
@@ -634,38 +660,6 @@ class GUI(MainWindow):
                 an_action = WeaverActionField(acq_mode, acq_mode=acq_mode)
                 self.enqueue_weaver_action(an_action)
         
-    def usb_locator_stage_positions(self):
-        x_positions = np.linspace(
-            float(USB_MOSAIC_X_MIN_MM),
-            float(USB_MOSAIC_X_MAX_MM),
-            int(USB_MOSAIC_GRID_X),
-        )
-        y_positions = np.linspace(
-            float(USB_MOSAIC_Y_MIN_MM),
-            float(USB_MOSAIC_Y_MAX_MM),
-            int(USB_MOSAIC_GRID_Y),
-        )
-
-        positions = []
-        tile_index = 1
-        for row_idx, y_pos in enumerate(y_positions):
-            if row_idx % 2 == 0:
-                row_x_positions = list(enumerate(x_positions))
-            else:
-                row_x_positions = list(reversed(list(enumerate(x_positions))))
-            for col_idx, x_pos in row_x_positions:
-                positions.append(
-                    {
-                        "tile_index": tile_index,
-                        "row": row_idx,
-                        "col": col_idx,
-                        "stage_x": float(x_pos),
-                        "stage_y": float(y_pos),
-                    }
-                )
-                tile_index += 1
-        return positions
-
     def capture_usb_locator_tile(self, tile_position, stage_z):
         tile_dir = os.path.join(self.ui.DIR.toPlainText(), "Mosaic", "usb_locator_regions")
         os.makedirs(tile_dir, exist_ok=True)
@@ -685,7 +679,9 @@ class GUI(MainWindow):
         self.ui.YPosition.setValue(y_pos)
         self.Ymove2()
 
-        frame = capture_usb_frame()
+        # Capture and average a few USB frames so the locator image (that the
+        # user draws ROIs on) is cleaner.
+        frame = capture_usb_frame_averaged()
         if frame is None:
             message = f"USB camera returned no image at locator region {tile_index}; using blank frame."
             print(message)
@@ -715,20 +711,19 @@ class GUI(MainWindow):
         folder = os.path.join(self.ui.DIR.toPlainText(), "Mosaic")
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, "usb_mosaic_locator_run.json")
-        single_frame = any(bool(tile.get("single_frame", False)) for tile in tile_records)
         data = {
-            "mode": "single_frame" if single_frame else "mosaic_grid",
-            "grid_x": 1 if single_frame else int(USB_MOSAIC_GRID_X),
-            "grid_y": 1 if single_frame else int(USB_MOSAIC_GRID_Y),
+            "mode": "single_frame",
+            "grid_x": 1,
+            "grid_y": 1,
             "x_range_mm": (
                 [float(tile_records[0]["stage_x"]), float(tile_records[0]["stage_x"])]
-                if single_frame and tile_records
-                else [float(USB_MOSAIC_X_MIN_MM), float(USB_MOSAIC_X_MAX_MM)]
+                if tile_records
+                else []
             ),
             "y_range_mm": (
                 [float(tile_records[0]["stage_y"]), float(tile_records[0]["stage_y"])]
-                if single_frame and tile_records
-                else [float(USB_MOSAIC_Y_MIN_MM), float(USB_MOSAIC_Y_MAX_MM)]
+                if tile_records
+                else []
             ),
             "tile_records": [
                 {
@@ -778,7 +773,198 @@ class GUI(MainWindow):
             }
         return overlay_images
 
-    def LocateSample(self):
+    def save_usb_roi_overview_image(self, tile_records, roi_records, filename="usb_calibration_overview.png"):
+        """Save one combined overlay image of the USB region(s) + user-drawn ROIs.
+
+        For a single-frame locator run this is the full-resolution USB frame
+        with every ROI drawn on it. For a multi-region grid run it is a montage
+        of all tiles (grid order) with each tile's ROIs drawn on top. This gives
+        the operator a persistent map of where every ROI / sample was drawn.
+        """
+        folder = os.path.join(self.ui.DIR.toPlainText(), "Mosaic")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, filename)
+        if not tile_records or not roi_records:
+            return None
+        try:
+            tile_lookup = {}
+            for tile in tile_records:
+                tile_lookup[int(tile["tile_index"])] = tile
+            rois_by_tile = {}
+            for roi in roi_records:
+                tile_index = int(roi.get("tile_index", 0))
+                if tile_index not in tile_lookup:
+                    continue
+                rois_by_tile.setdefault(tile_index, []).append(roi)
+
+            def draw_rois(image, tile_index, offset_x=0, offset_y=0, scale=1.0):
+                for roi in rois_by_tile.get(int(tile_index), []):
+                    polygon = roi.get("pixel_polygon") or []
+                    if len(polygon) < 3:
+                        continue
+                    points = []
+                    for pt in polygon:
+                        points.append(
+                            (
+                                offset_x + float(pt[0]) * scale,
+                                offset_y + float(pt[1]) * scale,
+                            )
+                        )
+                    points = np.asarray(points, dtype=np.float32)
+                    points = np.rint(points).astype(np.int32).reshape(-1, 1, 2)
+                    thickness = max(2, int(round(6 * scale)))
+                    cv2.polylines(image, [points], True, (0, 255, 0), thickness)
+                    sample_id = int(roi.get("sample_id", 0))
+                    cx = int(np.mean(points[:, 0, 0]))
+                    cy = int(np.mean(points[:, 0, 1]))
+                    font_scale = max(0.4, 0.8 * scale)
+                    cv2.putText(
+                        image,
+                        str(sample_id),
+                        (cx, cy),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        font_scale,
+                        (0, 255, 0),
+                        max(1, int(round(2 * scale))),
+                        cv2.LINE_AA,
+                    )
+
+            rows = sorted({int(tile["row"]) for tile in tile_records})
+            cols = sorted({int(tile["col"]) for tile in tile_records})
+            single_frame = len(tile_records) == 1
+
+            if single_frame:
+                tile = tile_records[0]
+                image = cv2.imread(tile.get("image_path", ""), cv2.IMREAD_COLOR)
+                if image is None:
+                    return None
+                draw_rois(image, int(tile["tile_index"]))
+            else:
+                first = tile_records[0]
+                base_image = cv2.imread(first.get("image_path", ""), cv2.IMREAD_COLOR)
+                if base_image is None:
+                    return None
+                base_h, base_w = base_image.shape[:2]
+                cell_w = 560
+                cell_h = max(1, int(round(cell_w * base_h / max(1, base_w))))
+                gap = 6
+                scale = cell_w / float(base_w)
+                canvas = np.full(
+                    (len(rows) * (cell_h + gap) - gap, len(cols) * (cell_w + gap) - gap, 3),
+                    20,
+                    dtype=np.uint8,
+                )
+                row_to_index = {row: idx for idx, row in enumerate(rows)}
+                col_to_index = {col: idx for idx, col in enumerate(cols)}
+                for tile in tile_records:
+                    image = cv2.imread(tile.get("image_path", ""), cv2.IMREAD_COLOR)
+                    if image is None:
+                        continue
+                    image = cv2.resize(image, (cell_w, cell_h), interpolation=cv2.INTER_AREA)
+                    row_idx = row_to_index[int(tile["row"])]
+                    col_idx = col_to_index[int(tile["col"])]
+                    y0 = row_idx * (cell_h + gap)
+                    x0 = col_idx * (cell_w + gap)
+                    canvas[y0:y0 + cell_h, x0:x0 + cell_w] = image
+                    draw_rois(canvas, int(tile["tile_index"]), x0, y0, scale)
+                image = canvas
+
+            saved = cv2.imwrite(path, image)
+            if saved:
+                print(
+                    f"USB locator overlay overview saved: {path} "
+                    f"({image.shape[1]}x{image.shape[0]} px, {len(roi_records)} ROI(s))."
+                )
+                return path
+            return None
+        except Exception as error:
+            print(f"Could not save USB locator overview image: {error}")
+            return None
+
+    def _mosaic_folder(self):
+        return os.path.join(self.ui.DIR.toPlainText(), "Mosaic")
+
+    def _load_sample_locations_from_current_folder(self):
+        """Load a previously saved sample-location plan (DIR/Mosaic/scan_metadata.pkl)
+        into memory and refresh the main sampleSelector.
+
+        Returns True when a plan with at least one sample center was loaded.
+        Returns False (so the caller runs the interactive locator) when no usable
+        saved plan exists in the current save folder.
+        """
+        mosaic_folder = self._mosaic_folder()
+        metadata_path = os.path.join(mosaic_folder, "scan_metadata.pkl")
+        if not os.path.exists(metadata_path):
+            return False
+        try:
+            fov_locations, sample_centers, overlay_images = load_session_data(mosaic_folder)
+        except Exception as error:
+            message = f"Could not load saved sample locations: {error}"
+            print(message)
+            self.ui.statusbar.showMessage(message)
+            return False
+        sample_centers = sorted(
+            list(sample_centers),
+            key=lambda center: int(center.sample_id),
+        )
+        if not sample_centers:
+            return False
+
+        self.FOV_locations = fov_locations
+        self.sample_centers = sample_centers
+        self.overlay_images = overlay_images
+
+        # Keep the Weaver thread's plan in sync so that Go -> PlatePreScan /
+        # WellScan / PlateScan immediately uses the freshly loaded locations.
+        weaver = getattr(self, "Weaver_thread", None)
+        if weaver is not None:
+            weaver.FOV_locations = fov_locations
+            weaver.sample_centers = sample_centers
+            weaver.overlay_images = overlay_images
+
+        populate_sample_selector(self.ui, sample_centers)
+        message = (
+            f"Loaded {len(sample_centers)} saved sample location(s) "
+            f"from {mosaic_folder}."
+        )
+        print(message)
+        self.ui.statusbar.showMessage(message)
+        return True
+
+    def _current_usb_calibration(self):
+        """Return the USB camera -> stage calibration for the next locator run.
+
+        Uses the last fitted model stored in config.ini (see CoordinateCalibration
+        save/load). There is no hard-coded fallback matrix any more; when config.ini
+        has no fitted model the calibration matrix stays None so callers fail with a
+        clear 'requires affine calibration' message instead of using stale numbers.
+        """
+        calibration = default_usb_mosaic_calibration()
+        try:
+            from CoordinateCalibration import load_affine_from_config
+            matrix = load_affine_from_config("config.ini")
+            if matrix is not None:
+                calibration["camera_to_stage_affine"] = matrix
+        except Exception as error:
+            print(f"Could not load saved USB camera calibration: {error}")
+        return calibration
+
+    def StartCoordinateCalibration(self):
+        if getattr(self.ui, "_coordinate_calibration_active", False):
+            message = "Coordinate calibration is already running."
+            print(message)
+            self.ui.statusbar.showMessage(message)
+            return
+        # calibration_mode=True always re-runs the USB locator from scratch and
+        # then starts the per-sample alignment loop - it never loads saved plans.
+        self.LocateSample(calibration_mode=True)
+
+    def LocateSample(self, calibration_mode=False):
+        # Unless this is a coordinate-calibration run, a previously saved sample
+        # plan in the current folder is loaded instead of re-running the locator.
+        if not calibration_mode and self._load_sample_locations_from_current_folder():
+            return
+
         objective = get_objective_spec(self.ui.Objective.currentText())
         if objective is None:
             message = f"Unknown objective for sample locator: {self.ui.Objective.currentText()}"
@@ -832,7 +1018,7 @@ class GUI(MainWindow):
             sample_id_start=1,
             allow_empty=True,
             initial_tile_index=0,
-            initial_calibration=default_usb_mosaic_calibration(),
+            initial_calibration=self._current_usb_calibration(),
         )
         if not self.scanner.exec_():
             message = (
@@ -868,16 +1054,41 @@ class GUI(MainWindow):
             self.refresh_sample_center_selector()
             return
 
+        if calibration_mode and len(all_sample_centers) < 5:
+            message = (
+                "Coordinate calibration requires at least 5 drawn samples; "
+                f"only {len(all_sample_centers)} were drawn. "
+                "Run it again and draw at least 5 ROIs."
+            )
+            print(message)
+            self.ui.statusbar.showMessage(message)
+            self.ui.sampleSelector.clear()
+            self.ui.sampleSelector.addItem("No Samples Found")
+            return
+
         FOV_locations = all_fov_locations
         sample_centers = all_sample_centers
         raw_img = None
         pixel_polygons = all_pixel_polygons
-        overlay_images = self.build_usb_region_overlay_sources(all_tile_records, all_roi_records, default_usb_mosaic_calibration())
+        overlay_images = self.build_usb_region_overlay_sources(all_tile_records, all_roi_records, self._current_usb_calibration())
         self.FOV_locations = FOV_locations
         self.sample_centers = sample_centers
         self.raw_img = raw_img
         self.pixel_polygons = pixel_polygons
         self.overlay_images = overlay_images
+        # Persist the located plan so the same folder can be reloaded later by
+        # SampleLocateButton without re-running the interactive locator.
+        try:
+            save_session_data(
+                self._mosaic_folder(),
+                FOV_locations,
+                sample_centers,
+                overlay_images,
+                raw_img=None,
+                pixel_polygons=pixel_polygons,
+            )
+        except Exception as error:
+            print(f"Could not persist located sample plan: {error}")
         print("Sample locator center positions:")
         for center in sample_centers:
             print(
@@ -908,132 +1119,35 @@ class GUI(MainWindow):
         print(f"Restoring Z to {default_sample_z:.4f} mm before pre-scan.")
         self.ui.ZPosition.setValue(default_sample_z)
         self.Zmove2()
-        an_action = WeaverActionField(
-            AcqTypes.PLATE_PRESCAN,
-            acq_mode=AcqTypes.PLATE_PRESCAN,
-            context=[FOV_locations, sample_centers, raw_img, pixel_polygons, overlay_images],
-        )
-        self.enqueue_weaver_action(an_action)
-
-    def LocateSampleOffsetCalibration(self):
-        objective = get_objective_spec(self.ui.Objective.currentText())
-        if objective is None:
-            message = f"Unknown objective for sample locator offset calibration: {self.ui.Objective.currentText()}"
-            print(message)
-            self.ui.statusbar.showMessage(message)
-            return
-
-        target_row = int(USB_OFFSET_CALIBRATION_ROW) - 1
-        target_col = int(USB_OFFSET_CALIBRATION_COL) - 1
-        if not (0 <= target_row < int(USB_MOSAIC_GRID_Y)) or not (0 <= target_col < int(USB_MOSAIC_GRID_X)):
-            raise ValueError(
-                "Invalid USB offset calibration region: "
-                f"row={USB_OFFSET_CALIBRATION_ROW}, col={USB_OFFSET_CALIBRATION_COL}, "
-                f"grid={USB_MOSAIC_GRID_X}x{USB_MOSAIC_GRID_Y}"
+        if calibration_mode:
+            # Coordinate calibration: always uses the freshly drawn ROI pixel
+            # polygons. The action is put directly on the WeaverQueue (no
+            # acquisition-lock), because the operator must keep using the stage
+            # controls and the Stop button during the alignment loop.
+            setattr(self.ui, "_coordinate_calibration_active", True)
+            overview_path = self.save_usb_roi_overview_image(all_tile_records, all_roi_records)
+            an_action = WeaverActionField(
+                AcqTypes.COORDINATE_CALIBRATION,
+                acq_mode=AcqTypes.COORDINATE_CALIBRATION,
+                context=[sample_centers, all_roi_records, FOV_locations, overlay_images],
             )
-
-        default_sample_z = self.ui.ZPosition.value()
-        locator_z = SAMPLE_LOCATOR_Z_MM
-        if locator_z < self.ui.ZPosition.minimum() or locator_z > self.ui.ZPosition.maximum():
+            WeaverQueue.put(an_action)
             message = (
-                f"Sample locator offset calibration requires Z={locator_z:.4f} mm, but ZPosition range is "
-                f"[{self.ui.ZPosition.minimum():.4f}, {self.ui.ZPosition.maximum():.4f}] mm."
+                f"Coordinate calibration started for {len(sample_centers)} samples. "
+                "At each sample, adjust X/Y/Z until it matches your drawing, "
+                "then press Stop."
             )
+            if overview_path:
+                message += f" ROI overlay overview saved: {overview_path}"
             print(message)
             self.ui.statusbar.showMessage(message)
-            return
-
-        matching_positions = [
-            position
-            for position in self.usb_locator_stage_positions()
-            if int(position["row"]) == target_row and int(position["col"]) == target_col
-        ]
-        if len(matching_positions) != 1:
-            raise ValueError(
-                "USB offset calibration region lookup failed: "
-                f"row={USB_OFFSET_CALIBRATION_ROW}, col={USB_OFFSET_CALIBRATION_COL}, "
-                f"matches={len(matching_positions)}"
+        else:
+            an_action = WeaverActionField(
+                AcqTypes.PLATE_PRESCAN,
+                acq_mode=AcqTypes.PLATE_PRESCAN,
+                context=[FOV_locations, sample_centers, raw_img, pixel_polygons, overlay_images],
             )
-
-        print(
-            "USB offset calibration: "
-            f"using region row={USB_OFFSET_CALIBRATION_ROW}, col={USB_OFFSET_CALIBRATION_COL}; "
-            f"moving Z from {default_sample_z:.4f} mm to locator_z={locator_z:.4f} mm."
-        )
-        if not self.ZeroZForSampleLocator():
-            return
-
-        tile_record = self.capture_usb_locator_tile(matching_positions[0], locator_z)
-        self.scanner = MosaicUSBSampleScanner(
-            [tile_record],
-            self.ui.DIR.toPlainText(),
-            fov_w_mm=self.ui.XLength.value(),
-            fov_h_mm=self.ui.YLength.value(),
-            current_zpos=default_sample_z,
-            y_step_um=self.ui.YStepSize.value(),
-            max_y_fov_mm=objective.max_y_fov_mm,
-            stage_bounds=(
-                self.ui.Xmin.value(),
-                self.ui.Xmax.value(),
-                self.ui.Ymin.value(),
-                self.ui.Ymax.value(),
-            ),
-            sample_id_start=1,
-            allow_empty=False,
-            initial_tile_index=0,
-            initial_calibration=default_usb_mosaic_calibration(),
-        )
-        if not self.scanner.exec_():
-            message = (
-                f"USB offset calibration canceled. Leaving Z at locator height {locator_z:.4f} mm; "
-                "move X/Y to a safe position before raising Z."
-            )
-            print(message)
-            self.ui.statusbar.showMessage(message)
-            return
-
-        fov_locations = list(self.scanner.generated_locations)
-        sample_centers = list(self.scanner.sample_centers)
-        pixel_polygons = list(self.scanner.final_polygons)
-        roi_records = list(getattr(self.scanner, "final_tile_roi_records", []))
-        if len(sample_centers) == 0:
-            message = (
-                f"USB offset calibration produced no sample center. Leaving Z at locator height {locator_z:.4f} mm; "
-                "move X/Y to a safe position before raising Z."
-            )
-            print(message)
-            self.ui.statusbar.showMessage(message)
-            return
-
-        self.save_usb_locator_run_records([tile_record], roi_records)
-        overlay_images = self.build_usb_region_overlay_sources([tile_record], roi_records, default_usb_mosaic_calibration())
-
-        first_center = sample_centers[0]
-        print(
-            "USB offset calibration center estimate: "
-            f"sampleID-{first_center.sample_id}, X={first_center.x:.4f}, "
-            f"Y={first_center.y:.4f}, Z={first_center.z:.4f}"
-        )
-        print(
-            "Moving X/Y to calibration sample center before raising Z: "
-            f"X={first_center.x:.4f}, Y={first_center.y:.4f}"
-        )
-        self.ui.XPosition.setValue(first_center.x)
-        self.Xmove2()
-        self.ui.YPosition.setValue(first_center.y)
-        self.Ymove2()
-        print(f"Restoring Z to {default_sample_z:.4f} mm before calibration pre-scan.")
-        self.ui.ZPosition.setValue(default_sample_z)
-        self.Zmove2()
-
-        self.ui.sampleSelector.clear()
-        self.ui.sampleSelector.addItem("Sample 1")
-        an_action = WeaverActionField(
-            AcqTypes.PLATE_PRESCAN,
-            acq_mode=AcqTypes.PLATE_PRESCAN,
-            context=[fov_locations, sample_centers, None, pixel_polygons, overlay_images],
-        )
-        self.enqueue_weaver_action(an_action)
+            self.enqueue_weaver_action(an_action)
 
     def InitStages(self):
         an_action = AODOActionField('Init')
@@ -1170,29 +1284,39 @@ class GUI(MainWindow):
             self.enqueue_weaver_action(an_action)
 
         
+    def _schedule_ygalvo_voltage(self, *_args):
+        self._ygalvo_timer.start()
+
+    def _apply_ygalvo_voltage(self):
+        AODOQueue.put(AODOActionField('setYGalvo'))
+
     def CenterGalvo(self):
         an_action = AODOActionField('centergalvo')
         AODOQueue.put(an_action)
 
     def GotoSelectedSampleCenter(self):
-        selector = getattr(self.ui, "SampleCenterSelector", None)
-        if selector is None:
-            return
-        sample_id = selector.currentData()
-        if sample_id is None:
-            message = "No sample center is available. Locate samples first."
+        centers = sorted(
+            list(getattr(self, "sample_centers", []) or []),
+            key=lambda center: int(center.sample_id),
+        )
+        if not centers:
+            message = "No sample locations are available. Use 定位样品 to locate or load samples first."
             print(message)
             self.ui.statusbar.showMessage(message)
             return
+        selected_index = self.ui.sampleSelector.currentIndex()
+        if selected_index < 0 or self.ui.sampleSelector.currentText() == "No Samples Found":
+            message = "No sample is selected. Locate or load sample locations first."
+            print(message)
+            self.ui.statusbar.showMessage(message)
+            return
+        sample_id = selected_index + 1
         center = self._sample_center_by_id(sample_id)
         if center is None:
             message = f"sampleID-{int(sample_id)} center was not found in memory."
             print(message)
             self.ui.statusbar.showMessage(message)
-            self.refresh_sample_center_selector()
             return
-        if 0 <= int(sample_id) - 1 < self.ui.sampleSelector.count():
-            self.ui.sampleSelector.setCurrentIndex(int(sample_id) - 1)
         print(
             "Moving stage to selected sample center: "
             f"sampleID-{int(sample_id)}, X={center.x:.4f}, Y={center.y:.4f}"
@@ -1279,7 +1403,7 @@ class GUI(MainWindow):
     #     DQueue.put(an_action)
     
     def TestButton1Func(self):
-        self.LocateSampleOffsetCalibration()
+        self.StartCoordinateCalibration()
         
     def TestButton2Func(self):
         context = [[1, 1], [10, 100]]

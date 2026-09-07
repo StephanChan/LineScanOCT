@@ -8,6 +8,7 @@ from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 from PyQt5.QtCore import Qt, QRectF
 
 from Generaic_functions import RGBImagePlot, fastLinePlot, LinePlot
+import Rulers
 from SampleLocator import (
     affine_fov_half_size_pixels,
     calibration_uses_affine,
@@ -54,6 +55,48 @@ def rgb_pixmap(rgb):
     return QPixmap.fromImage(qimage)
 
 
+def set_label_pixmap_fit(label, pixmap):
+    """Display ``pixmap`` on a QLabel preserving its native aspect ratio.
+
+    The label keeps the black background and the image is letterboxed (centered)
+    inside a black canvas sized to the label. This avoids the distortion caused
+    by QLabel ``setScaledContents(True)`` stretching the pixmap to the widget.
+    """
+    if label is None or pixmap is None or pixmap.isNull():
+        return
+    try:
+        label_w, label_h = label.width(), label.height()
+        if label_w < 10 or label_h < 10:
+            label_w, label_h = 300, 300
+        image_w, image_h = pixmap.width(), pixmap.height()
+        if image_w <= 0 or image_h <= 0:
+            label.setPixmap(pixmap)
+            return
+        fit = min(label_w / image_w, label_h / image_h)
+        draw_w = max(1, int(round(image_w * fit)))
+        draw_h = max(1, int(round(image_h * fit)))
+        dx = (label_w - draw_w) // 2
+        dy = (label_h - draw_h) // 2
+
+        canvas = QPixmap(label_w, label_h)
+        canvas.fill(Qt.black)
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.drawPixmap(
+            QRectF(dx, dy, draw_w, draw_h),
+            pixmap,
+            QRectF(pixmap.rect()),
+        )
+        painter.end()
+        label.setPixmap(canvas)
+    except Exception as error:
+        print(f"Label aspect-fit failed: {error}")
+        try:
+            label.setPixmap(pixmap)
+        except Exception:
+            pass
+
+
 def rgb_display_limits(min_widget, max_widget):
     control_max = max(
         1,
@@ -64,14 +107,35 @@ def rgb_display_limits(min_widget, max_widget):
     return float(min_widget.value()) * scale, float(max_widget.value()) * scale
 
 
+def dynamic_brightness_contrast(ui):
+    """Return (brightness_offset, contrast_gain) from the UI sliders.
+
+    Contrast is DynContrast (default 50 => gain 1.0). Brightness is DynBrightness
+    centered at 50 (range 0..100) mapped to an additive offset in [-0.5, 0.5].
+    """
+    contrast = 1.0
+    brightness = 0.0
+    if hasattr(ui, "DynContrast"):
+        try:
+            contrast = float(ui.DynContrast.value()) / 50.0
+        except Exception:
+            contrast = 1.0
+    if hasattr(ui, "DynBrightness"):
+        try:
+            brightness = (float(ui.DynBrightness.value()) - 50.0) / 100.0
+        except Exception:
+            brightness = 0.0
+    return brightness, contrast
+
+
 def dynamic_rgb_display_array(ui, rgb, min_widget, max_widget):
     rgb = np.asarray(rgb, dtype=np.float32)
     if rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError(f"RGB image must have shape (height, width, 3), got {rgb.shape}")
     m, M = rgb_display_limits(min_widget, max_widget)
     adjusted = (rgb - m) / (M - m + 1e-5) * 255.0
-    if hasattr(ui, "DynContrast"):
-        adjusted *= float(ui.DynContrast.value()) / 50.0
+    brightness, contrast = dynamic_brightness_contrast(ui)
+    adjusted = adjusted * contrast + brightness * 255.0
     return np.ascontiguousarray(np.clip(adjusted, 0, 255).astype(np.uint8))
 
 
@@ -84,8 +148,15 @@ def hue_frequency_range_from_controls(min_widget, max_widget):
 
 def normalize_to_unit_interval(image, value_range, gamma=1.0):
     low_value, high_value = float(value_range[0]), float(value_range[1])
-    if high_value <= low_value:
+    if not (np.isfinite(low_value) and np.isfinite(high_value)):
         raise ValueError(f"Invalid display normalization range: {value_range}")
+    if high_value < low_value:
+        low_value, high_value = high_value, low_value
+    if high_value <= low_value:
+        # Degenerate window (e.g. XZmin == XZmax, reached by sliding XZmax to 0
+        # while XZmin is 0): there is no scale to normalize against, so return a
+        # flat zero map instead of crashing the GUI.
+        return np.zeros(np.shape(image), dtype=np.float32)
     normalized = (np.asarray(image, dtype=np.float32) - low_value) / (high_value - low_value)
     normalized = np.clip(normalized, 0.0, 1.0)
     gamma = float(gamma)
@@ -135,8 +206,8 @@ def dynamic_metric_rgb_display_array(ui, frequency_hz, bandwidth_hz, value, min_
         RGB_DYNAMIC_VALUE_DYNAMIC_RANGE,
         gamma=RGB_DYNAMIC_VALUE_GAMMA,
     )
-    if hasattr(ui, "DynContrast"):
-        value = np.clip(value * (float(ui.DynContrast.value()) / 50.0), 0.0, 1.0)
+    brightness, contrast = dynamic_brightness_contrast(ui)
+    value = np.clip(value * contrast + brightness, 0.0, 1.0)
     return hsv_to_rgb_array(hue, saturation, value)
 
 
@@ -159,6 +230,163 @@ def z_plane_from_volume(ui, volume):
     raise ValueError(f"XY volume must have shape (Y, X, Z) or (Y, X, Z, 3), got {volume.shape}")
 
 
+def cscan_display_y_index(ui, y_pixels):
+    """Clamp YBar to a valid C-scan Y index (mid-plane fallback)."""
+    y_pixels = int(y_pixels)
+    if y_pixels <= 0:
+        return 0
+    bar = getattr(ui, "YBar", None)
+    if bar is None:
+        return y_pixels // 2
+    try:
+        y_value = int(bar.value())
+    except Exception:
+        y_value = y_pixels // 2
+    return max(0, min(y_value, y_pixels - 1))
+
+
+def downsample_rgb(rgb, factor):
+    """Block/cubic downsample an RGB array in X/Y by ``factor``."""
+    factor = max(1, int(factor))
+    if factor <= 1:
+        return rgb
+    rgb = np.asarray(rgb)
+    height, width = rgb.shape[:2]
+    new_width = max(1, width // factor)
+    new_height = max(1, height // factor)
+    return cv2.resize(
+        np.ascontiguousarray(rgb),
+        (new_width, new_height),
+        interpolation=cv2.INTER_AREA,
+    )
+
+
+def set_xyplane_dyn_pixmap(ui, rgb, pixel_size_x=1.0, pixel_size_y=1.0):
+    """Draw an HSV/RGB en-face plane on XYplaneDyn.
+
+    Applies exactly the same geometry as XYplaneInt's interactive mosaic widget:
+    ``usb_top_view`` orientation (transpose + one vertical flip, matching the
+    XYplaneInt mosaic viewer exactly) and a physical
+    pixel-size aspect stretch. The image is drawn bottom-left anchored inside
+    the ruler margins and physical axis rulers are painted in the margins.
+    ``pixel_size_x`` / ``pixel_size_y`` must be the effective pitch (µm per
+    displayed pixel) of the supplied array, i.e. the raw pitch already scaled
+    by any X/Y downsampling applied before this call. Bottom ruler = stage Y,
+    left ruler = stage X.
+    """
+    label = getattr(ui, "XYplaneDyn", None)
+    if label is None or rgb is None or np.size(rgb) == 0:
+        return
+    try:
+        rgb = np.asarray(rgb)
+        if rgb.ndim == 3 and rgb.shape[2] == 3:
+            display = np.ascontiguousarray(np.flip(np.transpose(rgb, (1, 0, 2)), axis=0))
+        elif rgb.ndim == 2:
+            display = np.ascontiguousarray(np.flipud(rgb.T))
+        else:
+            return
+        height, width = display.shape[:2]
+        try:
+            sx = float(pixel_size_x)
+            sy = float(pixel_size_y)
+            aspect = (sx / sy) if sy != 0 else 1.0
+        except (TypeError, ValueError):
+            sx = sy = 1.0
+            aspect = 1.0
+
+        base_pixmap = rgb_pixmap(display)
+        label_w, label_h = mosaic_label_render_size(label)
+
+        phys_w = float(width)
+        phys_h = float(height) * aspect
+        if phys_w <= 0 or phys_h <= 0:
+            return
+        inner = Rulers.inner_rect(label_w, label_h)
+        if inner.width() <= 0 or inner.height() <= 0:
+            return
+        fit = min(inner.width() / phys_w, inner.height() / phys_h)
+        draw_w = max(1, int(round(phys_w * fit)))
+        draw_h = max(1, int(round(phys_h * fit)))
+        # Anchor the image to the bottom-left corner of the inner area so the
+        # bottom and left rulers hug the image edges.
+        draw_x = int(inner.left())
+        draw_y = int(inner.bottom() - draw_h)
+
+        canvas = QPixmap(label_w, label_h)
+        canvas.fill(Qt.black)
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.drawPixmap(
+            QRectF(draw_x, draw_y, draw_w, draw_h),
+            base_pixmap,
+            QRectF(base_pixmap.rect()),
+        )
+        image_rect = QRectF(draw_x, draw_y, draw_w, draw_h)
+        stage_y_total = float(width) * sy
+        stage_x_total = float(height) * sx
+        y_unit = Rulers.unit_suffix(stage_y_total)
+        x_unit = Rulers.unit_suffix(stage_x_total)
+        Rulers.draw_bottom_ruler(
+            painter,
+            image_rect,
+            stage_y_total,
+            caption=f"stage Y ({y_unit})",
+            canvas_right=label_w,
+            origin_at_right=True,
+        )
+        Rulers.draw_left_ruler(
+            painter,
+            image_rect,
+            stage_x_total,
+            caption=f"stage X ({x_unit})",
+        )
+        painter.end()
+        label.setPixmap(canvas)
+    except Exception as error:
+        print(f"XYplaneDyn update failed: {error}")
+
+
+def clear_xyplane_dyn(ui):
+    """Non-dynamic frames should leave the dynamic view blank/black."""
+    label = getattr(ui, "XYplaneDyn", None)
+    if label is None:
+        return
+    try:
+        blank = QPixmap(300, 300)
+        blank.fill(Qt.black)
+        label.setPixmap(blank)
+    except Exception:
+        pass
+
+
+def render_cscan_xz_from_volume(ui, payload):
+    """Render the XZ view of a C-scan from the full [Y, X, Z] volume at the
+    Y-plane selected by YBar. Returns True when it updated the view."""
+    volume = payload.get("volume", None)
+    if volume is None or np.size(volume) == 0:
+        return False
+    volume = np.asarray(volume)
+    if volume.ndim != 3:
+        return False
+    y_index = cscan_display_y_index(ui, volume.shape[0])
+    # volume[y] is (X, Z); the XZ display wants (Z, X).
+    xz_intensity = np.transpose(volume[y_index]).copy()
+
+    hsv_volume = payload.get("hsv_volume", None)
+    xz_hsv = None
+    if hsv_volume is not None and np.size(hsv_volume) > 0:
+        hsv_volume = np.asarray(hsv_volume)
+        if hsv_volume.ndim == 4 and hsv_volume.shape[0] == volume.shape[0]:
+            xz_hsv = np.transpose(hsv_volume[y_index], (1, 0, 2)).copy()
+
+    if xz_hsv is not None and np.size(xz_hsv) > 0:
+        pixmap = render_xz_pixmap(ui, xz_intensity, None, xz_hsv)
+    else:
+        pixmap = render_xz_pixmap(ui, xz_intensity)
+    set_xzplane_pixmap_with_aspect(ui, pixmap)
+    return True
+
+
 def render_xz_pixmap(ui, intensity, rgb=None, hsv=None, frequency_hz=None, bandwidth_hz=None, value=None):
     if hsv is not None and np.size(hsv) > 0:
         hsv = np.asarray(hsv, dtype=np.float32)
@@ -173,6 +401,103 @@ def render_xz_pixmap(ui, intensity, rgb=None, hsv=None, frequency_hz=None, bandw
     return RGBImagePlot(matrix1=intensity, m=ym, M=yM)
 
 
+def xz_physical_pixel_sizes_um(ui):
+    """Return (x_um_per_pixel, z_um_per_pixel) for the XZ-plane display.
+
+    x: lateral pitch = XStepSize * AlineAVG (each displayed X pixel spans
+       AlineAVG galvo steps after averaging).
+    z: axial depth pitch in µm, defined in OCT_MT (default 4.0 µm).
+    """
+    aline_avg = 1
+    avg_ctrl = getattr(ui, "AlineAVG", None)
+    if avg_ctrl is not None:
+        try:
+            aline_avg = max(1, int(avg_ctrl.value()))
+        except Exception:
+            aline_avg = 1
+    try:
+        x_um = float(ui.XStepSize.value()) * aline_avg
+    except Exception:
+        x_um = 1.0
+    try:
+        z_um = float(getattr(ui, "axial_pixel_size_um", 4.0))
+    except Exception:
+        z_um = 4.0
+    return x_um, z_um
+
+
+def set_xzplane_pixmap_with_aspect(ui, pixmap):
+    """Display a pixmap on XZplane preserving its true physical aspect.
+
+    XZ images are stored with rows = depth (Z) and columns = lateral (X), so
+    each column spans x_um and each row spans axial z_um. The image is drawn
+    bottom-left anchored inside the ruler margins and physical axis rulers are
+    painted in the margins (bottom = lateral X, left = depth Z from 0 at the
+    top of the displayed depth window).
+    """
+    label = getattr(ui, "XZplane", None)
+    if label is None or pixmap is None or pixmap.isNull():
+        return
+    try:
+        x_count = float(pixmap.width())
+        z_count = float(pixmap.height())
+        if x_count <= 0 or z_count <= 0:
+            label.setPixmap(pixmap)
+            return
+        x_um, z_um = xz_physical_pixel_sizes_um(ui)
+        phys_w = x_count * x_um
+        phys_h = z_count * z_um
+        if phys_w <= 0 or phys_h <= 0:
+            label.setPixmap(pixmap)
+            return
+        label_w, label_h = mosaic_label_render_size(label)
+        inner = Rulers.inner_rect(label_w, label_h)
+        if inner.width() <= 0 or inner.height() <= 0:
+            label.setPixmap(pixmap)
+            return
+        fit = min(inner.width() / phys_w, inner.height() / phys_h)
+        draw_w = max(1, int(round(phys_w * fit)))
+        draw_h = max(1, int(round(phys_h * fit)))
+        # Anchor the image to the bottom-left corner of the inner area so the
+        # bottom and left rulers hug the image edges.
+        draw_x = int(inner.left())
+        draw_y = int(inner.bottom() - draw_h)
+
+        canvas = QPixmap(label_w, label_h)
+        canvas.fill(Qt.black)
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.drawPixmap(
+            QRectF(draw_x, draw_y, draw_w, draw_h),
+            pixmap,
+            QRectF(pixmap.rect()),
+        )
+        image_rect = QRectF(draw_x, draw_y, draw_w, draw_h)
+        x_unit = Rulers.unit_suffix(x_count * x_um)
+        z_unit = Rulers.unit_suffix(z_count * z_um)
+        Rulers.draw_bottom_ruler(
+            painter,
+            image_rect,
+            x_count * x_um,
+            caption=f"lateral X ({x_unit})",
+            canvas_right=label_w,
+        )
+        Rulers.draw_left_ruler(
+            painter,
+            image_rect,
+            z_count * z_um,
+            caption=f"depth ({z_unit})",
+        )
+        painter.end()
+        label.setPixmap(canvas)
+    except Exception as error:
+        print(f"XZplane aspect-fit failed: {error}")
+        try:
+            label.setPixmap(pixmap)
+        except Exception:
+            pass
+
+
 def set_xy_projection(
     ui,
     intensity,
@@ -183,7 +508,20 @@ def set_xy_projection(
     value=None,
     volume=None,
     hsv_volume=None,
+    volume_downsample=1.0,
 ):
+    """Route en-face projections to the structure view (XYplaneInt/mosaic_viewer)
+    and the dynamic view (XYplaneDyn) at the shared ZDepthBar plane.
+
+    Intensity goes to XYplaneInt with XZmin/XZmax contrast; dynamic (HSV or
+    frequency/bandwidth/value RGB) goes to XYplaneDyn with the DynBrightness /
+    DynContrast sliders. Both honour the ``scale`` downsample control.
+
+    ``volume_downsample`` is the X/Y downsample factor already applied to
+    ``volume`` / ``hsv_volume`` (mosaic stitched volumes). The raw µm-per-pixel
+    pitch is multiplied by this factor so physical extents (and the rulers
+    derived from them) stay correct for the downsampled volume.
+    """
     if getattr(ui, "mosaic_viewer", None) is None:
         return
     if intensity is None and volume is None:
@@ -195,42 +533,72 @@ def set_xy_projection(
     # ratio correct.
     aline_avg = max(1, int(getattr(ui, "AlineAVG", 1).value() if hasattr(ui, "AlineAVG") else 1))
     x_step_size = float(x_step_size) * aline_avg
-    # XY-plane display downsample from the UI spinbox (X/Y only; the Z-plane
-    # selection below is unchanged). scale=1 keeps the full-resolution display.
+    # XY-plane display downsample from the UI spinbox (X/Y only).
     scale_control = getattr(ui, "scale", None)
     downsample = max(1, int(scale_control.value())) if scale_control is not None else 1
+    volume_downsample = max(1.0, float(volume_downsample or 1.0))
+
+    # --- Structure (intensity) en-face plane -> XYplaneInt ---
+    # In-RAM stitched volumes are already downsampled by the UI scale for
+    # display; do not downsample again on this path. Live non-volume planes
+    # (e.g. per-tile AIP) still use the scale downsample.
+    intensity_plane = None
     volume_plane = z_plane_from_volume(ui, volume)
     if volume_plane is not None:
-        intensity = volume_plane
-        # The stitched volume is already downsampled in DnS by the UI scale;
-        # downsampling again on display would double the reduction.
-        downsample = 1
+        intensity_plane = display_array(volume_plane)
+        int_downsample = 1
+        struct_step_x = x_step_size * volume_downsample
+        struct_step_y = y_step_size * volume_downsample
+    elif intensity is not None:
+        intensity_plane = display_array(intensity)
+        int_downsample = downsample
+        struct_step_x = x_step_size
+        struct_step_y = y_step_size
+    if intensity_plane is not None:
+        ui.mosaic_viewer.set_image(
+            intensity_plane,
+            ui.XZmin.value(),
+            ui.XZmax.value(),
+            struct_step_x,
+            struct_step_y,
+            downsample=int_downsample,
+        )
+
+    # --- Dynamic (HSV / RGB) en-face plane -> XYplaneDyn ---
+    # Same rule as intensity: downsampled in-RAM HSV volumes are used as-is for
+    # display; live 2-D HSV planes get the scale downsample.
     hsv_volume_plane = z_plane_from_volume(ui, hsv_volume)
     if hsv_volume_plane is not None:
         hsv = hsv_volume_plane
-        downsample = 1
+        dyn_downsample = 1
+    else:
+        dyn_downsample = downsample
+    dyn_rgb = None
     if hsv is not None and np.size(hsv) > 0:
         hsv = np.asarray(hsv, dtype=np.float32)
-        rgb = dynamic_metric_rgb_display_array(ui, hsv[..., 0], hsv[..., 1], hsv[..., 2], ui.XZmin, ui.XZmax)
+        dyn_rgb = dynamic_metric_rgb_display_array(ui, hsv[..., 0], hsv[..., 1], hsv[..., 2], ui.XZmin, ui.XZmax)
     elif rgb is not None and np.size(rgb) > 0:
         if frequency_hz is not None and bandwidth_hz is not None and value is not None:
-            rgb = dynamic_metric_rgb_display_array(ui, frequency_hz, bandwidth_hz, value, ui.XZmin, ui.XZmax)
+            dyn_rgb = dynamic_metric_rgb_display_array(ui, frequency_hz, bandwidth_hz, value, ui.XZmin, ui.XZmax)
         else:
-            rgb = dynamic_rgb_display_array(ui, rgb, ui.XZmin, ui.XZmax)
-    else:
-        intensity = display_array(intensity)
-        ui.mosaic_viewer.set_image(intensity, ui.XZmin.value(), ui.XZmax.value(), x_step_size, y_step_size, downsample=downsample)
-        return
-    if rgb is not None and np.size(rgb) > 0:
-        ui.mosaic_viewer.set_image(
-            rgb,
-            0,
-            255,
-            x_step_size,
-            y_step_size,
-            downsample=downsample,
+            dyn_rgb = dynamic_rgb_display_array(ui, rgb, ui.XZmin, ui.XZmax)
+    if dyn_rgb is not None:
+        if hsv_volume_plane is not None:
+            eff_step_x = x_step_size * volume_downsample
+            eff_step_y = y_step_size * volume_downsample
+        else:
+            # downsample_rgb() below reduces the plane by dyn_downsample, so the
+            # per-pixel pitch seen by the drawing helper must be scaled up by it.
+            eff_step_x = x_step_size * dyn_downsample
+            eff_step_y = y_step_size * dyn_downsample
+        set_xyplane_dyn_pixmap(
+            ui,
+            downsample_rgb(dyn_rgb, dyn_downsample),
+            eff_step_x,
+            eff_step_y,
         )
-        return
+    else:
+        clear_xyplane_dyn(ui)
 
 
 def display_sample_overlay(ui, overlay_images, sample_id, fov_locations_getter):
@@ -260,10 +628,33 @@ def render_usb_region_overlay(ui, source, fov_locations_getter):
         ui.MosaicLabel.clear()
         return
     poly_np = np.asarray(poly_pts, dtype=np.float32)
-    x_min = int(max(0, np.floor(np.min(poly_np[:, 0]) - 200)))
-    y_min = int(max(0, np.floor(np.min(poly_np[:, 1]) - 200)))
-    x_max = int(min(raw_img.shape[1], np.ceil(np.max(poly_np[:, 0]) + 200)))
-    y_max = int(min(raw_img.shape[0], np.ceil(np.max(poly_np[:, 1]) + 200)))
+    calibration = source.get("calibration")
+    if calibration is None or not calibration_uses_affine(calibration):
+        raise ValueError(f"USB region overlay requires affine calibration: {calibration}")
+
+    # Crop tightly to the union of the drawn ROI and all of its generated FOVs
+    # (both in full USB-frame pixels) plus a small margin, so the sample area and
+    # FOV layout fill the MosaicLabel instead of being lost in a large fixed
+    # 200 px border.
+    min_x = float(np.min(poly_np[:, 0]))
+    max_x = float(np.max(poly_np[:, 0]))
+    min_y = float(np.min(poly_np[:, 1]))
+    max_y = float(np.max(poly_np[:, 1]))
+    for fov in fov_locations_getter(int(source["sample_id"])):
+        cx_px, cy_px = stage_to_image_from_calibration(calibration, fov.x, fov.y)
+        loc_y_fov = fov.y_length_mm if fov.y_length_mm is not None else ui.YLength.value()
+        fov_half_x, fov_half_y = affine_fov_half_size_pixels(
+            calibration, ui.XLength.value(), loc_y_fov
+        )
+        min_x = min(min_x, float(cx_px) - fov_half_x)
+        max_x = max(max_x, float(cx_px) + fov_half_x)
+        min_y = min(min_y, float(cy_px) - fov_half_y)
+        max_y = max(max_y, float(cy_px) + fov_half_y)
+    crop_margin = 30.0
+    x_min = int(max(0, np.floor(min_x - crop_margin)))
+    y_min = int(max(0, np.floor(min_y - crop_margin)))
+    x_max = int(min(raw_img.shape[1], np.ceil(max_x + crop_margin)))
+    y_max = int(min(raw_img.shape[0], np.ceil(max_y + crop_margin)))
     crop_img = raw_img[y_min:y_max, x_min:x_max].copy()
     if crop_img.size == 0:
         print(f"USB region overlay crop is empty for sampleID-{source.get('sample_id')}")
@@ -423,7 +814,8 @@ def render_bline_ready(ui, payload):
     if bline is None:
         return
     rgb = payload.get("rgb", None)
-    ui.XZplane.setPixmap(
+    set_xzplane_pixmap_with_aspect(
+        ui,
         render_xz_pixmap(
             ui,
             bline,
@@ -432,7 +824,7 @@ def render_bline_ready(ui, payload):
             payload.get("freq", None),
             payload.get("bandwidth", None),
             payload.get("value", None),
-        )
+        ),
     )
 
 
@@ -442,18 +834,20 @@ def render_cscan_ready(ui, payload):
     aip = payload.get("aip", None)
     rgb = payload.get("rgb", None)
 
-    if bline is not None:
-        ui.XZplane.setPixmap(
-            render_xz_pixmap(
+    if not render_cscan_xz_from_volume(ui, payload):
+        if bline is not None:
+            set_xzplane_pixmap_with_aspect(
                 ui,
-                bline,
-                rgbb,
-                payload.get("hsvb", None),
-                payload.get("freqb", None),
-                payload.get("bandwidthb", None),
-                payload.get("valueb", None),
+                render_xz_pixmap(
+                    ui,
+                    bline,
+                    rgbb,
+                    payload.get("hsvb", None),
+                    payload.get("freqb", None),
+                    payload.get("bandwidthb", None),
+                    payload.get("valueb", None),
+                ),
             )
-        )
 
     set_xy_projection(
         ui,
@@ -474,7 +868,8 @@ def render_mosaic_ready(ui, payload):
     bline_rgb = payload.get("bline_rgb", None)
     mosaic_rgb = payload.get("mosaic_rgb", None)
     if bline is not None:
-        ui.XZplane.setPixmap(
+        set_xzplane_pixmap_with_aspect(
+            ui,
             render_xz_pixmap(
                 ui,
                 bline,
@@ -483,7 +878,7 @@ def render_mosaic_ready(ui, payload):
                 payload.get("bline_freq", None),
                 payload.get("bline_bandwidth", None),
                 payload.get("bline_value", None),
-            )
+            ),
         )
     set_xy_projection(
         ui,
@@ -495,4 +890,5 @@ def render_mosaic_ready(ui, payload):
         payload.get("mosaic_value", None),
         payload.get("mosaic_volume", None),
         payload.get("mosaic_hsv_volume", None),
+        volume_downsample=float(getattr(ui, "mosaic_display_downsample", 1) or 1),
     )

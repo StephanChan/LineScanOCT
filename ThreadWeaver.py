@@ -33,11 +33,12 @@ from mosaic_correction import (
     build_mosaic_correction_overlay_source,
     mosaic_polygons_to_stage_mm,
 )
-from SampleLocator import open_usb_camera, orient_usb_frame
+from SampleLocator import open_usb_camera, orient_usb_frame_live
 from Display_rendering import (
     display_sample_overlay,
     mosaic_label_render_size,
     render_mosaic_correction_overlay,
+    set_label_pixmap_fit,
 )
 from DynamicPostprocessing import (
     process_next_idle_dynamic_folder,
@@ -53,6 +54,11 @@ from ScanSession import (
     populate_sample_selector,
     save_session_data,
     save_usb_training_data,
+)
+from CoordinateCalibration import (
+    fit_pixel_to_stage_affine,
+    save_affine_to_config,
+    save_calibration_points_report,
 )
 
 ALINE_MODES = (
@@ -162,6 +168,9 @@ class WeaverThread(QThread):
 
                 elif self.item.action == AcqTypes.PLATE_PRESCAN:
                     message = self.prepare_and_run_plate_prescan(acq_mode=self.item.action, context=self.item.context)
+                    self.finish_with_message(message)
+                elif self.item.action == AcqTypes.COORDINATE_CALIBRATION:
+                    message = self.calibrate_coordinates(acq_mode=self.item.action, context=self.item.context)
                     self.finish_with_message(message)
                 elif self.item.action == AcqTypes.PLATE_SCAN:
                     # make directories
@@ -1241,13 +1250,185 @@ class WeaverThread(QThread):
             )
         return(message) 
 
+    def calibrate_coordinates(self, acq_mode=None, context=None):
+        """Per-sample coordinate calibration under live ContinuousCscan.
+
+        context = [sample_centers, roi_records] from a fresh USB locator run.
+        The operator aligns each sample (OCT image matches the drawn ROI) and
+        presses Stop; actual stage positions are recorded, then an affine
+        camera-pixel -> stage model is fitted and saved to config.ini.
+        """
+        ui = self.ui
+        if not context or len(context) < 2:
+            return "Coordinate calibration stopped: missing locator data."
+        sample_centers = list(context[0]) if context[0] else []
+        roi_records = list(context[1]) if context[1] else []
+        if len(sample_centers) < 5:
+            return (
+                "Coordinate calibration stopped: at least 5 samples are required "
+                f"(only {len(sample_centers)} were located)."
+            )
+        # Optional context[2] = planned FOV locations (per sample) and
+        # context[3] = the USB overlay images, so MosaicLabel can show the same
+        # ROI overlay as PlatePreScan / WellScan while calibrating.
+        locator_fovs = (
+            list(context[2])
+            if len(context) >= 3 and context[2] is not None
+            else list(getattr(self, "FOV_locations", []) or [])
+        )
+        overlay_images = (
+            context[3]
+            if len(context) >= 4 and context[3] is not None
+            else dict(getattr(self, "overlay_images", {}) or {})
+        )
+        self.sample_centers = sample_centers
+        self.FOV_locations = locator_fovs
+        self.overlay_images = overlay_images
+
+        roi_by_id = {}
+        for record in roi_records:
+            try:
+                roi_by_id[int(record["sample_id"])] = record
+            except Exception:
+                continue
+
+        saved = {
+            "BlineAVG": ui.BlineAVG.value(),
+            "DynCheckBox": ui.DynCheckBox.isChecked(),
+            "RealtimeDynCheckBox": ui.RealtimeDynCheckBox.isChecked(),
+            "Save": ui.Save.isChecked(),
+            "FFTDevice": ui.FFTDevice.currentText(),
+            "ACQMode": ui.ACQMode.currentText(),
+        }
+        ui.BlineAVG.setValue(1)
+        ui.DynCheckBox.setChecked(False)
+        ui.RealtimeDynCheckBox.setChecked(False)
+        ui.Save.setChecked(False)
+        ui.FFTDevice.setCurrentText("GPU")
+
+        calibration_points = []
+        # Like the sample locator / prescan flow, each new sample should start
+        # from the Z height that the previous sample was aligned at, instead of
+        # returning to the initial (locator) Z height every time.
+        inherited_z = None
+        try:
+            for center in sample_centers:
+                sample_id = int(center.sample_id)
+                if 0 <= sample_id - 1 < ui.sampleSelector.count():
+                    ui.sampleSelector.setCurrentIndex(sample_id - 1)
+
+                # Show the drawn USB ROI / FOV overlay for this sample on
+                # MosaicLabel (same as PlatePreScan) so the operator remembers
+                # where each ROI was drawn.
+                try:
+                    self.display_sample_overlay(sample_id)
+                except Exception as error:
+                    print(f"Could not display sample overlay for sampleID-{sample_id}: {error}")
+
+                self.move_stage_axis("X", center.x)
+                self.move_stage_axis("Y", center.y)
+                if inherited_z is None:
+                    self.move_stage_axis("Z", center.z)
+                else:
+                    self.move_stage_axis("Z", inherited_z)
+
+                ui.ACQMode.setCurrentText(AcqTypes.CONTINUOUS_CSCAN)
+                self.drain_continuous_backlog(
+                    reason=f"before coordinate calibration sampleID-{sample_id}"
+                )
+                self.InitMemory()
+                ui.RunButton.setChecked(True)
+                ui.RunButton.setText("校准完成请按停止")
+                self.emit_status(
+                    f"sampleID-{sample_id}: 调整XYZ直到OCT图像与所画区域匹配，然后按停止。"
+                )
+                self.RptScan(
+                    DnS_action=AcqTypes.CONTINUOUS_CSCAN,
+                    acq_mode=AcqTypes.CONTINUOUS_CSCAN,
+                )
+
+                record = roi_by_id.get(sample_id)
+                polygon = []
+                if record is not None:
+                    polygon = record.get("pixel_polygon") or []
+                pixel_x = pixel_y = None
+                if polygon:
+                    pixel_x = float(np.mean([float(pt[0]) for pt in polygon]))
+                    pixel_y = float(np.mean([float(pt[1]) for pt in polygon]))
+
+                calibration_points.append(
+                    {
+                        "sample_id": sample_id,
+                        "pixel_x": pixel_x,
+                        "pixel_y": pixel_y,
+                        "predicted_x": float(center.x),
+                        "predicted_y": float(center.y),
+                        "predicted_z": float(center.z),
+                        "actual_x": float(ui.Xcurrent.value()),
+                        "actual_y": float(ui.Ycurrent.value()),
+                        "actual_z": float(ui.Zcurrent.value()),
+                    }
+                )
+                # Remember the Z the operator aligned this sample at, so the
+                # next sample starts from this height rather than the locator Z.
+                inherited_z = float(ui.Zcurrent.value())
+        finally:
+            ui.BlineAVG.setValue(int(float(saved["BlineAVG"])))
+            ui.DynCheckBox.setChecked(bool(saved["DynCheckBox"]))
+            ui.RealtimeDynCheckBox.setChecked(bool(saved["RealtimeDynCheckBox"]))
+            ui.Save.setChecked(bool(saved["Save"]))
+            ui.FFTDevice.setCurrentText(str(saved["FFTDevice"]))
+            ui.ACQMode.setCurrentText(str(saved["ACQMode"]))
+            ui.RunButton.setChecked(False)
+            ui.RunButton.setText("Go")
+            setattr(ui, "_coordinate_calibration_active", False)
+            button = getattr(ui, "TestButten1", None)
+            if button is not None:
+                button.setEnabled(True)
+
+        valid = [
+            point
+            for point in calibration_points
+            if point["pixel_x"] is not None and point["pixel_y"] is not None
+        ]
+        if len(valid) < 5:
+            return (
+                "Coordinate calibration finished with "
+                f"{len(valid)} usable points; at least 5 are required, "
+                "so no model was saved."
+            )
+        try:
+            matrix, stats = fit_pixel_to_stage_affine(valid)
+        except Exception as error:
+            return f"Coordinate calibration fit failed: {error}"
+        try:
+            save_affine_to_config(matrix, config_path="config.ini")
+        except Exception as error:
+            print(f"Could not save calibration model to config.ini: {error}")
+        folder = os.path.join(ui.DIR.toPlainText(), "Mosaic")
+        report_path = None
+        try:
+            report_path = save_calibration_points_report(valid, matrix, stats, folder)
+        except Exception as error:
+            print(f"Could not write calibration report: {error}")
+        summary = (
+            f"Coordinate calibration complete: {stats['count']} samples, "
+            f"RMS={stats['rms_mm']:.4f} mm, max={stats['max_mm']:.4f} mm. "
+            "Model saved to config.ini."
+        )
+        if report_path:
+            summary += f" Report: {report_path}"
+        print(summary)
+        return summary
+
     def AdjustZstage(self, sample_id, start_from_current_z=False):
+        ui = self.ui
         sample_center = self.sample_centers[sample_id-1]
         # move to center position of this sample
         self.move_stage_axis('X', sample_center.x)
         self.move_stage_axis('Y', sample_center.y)
         if start_from_current_z:
-            inherited_z = self.ui.ZPosition.value()
+            inherited_z = ui.ZPosition.value()
             sample_center.z = inherited_z
             for location in self.CurrentSampleLocations:
                 location.z = inherited_z
@@ -1256,22 +1437,49 @@ class WeaverThread(QThread):
             )
         else:
             self.move_stage_axis('Z', sample_center.z)
-        # do continuous scan to display Bline
-        self.ui.ACQMode.setCurrentText(AcqTypes.CONTINUOUS_BLINE)
-        if not self.wait_for_processing_barrier(label=f"starting {AcqTypes.CONTINUOUS_BLINE}"):
-            return
-        self.InitMemory()
-        self.ui.RunButton.setChecked(True)
-        self.ui.RunButton.setText('点击开始扫描')
-        self.RptScan(DnS_action=AcqTypes.CONTINUOUS_BLINE, acq_mode=AcqTypes.CONTINUOUS_BLINE)
-        # User can move Z stage up and down to put sample at focus
-        sample_center.z = self.ui.ZPosition.value()
-        for location in self.CurrentSampleLocations:
-            location.z = self.ui.ZPosition.value()
-        
-        self.ui.RunButton.setText('Stop')
-        self.ui.RunButton.setChecked(True)
-        
+
+        # Save the UI state that must not interfere with the continuous C-scan
+        # Z-adjustment (dynamic/realtime/save off, BlineAVG=1, FFT=GPU), then
+        # restore it once the continuous scan finishes.
+        saved_states = {
+            "BlineAVG": ui.BlineAVG.value(),
+            "DynCheckBox": ui.DynCheckBox.isChecked(),
+            "RealtimeDynCheckBox": ui.RealtimeDynCheckBox.isChecked(),
+            "Save": ui.Save.isChecked(),
+            "FFTDevice": ui.FFTDevice.currentText(),
+            "ACQMode": ui.ACQMode.currentText(),
+        }
+        ui.BlineAVG.setValue(1)
+        ui.DynCheckBox.setChecked(False)
+        ui.RealtimeDynCheckBox.setChecked(False)
+        ui.Save.setChecked(False)
+        ui.FFTDevice.setCurrentText("GPU")
+
+        try:
+            # do continuous scan (C-scan) so the operator can adjust Z while seeing
+            # the en-face view
+            ui.ACQMode.setCurrentText(AcqTypes.CONTINUOUS_CSCAN)
+            if not self.wait_for_processing_barrier(label=f"starting {AcqTypes.CONTINUOUS_CSCAN}"):
+                return
+            self.InitMemory()
+            ui.RunButton.setChecked(True)
+            ui.RunButton.setText('点击开始扫描')
+            self.RptScan(DnS_action=AcqTypes.CONTINUOUS_CSCAN, acq_mode=AcqTypes.CONTINUOUS_CSCAN)
+            # User can move Z stage up and down to put sample at focus
+            sample_center.z = ui.ZPosition.value()
+            for location in self.CurrentSampleLocations:
+                location.z = ui.ZPosition.value()
+
+            ui.RunButton.setText('Stop')
+            ui.RunButton.setChecked(True)
+        finally:
+            ui.BlineAVG.setValue(int(float(saved_states["BlineAVG"])))
+            ui.DynCheckBox.setChecked(bool(saved_states["DynCheckBox"]))
+            ui.RealtimeDynCheckBox.setChecked(bool(saved_states["RealtimeDynCheckBox"]))
+            ui.Save.setChecked(bool(saved_states["Save"]))
+            ui.FFTDevice.setCurrentText(str(saved_states["FFTDevice"]))
+            ui.ACQMode.setCurrentText(str(saved_states["ACQMode"]))
+
     def iterate_FOVs(self, acq_mode):
         # print(self.CurrentSampleLocations)
         if not self.wait_for_processing_barrier(label=f"starting {acq_mode}"):
@@ -1771,7 +1979,7 @@ class WeaverThread(QThread):
             if not ret:
                 break
     
-            frame = orient_usb_frame(frame)
+            frame = orient_usb_frame_live(frame)
             
             # 3. Convert BGR to RGB
             rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -1782,11 +1990,11 @@ class WeaverThread(QThread):
             qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
             pixmap = QPixmap.fromImage(qt_image)
     
-            # 5. Display on Label (scaled to fit the widget)
-            # Note: If this is a separate thread, UI updates should ideally 
-            # use Signals, but for a simple script, this often works:
-            self.ui.XZplane.setPixmap(pixmap.scaled(
-                self.ui.XZplane.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            # 5. Display on the XZplane label with the USB image's true aspect
+            # ratio preserved (letterboxed on the black background). Note: if this
+            # is a separate thread, UI updates should ideally use Signals, but for
+            # a simple script, this often works:
+            set_label_pixmap_fit(self.ui.XZplane, pixmap)
     
         # 6. Release resources when button is unchecked
         

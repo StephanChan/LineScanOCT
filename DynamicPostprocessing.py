@@ -391,7 +391,8 @@ def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
     sample_locations = weaver.sample_fov_locations(sample_id)
     if not sample_locations:
         return False
-    downsample = stitch_xy_downsample(weaver)
+    # Stitched mosaic is saved at ORIGINAL resolution (no in-plane downsampling).
+    downsample = 1
 
     tile_dynamic_volumes = {}
     tile_mean_volumes = {}
@@ -440,6 +441,10 @@ def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
             continue
         col_idx = int(round((loc.x - min_x) / fw_mm))
         row_idx = int(round((loc.y - min_y) / fh_mm))
+        # Match the live mosaic stitch order: reverse both axes (right-to-left,
+        # top-to-bottom) without rotating the tile pixels.
+        col_idx = num_cols - 1 - col_idx
+        row_idx = num_rows - 1 - row_idx
         y1 = row_idx * fh_px
         y2 = y1 + fh_px
         x1 = col_idx * fw_px
@@ -467,8 +472,8 @@ def write_stitched_static_outputs(
 
     Each static tile is a full ``[Y, X, Z]`` volume saved as
     ``tile-<id>-Y...-X...-Z....tif``. Tiles are placed on the FOV grid and the
-    result is written as ``stitched-Y...-X...-Z....tif`` (in-plane downsampled
-    by the UI "downsample scale" spinbox, depth kept unchanged).
+    result is written as ``stitched-Y...-X...-Z....tif`` at ORIGINAL resolution
+    (depth unchanged).
 
     Positions come from ``weaver.sample_fov_locations(sample_id)`` unless
     ``manifest_records`` is given, in which case each record's
@@ -478,7 +483,8 @@ def write_stitched_static_outputs(
     if not OFFLINE_DYNAMIC_PROCESSING_ENABLED:
         return False
 
-    downsample = stitch_xy_downsample(weaver)
+    # Stitched mosaic is saved at ORIGINAL resolution (no in-plane downsampling).
+    downsample = 1
 
     if manifest_records is not None:
         entries = []
@@ -559,6 +565,10 @@ def write_stitched_static_outputs(
                 volume = block_mean_xy(volume, downsample)
         col_idx = int(round((x - min_x) / fw_mm))
         row_idx = int(round((y - min_y) / fh_mm))
+        # Match the live mosaic stitch order: reverse both axes (right-to-left,
+        # top-to-bottom) without rotating the tile pixels.
+        col_idx = num_cols - 1 - col_idx
+        row_idx = num_rows - 1 - row_idx
         y1 = row_idx * fh_px
         y2 = y1 + fh_px
         x1 = col_idx * fw_px

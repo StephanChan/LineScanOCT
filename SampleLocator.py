@@ -23,50 +23,20 @@ USB_FRAME_WIDTH = 3840
 USB_FRAME_HEIGHT = 2160
 USB_AUTO_EXPOSURE = 0.25
 USB_EXPOSURE = -5.0
-USB_MOSAIC_X_MIN_MM = 90.0
-USB_MOSAIC_X_MAX_MM = 135.0
-USB_MOSAIC_Y_MIN_MM = 50.0
-USB_MOSAIC_Y_MAX_MM = 130.0
-USB_MOSAIC_GRID_X = 3
-USB_MOSAIC_GRID_Y = 4
-USB_VALID_CENTER_REGION_PX = 1500
 SAMPLE_STAGE_COLUMN_Y_TOLERANCE_MM = 10.0
-
-USB_CAMERA_TO_STAGE_AFFINE = [
-    [-9.61990609461207e-05, 0.046074609344122719, -5.3744508746854729],
-    [-0.046323119248083452, 2.7853843648006915e-05, 196.4359168459153],
-    [0.0, 0.0, 1.0],
-]
-
-USB_CAMERA_STAGE_CONTROL_POINTS = [
-    {"camera": [672.0, 240.0], "stage": [5.92, 165.1]},
-    {"camera": [658.0, 1408.0], "stage": [59.33, 165.9]},
-    {"camera": [725.0, 1708.0], "stage": [73.17, 162.72]},
-    {"camera": [977.0, 279.0], "stage": [7.31, 151.16]},
-    {"camera": [1010.0, 604.0], "stage": [22.37, 149.6]},
-    {"camera": [1020.0, 1078.0], "stage": [44.27, 149.27]},
-    {"camera": [1526.0, 887.0], "stage": [35.1, 125.9]},
-    {"camera": [1291.0, 888.0], "stage": [35.38, 136.8]},
-    {"camera": [1546.0, 1116.0], "stage": [45.9, 124.9]},
-    {"camera": [1357.0, 1435.0], "stage": [60.6, 133.84]},
-    {"camera": [1558.0, 1691.0], "stage": [72.63, 124.55]},
-    {"camera": [1789.0, 258.0], "stage": [6.33, 113.7]},
-    {"camera": [1782.0, 1157.0], "stage": [47.7, 114.0]},
-    {"camera": [2099.0, 840.0], "stage": [32.75, 99.24]},
-    {"camera": [2161.0, 1669.0], "stage": [71.63, 96.32]},
-    {"camera": [2500.0, 580.0], "stage": [21, 80.54]},
-    {"camera": [2659.0, 838.0], "stage": [32.64, 73.17]},
-    {"camera": [2381.0, 1100.0], "stage": [45.1, 86]},
-    {"camera": [2615.0, 1660.0], "stage": [70.92, 75.19]},
-    {"camera": [2763.0, 215.0], "stage": [4.69, 68.58]},
-]
 
 
 def default_usb_mosaic_calibration():
+    """Return an empty calibration template.
+
+    The USB camera <-> stage affine is now always taken from config.ini
+    (loaded by OCT_MT._current_usb_calibration via CoordinateCalibration).
+    No hard-coded matrix or stage control points are used any more.
+    """
     return {
         "calibration_method": "affine_matrix",
-        "camera_to_stage_affine": USB_CAMERA_TO_STAGE_AFFINE,
-        "camera_stage_control_points": USB_CAMERA_STAGE_CONTROL_POINTS,
+        "camera_to_stage_affine": None,
+        "camera_stage_control_points": [],
         "affine_pixel_space": "fiji_horizontal_flip",
     }
 
@@ -159,8 +129,17 @@ def sort_sample_entries_by_stage_columns(entries, y_tolerance_mm=SAMPLE_STAGE_CO
 
 
 def orient_usb_frame(frame):
-    """Apply the horizontal flip used for Fiji calibration."""
-    return cv2.flip(frame, 1)
+    """Sample-locator / live orientation: flip the raw USB image vertically
+    (top <-> bottom) so locator and live images are aligned with the sample's
+    physical orientation."""
+    return cv2.flip(frame, 0)
+
+
+def orient_usb_frame_live(frame):
+    """Live USB-view orientation: must match the sample-locator orientation
+    (vertical flip, top <-> bottom) so live frames and locator frames agree
+    with the sample's physical orientation."""
+    return orient_usb_frame(frame)
 
 def open_usb_camera(configure_exposure=False):
     cap = cv2.VideoCapture(USB_CAMERA_INDEX, cv2.CAP_MSMF)
@@ -180,6 +159,39 @@ def capture_usb_frame(configure_exposure=False):
         if not ret:
             return None
         return orient_usb_frame(frame)
+    finally:
+        cap.release()
+
+
+USB_CAPTURE_AVERAGE_FRAMES = 5
+
+
+def capture_usb_frame_averaged(n_frames=USB_CAPTURE_AVERAGE_FRAMES, configure_exposure=False):
+    """Open the USB camera once and average up to ``n_frames`` frames.
+
+    Averaging reduces sensor/readout noise so the locator image that the user
+    draws ROIs on is cleaner. Fewer frames are used if the camera drops some;
+    returns None only when no frame could be read at all.
+    """
+    n_frames = max(1, int(n_frames))
+    cap = open_usb_camera(configure_exposure=configure_exposure)
+    try:
+        if not cap.isOpened():
+            return None
+        frames = []
+        attempts = max(n_frames, int(n_frames * 2))
+        while len(frames) < n_frames and attempts > 0:
+            attempts -= 1
+            ret, frame = cap.read()
+            if ret:
+                frames.append(orient_usb_frame(frame))
+        if not frames:
+            return None
+        if len(frames) == 1:
+            return frames[0]
+        stack = np.asarray(frames, dtype=np.float32)
+        average = np.mean(stack, axis=0)
+        return np.clip(np.rint(average), 0, 255).astype(np.uint8)
     finally:
         cap.release()
 
@@ -245,14 +257,6 @@ class _SampleLocatorDrawingBase(QDialog):
                 p_prev = to_ui(self.current_polygon[i-1])
                 painter.drawLine(p_prev[0], p_prev[1], p[0], p[1])
 
-        valid_region = self.valid_roi_rect()
-        if valid_region is not None:
-            painter.setPen(QPen(QColor(0, 180, 255), 3))
-            x1, y1, x2, y2 = valid_region
-            tl = to_ui((x1, y1))
-            br = to_ui((x2, y2))
-            painter.drawRect(QRectF(tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]))
-
         # Draw FOV Grid if generated (Yellow)
         if self.is_finalized:
             painter.setPen(QPen(QColor(255, 255, 0), 1))
@@ -265,29 +269,6 @@ class _SampleLocatorDrawingBase(QDialog):
 
         painter.end()
         self.ui.pic_window.setPixmap(final_buffer)
-
-    def valid_roi_rect(self):
-        if not isinstance(self, MosaicUSBSampleScanner):
-            return None
-        if self.current_tile().get("single_frame", False):
-            return None
-        if self.img_bgr is None:
-            return None
-        h, w = self.img_bgr.shape[:2]
-        size = min(int(USB_VALID_CENTER_REGION_PX), int(w), int(h))
-        x1 = (w - size) / 2.0
-        y1 = (h - size) / 2.0
-        return x1, y1, x1 + size, y1 + size
-
-    def polygon_inside_valid_region(self, polygon):
-        valid_region = self.valid_roi_rect()
-        if valid_region is None:
-            return True
-        x1, y1, x2, y2 = valid_region
-        for px, py in polygon:
-            if px < x1 or px > x2 or py < y1 or py > y2:
-                return False
-        return True
 
     def fov_half_size_pixels(self, loc):
         raise NotImplementedError("Sample locator FOV pixel size requires an affine calibration.")
@@ -337,14 +318,6 @@ class _SampleLocatorDrawingBase(QDialog):
 
     def complete_polygon(self):
         if len(self.current_polygon) >= 3:
-            if not self.polygon_inside_valid_region(self.current_polygon):
-                QMessageBox.warning(
-                    self,
-                    "ROI outside center region",
-                    "This ROI has points outside the blue 1500x1500 center region. "
-                    "Please redraw it inside the guide rectangle.",
-                )
-                return
             self.polygons.append(list(self.current_polygon))
             self.current_polygon = []
             self.update_display()
@@ -388,11 +361,17 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
             for key in self.calibration:
                 if key in initial_calibration:
                     value = initial_calibration[key]
-                    if isinstance(value, list):
+                    if value is None:
+                        self.calibration[key] = None
+                    elif isinstance(value, list):
                         self.calibration[key] = [
                             dict(item) if isinstance(item, dict) else item
                             for item in value
                         ]
+                    elif isinstance(value, np.ndarray):
+                        # e.g. camera_to_stage_affine loaded from config.ini as
+                        # a numpy matrix -> store as nested lists for JSON-safe use.
+                        self.calibration[key] = value.tolist()
                     elif isinstance(value, dict):
                         self.calibration[key] = dict(value)
                     elif isinstance(value, bool):
@@ -713,14 +692,6 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
             return
 
         if len(self.current_polygon) >= 3:
-            if not self.polygon_inside_valid_region(self.current_polygon):
-                QMessageBox.warning(
-                    self,
-                    "ROI outside center region",
-                    "This ROI has points outside the blue 1500x1500 center region. "
-                    "Please redraw it inside the guide rectangle.",
-                )
-                return
             self.polygons.append(list(self.current_polygon))
             self.current_polygon = []
         elif len(self.current_polygon) > 0:

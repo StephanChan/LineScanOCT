@@ -9,6 +9,8 @@ from PyQt5.QtGui import QPixmap, QImage, QColor, QPen, QPainter
 from PyQt5.QtCore import Qt, QPoint, QEvent, pyqtSignal, QRectF, QPointF
 import numpy as np
 
+import Rulers
+
 
 def downsample_display_array(array, scale):
     """Downsample a 2D (Y, X) or 3D (Y, X, 3) display array by an integer scale.
@@ -42,6 +44,11 @@ class InteractiveMosaicWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMouseTracking(True)
+        # Black background (letterbox area), matching XYplaneDyn/other OCT views.
+        self.setAutoFillBackground(True)
+        widget_palette = self.palette()
+        widget_palette.setColor(self.backgroundRole(), Qt.black)
+        self.setPalette(widget_palette)
         self.image = None  # This will hold the raw QPixmap
         self.display_scale = 1.0
         self.pan_x, self.pan_y = 0, 0
@@ -60,6 +67,9 @@ class InteractiveMosaicWidget(QWidget):
         # XY-plane display downsample factor (applied to the displayed pixmap
         # only; adj/raw_shape keep the full-resolution raw mosaic coordinates).
         self.display_downsample = 1
+        # Physical pitches (µm per raw pixel) used by the axis rulers.
+        self.pixel_size_x_um = 1.0
+        self.pixel_size_y_um = 1.0
 
     def set_image(self, numpy_array, m, M, pixel_size_x=1.0, pixel_size_y=1.0, downsample=1):
         """
@@ -80,9 +90,10 @@ class InteractiveMosaicWidget(QWidget):
 
         # Display-only convention for matching the USB top-view image:
         # raw mosaic: rows = stage Y, columns = stage X
-        # USB view: vertical = stage X, horizontal = stage Y, right = smaller stage Y
-        # display = fliplr(raw.T). For future saved-data stitching, apply the same
-        # raw/display conversion explicitly rather than changing the acquisition data.
+        # USB view: vertical = stage X, horizontal = stage Y.
+        # display = flipud(raw.T) — transpose plus one vertical flip (i.e. a
+        # horizontal + vertical flip of the original fliplr(raw.T) view), so the
+        # OCT en-face matches the physical/locator orientation.
         display_adj = self.raw_to_display_array(adj)
 
         # 1b. Downsample the displayed pixmap (X and Y only) so large mosaics
@@ -140,15 +151,22 @@ class InteractiveMosaicWidget(QWidget):
         else:
             self.image = QPixmap.fromImage(qt_image)
 
+        try:
+            self.pixel_size_x_um = float(pixel_size_x)
+            self.pixel_size_y_um = float(pixel_size_y)
+        except (TypeError, ValueError):
+            self.pixel_size_x_um = 1.0
+            self.pixel_size_y_um = 1.0
+
         self.update()
 
     def raw_to_display_array(self, arr):
         if self.display_orientation != "usb_top_view":
             return arr
         if arr.ndim == 2:
-            return np.ascontiguousarray(np.fliplr(arr.T))
+            return np.ascontiguousarray(np.flipud(arr.T))
         if arr.ndim == 3:
-            return np.ascontiguousarray(np.fliplr(np.transpose(arr, (1, 0, 2))))
+            return np.ascontiguousarray(np.flip(np.transpose(arr, (1, 0, 2)), axis=0))
         return arr
 
     def raw_to_display_point(self, pt):
@@ -159,10 +177,10 @@ class InteractiveMosaicWidget(QWidget):
                 float(pt[0]) / self.display_downsample,
                 float(pt[1]) / self.display_downsample,
             )
-        raw_h, _ = self.raw_shape
+        x_pixels = max(1, int(self.raw_shape[1]))
         raw_x, raw_y = pt
-        display_x = ((raw_h - 1) - raw_y) / self.display_downsample
-        display_y = raw_x / self.display_downsample
+        display_x = raw_y / self.display_downsample
+        display_y = (x_pixels - 1 - raw_x) / self.display_downsample
         return display_x, display_y
 
     def display_to_raw_point(self, pt):
@@ -172,9 +190,9 @@ class InteractiveMosaicWidget(QWidget):
         display_y = float(pt[1]) * self.display_downsample
         if self.display_orientation != "usb_top_view":
             return display_x, display_y
-        raw_h, _ = self.raw_shape
-        raw_x = display_y
-        raw_y = (raw_h - 1) - display_x
+        x_pixels = max(1, int(self.raw_shape[1]))
+        raw_x = (x_pixels - 1) - display_y
+        raw_y = display_x
         return raw_x, raw_y
 
     def get_view_params(self):
@@ -188,17 +206,70 @@ class InteractiveMosaicWidget(QWidget):
         
         sw = base_w * self.display_scale
         sh = base_h * self.display_scale
-        
-        dx = (self.width() - sw) / 2 + (self.pan_x * self.display_scale)
-        dy = (self.height() - sh) / 2 + (self.pan_y * self.display_scale)
+
+        # Center within the area left after reserving ruler margins, so the
+        # ruler strips are always visible. dx/dy are the only geometry used by
+        # the mouse mapping, so clicks stay aligned with image pixels.
+        inner = Rulers.inner_rect(self.width(), self.height())
+        dx = inner.left() + (inner.width() - sw) / 2 + (self.pan_x * self.display_scale)
+        dy = inner.top() + (inner.height() - sh) / 2 + (self.pan_y * self.display_scale)
         
         return dx, dy, sw, sh
 
-    def paintEvent(self, event):
-        if self.image is None:
+    def _ruler_axis_totals_um(self):
+        """Return (horizontal_total_um, vertical_total_um) for the displayed axes.
+
+        With the ``usb_top_view`` orientation the horizontal axis is stage Y and
+        the vertical axis is stage X. Without it the horizontal axis is X and
+        the vertical axis is Y.
+        """
+        if self.image is None or self.raw_shape is None:
+            return 0.0, 0.0
+        y_pixels, x_pixels = self.raw_shape
+        if self.display_orientation == "usb_top_view":
+            horizontal_um = float(y_pixels) * float(self.pixel_size_y_um)
+            vertical_um = float(x_pixels) * float(self.pixel_size_x_um)
+            return horizontal_um, vertical_um
+        horizontal_um = float(x_pixels) * float(self.pixel_size_x_um)
+        vertical_um = float(y_pixels) * float(self.pixel_size_y_um)
+        return horizontal_um, vertical_um
+
+    def _draw_rulers(self, painter, dx, dy, sw, sh):
+        horizontal_um, vertical_um = self._ruler_axis_totals_um()
+        if horizontal_um <= 0 or vertical_um <= 0:
             return
-            
+        image_rect = QRectF(dx, dy, sw, sh)
+        if self.display_orientation == "usb_top_view":
+            bottom_caption = "stage Y"
+            left_caption = "stage X"
+        else:
+            bottom_caption = "X"
+            left_caption = "Y"
+        bottom_caption += f" ({Rulers.unit_suffix(horizontal_um)})"
+        left_caption += f" ({Rulers.unit_suffix(vertical_um)})"
+        Rulers.draw_bottom_ruler(
+            painter,
+            image_rect,
+            horizontal_um,
+            caption=bottom_caption,
+            canvas_right=self.width(),
+            origin_at_right=(self.display_orientation == "usb_top_view"),
+        )
+        Rulers.draw_left_ruler(
+            painter,
+            image_rect,
+            vertical_um,
+            caption=left_caption,
+        )
+
+    def paintEvent(self, event):
         painter = QPainter(self)
+        # Black background for the letterboxed area (matches XYplaneDyn).
+        painter.fillRect(self.rect(), Qt.black)
+        if self.image is None:
+            painter.end()
+            return
+
         dx, dy, sw, sh = self.get_view_params()
         
         # Draw the stretched image
@@ -234,6 +305,9 @@ class InteractiveMosaicWidget(QWidget):
             # Draw circles at vertices
             for p in pts:
                 painter.drawEllipse(p, 3, 3)
+
+        # Physical axis rulers in the reserved margins.
+        self._draw_rulers(painter, dx, dy, sw, sh)
 
     def mousePressEvent(self, event):
         if self.image is None:

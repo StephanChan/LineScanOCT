@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>1609</width>
-    <height>889</height>
+    <height>700</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -16,7 +16,7 @@
   <widget class="QWidget" name="centralwidget">
    <layout class="QGridLayout" name="gridLayout_14">
     <item row="0" column="0">
-     <layout class="QGridLayout" name="gridLayout" rowstretch="1,0,0" columnstretch="0,0,0,0,0,0,0,0,0,0,0,0,0,0">
+     <layout class="QGridLayout" name="gridLayout" rowstretch="0,1,0" columnstretch="0,0,0,0,0,0,0,0,0,0,0,0,0,0">
       <property name="verticalSpacing">
        <number>6</number>
       </property>
@@ -131,25 +131,15 @@
        </widget>
       </item>
       <item row="1" column="0" colspan="14">
-       <layout class="QHBoxLayout" name="horizontalLayout" stretch="1,1">
+       <layout class="QHBoxLayout" name="horizontalLayout" stretch="1,2">
         <property name="spacing">
          <number>1</number>
         </property>
         <item>
          <layout class="QVBoxLayout" name="verticalLayout">
           <item>
-           <layout class="QHBoxLayout" name="horizontalLayout_8">
-            <item>
-             <widget class="QScrollBar" name="DepthStartBar">
-              <property name="maximum">
-               <number>1024</number>
-              </property>
-              <property name="orientation">
-               <enum>Qt::Vertical</enum>
-              </property>
-             </widget>
-            </item>
-            <item>
+           <layout class="QGridLayout" name="gridLayout_18">
+            <item row="1" column="1">
              <widget class="QLabel" name="XZplane">
               <property name="sizePolicy">
                <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
@@ -188,8 +178,25 @@
               </property>
              </widget>
             </item>
-            <item>
+            <item row="0" column="1">
+             <widget class="QScrollBar" name="YBar">
+              <property name="orientation">
+               <enum>Qt::Horizontal</enum>
+              </property>
+             </widget>
+            </item>
+            <item row="0" column="2" rowspan="2">
              <widget class="QScrollBar" name="DepthEndBar">
+              <property name="maximum">
+               <number>1024</number>
+              </property>
+              <property name="orientation">
+               <enum>Qt::Vertical</enum>
+              </property>
+             </widget>
+            </item>
+            <item row="0" column="0" rowspan="2">
+             <widget class="QScrollBar" name="DepthStartBar">
               <property name="maximum">
                <number>1024</number>
               </property>
@@ -279,12 +286,33 @@
          </layout>
         </item>
         <item>
-         <layout class="QHBoxLayout" name="horizontalLayout_2" stretch="0,0">
-          <property name="spacing">
-           <number>6</number>
-          </property>
-          <item>
-           <widget class="QLabel" name="XYplane">
+         <layout class="QGridLayout" name="gridLayout_20" columnstretch="1,1,1">
+          <item row="1" column="2">
+           <widget class="QLabel" name="XYplaneInt">
+            <property name="minimumSize">
+             <size>
+              <width>300</width>
+              <height>300</height>
+             </size>
+            </property>
+            <property name="font">
+             <font>
+              <pointsize>25</pointsize>
+             </font>
+            </property>
+            <property name="autoFillBackground">
+             <bool>true</bool>
+            </property>
+            <property name="text">
+             <string>XY结构视图</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="XYplaneDyn">
             <property name="sizePolicy">
              <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
               <horstretch>0</horstretch>
@@ -312,7 +340,7 @@
              <bool>true</bool>
             </property>
             <property name="text">
-             <string>XY结构视图</string>
+             <string>XY活性视图</string>
             </property>
             <property name="scaledContents">
              <bool>true</bool>
@@ -322,7 +350,37 @@
             </property>
            </widget>
           </item>
-          <item>
+          <item row="0" column="0">
+           <widget class="QLabel" name="label_5">
+            <property name="font">
+             <font>
+              <pointsize>20</pointsize>
+             </font>
+            </property>
+            <property name="text">
+             <string>XY活性视图</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="label_21">
+            <property name="font">
+             <font>
+              <pointsize>20</pointsize>
+             </font>
+            </property>
+            <property name="text">
+             <string>XY结构视图</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1" rowspan="2">
            <widget class="QScrollBar" name="ZDepthBar">
             <property name="maximum">
              <number>1024</number>
@@ -503,6 +561,9 @@
          <font>
           <pointsize>15</pointsize>
          </font>
+        </property>
+        <property name="visible">
+         <bool>false</bool>
         </property>
         <property name="currentIndex">
          <number>0</number>
@@ -794,6 +855,29 @@
              <string/>
             </property>
             <layout class="QGridLayout" name="gridLayout_12">
+             <item row="5" column="0">
+              <widget class="QLabel" name="YGalvoBiasLabel">
+               <property name="text">
+                <string>Y振镜偏置电压(V)</string>
+               </property>
+              </widget>
+             </item>
+             <item row="5" column="1" colspan="2">
+              <widget class="QDoubleSpinBox" name="YGalvoBias">
+               <property name="decimals">
+                <number>3</number>
+               </property>
+               <property name="minimum">
+                <double>-10.000000000000000</double>
+               </property>
+               <property name="maximum">
+                <double>10.000000000000000</double>
+               </property>
+               <property name="singleStep">
+                <double>0.100000000000000</double>
+               </property>
+              </widget>
+             </item>
              <item row="1" column="0" colspan="3">
               <widget class="QCheckBox" name="RealtimeDynCheckBox">
                <property name="text">
@@ -3215,6 +3299,29 @@
             </property>
            </widget>
           </item>
+          <item row="0" column="4">
+           <widget class="QLabel" name="DynBrightnessLabel">
+            <property name="text">
+             <string>Dynamic brightness</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="4">
+           <widget class="QSlider" name="DynBrightness">
+            <property name="maximum">
+             <number>100</number>
+            </property>
+            <property name="value">
+             <number>50</number>
+            </property>
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+           </widget>
+          </item>
           <item row="1" column="4">
            <spacer name="horizontalSpacer_15">
             <property name="orientation">
@@ -3317,6 +3424,40 @@
              <string/>
             </property>
             <layout class="QGridLayout" name="gridLayout_19">
+             <item row="4" column="0">
+              <widget class="QLabel" name="YGalvoLabel">
+               <property name="text">
+                <string>Y振镜模拟信号通道</string>
+               </property>
+              </widget>
+             </item>
+             <item row="4" column="1">
+              <widget class="QComboBox" name="YGalvo">
+               <property name="currentIndex">
+                <number>1</number>
+               </property>
+               <item>
+                <property name="text">
+                 <string>ao0</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>ao1</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>ao2</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>ao3</string>
+                </property>
+               </item>
+              </widget>
+             </item>
              <item row="0" column="0">
               <widget class="QLabel" name="label_44">
                <property name="maximumSize">
@@ -3376,12 +3517,12 @@ p, li { white-space: pre-wrap; }
              <item row="3" column="0">
               <widget class="QLabel" name="label_38">
                <property name="text">
-                <string>振镜模拟信号通道</string>
+                <string>X振镜模拟信号通道</string>
                </property>
               </widget>
              </item>
              <item row="3" column="1">
-              <widget class="QComboBox" name="GalvoAO">
+              <widget class="QComboBox" name="XGalvo">
                <item>
                 <property name="text">
                  <string>ao0</string>
@@ -3443,7 +3584,7 @@ p, li { white-space: pre-wrap; }
           <item row="0" column="0">
            <widget class="QPushButton" name="TestButten1">
             <property name="text">
-             <string>Offset adjustment</string>
+             <string>Coordinates Calibration</string>
             </property>
            </widget>
           </item>
@@ -3475,16 +3616,6 @@ p, li { white-space: pre-wrap; }
            </spacer>
           </item>
           <item row="3" column="0">
-           <widget class="QComboBox" name="SampleCenterSelector">
-            <property name="minimumSize">
-             <size>
-              <width>110</width>
-              <height>30</height>
-             </size>
-            </property>
-           </widget>
-          </item>
-          <item row="3" column="1">
            <widget class="QPushButton" name="GotoSampleCenter">
             <property name="minimumSize">
              <size>
@@ -3537,15 +3668,14 @@ p, li { white-space: pre-wrap; }
      <pointsize>15</pointsize>
     </font>
    </property>
-   <widget class="QMenu" name="menumenu1">
-    <property name="title">
-     <string>menu1</string>
-    </property>
-    <addaction name="actionfunc1_2"/>
-    <addaction name="separator"/>
-    <addaction name="actionfunc2"/>
-   </widget>
-   <addaction name="menumenu1"/>
+   <addaction name="actionPanel_FOV"/>
+   <addaction name="actionPanel_Stage"/>
+   <addaction name="actionPanel_Mosaic"/>
+   <addaction name="actionPanel_Hidden"/>
+   <addaction name="actionPanel_Camera"/>
+   <addaction name="actionPanel_ImageOpt"/>
+   <addaction name="actionPanel_IO"/>
+   <addaction name="actionPanel_Testing"/>
   </widget>
   <widget class="QStatusBar" name="statusbar">
    <property name="minimumSize">
@@ -3573,6 +3703,70 @@ p, li { white-space: pre-wrap; }
   <action name="actionfunc2">
    <property name="text">
     <string>func2</string>
+   </property>
+  </action>
+  <action name="actionPanel_FOV">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>FOV</string>
+   </property>
+  </action>
+  <action name="actionPanel_Stage">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>电动滑台</string>
+   </property>
+  </action>
+  <action name="actionPanel_Mosaic">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>孔板扫描</string>
+   </property>
+  </action>
+  <action name="actionPanel_Hidden">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>隐藏参数</string>
+   </property>
+  </action>
+  <action name="actionPanel_Camera">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>相机参数</string>
+   </property>
+  </action>
+  <action name="actionPanel_ImageOpt">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>图像优化</string>
+   </property>
+  </action>
+  <action name="actionPanel_IO">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>I/O</string>
+   </property>
+  </action>
+  <action name="actionPanel_Testing">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Testing</string>
    </property>
   </action>
  </widget>

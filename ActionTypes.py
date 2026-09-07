@@ -18,6 +18,10 @@ class AcqTypes:
     PLATE_SCAN = "PlateScan"
     TIMED_PLATE_SCAN = "TimedPlateScan"
     WELL_SCAN = "WellScan"
+    # Programmatic workflow only (not exposed in the ACQMode combo): after a fresh
+    # USB locator session, aligns each sample under live ContinuousCscan, records
+    # the actual stage position the user chooses, and fits a stage calibration.
+    COORDINATE_CALIBRATION = "CoordinateCalibration"
 
 
 class WeaverActions:

@@ -25,26 +25,27 @@ except Exception:
 
 @dataclass(frozen=True)
 class CalibrationConfig:
-    data_path: Path = Path(r"E:\IOCTData\disperison_compensation\HighRes0618")
-    test_path: Path = Path(r"E:\IOCTData\disperison_compensation\20260506")
-    nk: int = 904
+
+    data_path: Path = Path(r"E:\IOCTData\dispersion260906")
+    test_path: Path = Path(r"E:\EyeOCT\CalibInterpolation Disepersion-0825")
+    nk: int = 1152
+
     nx: int = 1104
     ny: int = 1
     highpass_smooth_span: int = 15
     phase_smooth_span: int = 21
     dphase_smooth_span: int = 11
-    phase_column_start: int = 521  # MATLAB columns 701:800
-    phase_column_stop: int = 530
-    file1_left_guard: int = 15
-    file1_right_guard: int = 15
-    file2_left_guard: int = 10
-    file2_right_guard: int = 20
+    phase_column_start: int = 330  # MATLAB columns 701:800
+    phase_column_stop: int = 355
     interpolation_epsilon: float = 1.0e-5
+    holo_x_filter_enabled: bool = True
+    holo_x_pixel_size_um: float = 9.0
+    holo_x_notch_cutoff_fraction: float = 0.2
     plot: bool = True
     plot_every_n_columns: int = 10
     plot_column_start: int = 1  # MATLAB column 2
-    phase_plot_column_start: int = 401  # MATLAB column 702
-    phase_plot_column_stop: int = 600
+    phase_plot_column_start: int = phase_column_start  # MATLAB column 702
+    phase_plot_column_stop: int = phase_column_stop
     run_calibration: bool = True
     run_test: bool = False
 
@@ -70,17 +71,76 @@ def smooth_moving_mean(values: np.ndarray, span: int = 5, axis: int = 0) -> np.n
     return np.moveaxis(out, 0, axis)
 
 
+def apply_holo_x_notch_filter(
+    data: np.ndarray,
+    pixel_size_um: float = 9.0,
+    cutoff_fraction: float = 0.25,
+) -> np.ndarray:
+    """Apply the Off-axis X-sideband (DC-centered notch) filter.
+
+    Replicates ThreadGPU.apply_holo_x_filter_gpu / holo_filter_weights_gpu on
+    the CPU: FFT along the X (A-line) spatial axis, zero out the DC-centered
+    band |kx| <= cutoff (weights 0 inside, 1 outside), then IFFT. Carrier
+    demodulation is left off to match ThreadGPU's current configuration.
+
+    data has shape [samples, alines]; the X spatial axis is axis=1.
+    """
+    x_pixels = int(data.shape[1])
+    pixel_size_m = float(pixel_size_um) * 1e-6
+
+    kx_axis = np.fft.fftfreq(x_pixels, d=pixel_size_m).astype(np.float32)
+    kx_axis *= np.float32(2.0 * np.pi)
+    kx_nyquist = np.pi / pixel_size_m
+    cutoff = float(cutoff_fraction) * kx_nyquist
+    # Sharp DC-centered notch: 0 inside |kx| <= cutoff (suppressed band),
+    # 1 outside (pass-through).
+    weights = (np.abs(kx_axis) > cutoff).astype(np.float32)
+
+    field = np.asarray(data, dtype=np.complex64)
+    filtered_kx = np.fft.fft(field, axis=1)
+    filtered_kx *= weights[np.newaxis, :]
+    field = np.fft.ifft(filtered_kx, axis=1)
+
+    filtered = np.real(field).astype(np.float64, copy=False)
+    print(
+        f"Applied off-axis X notch filter: "
+        f"cutoff/Nyquist={cutoff_fraction:.3f}, pixel={pixel_size_um:.2f} um"
+    )
+    return filtered
+
+
 def read_tiff_spectrum(path: Path, config: CalibrationConfig) -> np.ndarray:
-    """Read one TIFF and return data as [samples, alines], matching MATLAB's transpose."""
+    """Read one TIFF and return data as [samples, alines]."""
     image = imread(path)
     if image.ndim > 2:
         image = np.mean(image[: config.ny, :, :], axis=0)
 
-    data = np.asarray(image, dtype=np.float64).T
+    image = np.asarray(image, dtype=np.float64)
+    if image.shape == (config.nk, config.nx):
+        data = image
+    elif image.shape == (config.nx, config.nk):
+        data = image.T
+    else:
+        data = image.T
+
     if data.shape[0] != config.nk:
-        raise ValueError(f"{path.name}: expected {config.nk} samples, got {data.shape[0]}.")
+        raise ValueError(
+            f"{path.name}: expected {config.nk} samples, got {data.shape[0]} "
+            f"after orientation check; TIFF shape is {image.shape}."
+        )
     if data.shape[1] != config.nx:
-        raise ValueError(f"{path.name}: expected {config.nx} A-lines, got {data.shape[1]}.")
+        raise ValueError(
+            f"{path.name}: expected {config.nx} A-lines, got {data.shape[1]} "
+            f"after orientation check; TIFF shape is {image.shape}."
+        )
+
+    if config.holo_x_filter_enabled:
+        data = apply_holo_x_notch_filter(
+            data,
+            pixel_size_um=config.holo_x_pixel_size_um,
+            cutoff_fraction=config.holo_x_notch_cutoff_fraction,
+        )
+
     plt.figure()
     plt.imshow(data)
     plt.show()
@@ -222,36 +282,122 @@ def plot_fft_abs_image_from_spectrum(
     return rr
 
 
-def clean_reflector_peak_complex(
+def clean_reflector_peak_complex_from_range(
     spectra: np.ndarray,
-    z: int,
-    left_guard: int,
-    right_guard: int,
+    start: int,
+    end: int,
 ) -> np.ndarray:
-    """Keep the reflector and conjugate regions in Fourier space."""
+    """Keep only the user-selected depth range and its conjugate mirror region."""
     nk = spectra.shape[0]
+    start = max(0, int(start))
+    end = min(nk, int(end))
+    if end <= start:
+        raise ValueError("Selected peak depth range is empty.")
+
     rr0 = np.fft.ifft(spectra, axis=0)
+    mask = np.zeros(nk, dtype=bool)
+    mask[start:end] = True
 
-    start = max(0, z - left_guard)
-    middle_start = min(nk, z + right_guard)
-    middle_stop = max(0, nk - z - right_guard)
-    end_start = min(nk, nk - z + left_guard)
+    # complex-conjugate (mirror) region around the center of the FFT
+    conj_start = max(0, nk - end)
+    conj_end = min(nk, nk - start)
+    if conj_start < conj_end:
+        mask[conj_start:conj_end] = True
 
-    rr0[:start, :] = 0
-    if middle_start < middle_stop:
-        rr0[middle_start:middle_stop, :] = 0
-    rr0[end_start:, :] = 0
+    rr0[~mask, :] = 0
     return rr0
 
 
-def clean_reflector_peak(
-    spectra: np.ndarray,
-    z: int,
-    left_guard: int,
-    right_guard: int,
-) -> np.ndarray:
-    rr0 = clean_reflector_peak_complex(spectra, z, left_guard, right_guard)
-    return np.real(np.fft.fft(rr0, axis=0))
+class _DepthSelection:
+    """Mutable holder updated by the rectangle selector callback."""
+
+    def __init__(self):
+        self.xmin = None
+        self.xmax = None
+
+
+def select_depth_range_interactively(
+    depth_profile: np.ndarray,
+    title: str,
+    config: CalibrationConfig,
+) -> tuple[int, int]:
+    """Pop up a standalone Qt window to select a peak depth range.
+
+    The user drags a rectangle; its horizontal (depth) span defines the selected
+    depth-pixel range. Closing the window confirms the selection.
+
+    This dialog runs its own PyQt5 event loop and is independent of the
+    IPython/matplotlib backend, so the remaining diagnostic plots can stay
+    inline (e.g. ``%matplotlib inline``) while only this window pops up.
+    """
+    try:
+        from matplotlib.figure import Figure
+        from matplotlib.widgets import RectangleSelector
+        try:
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+        except ImportError:
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        from PyQt5 import QtWidgets
+    except Exception as error:
+        raise RuntimeError(
+            "Interactive peak selection requires PyQt5 and matplotlib's Qt "
+            f"backend. Import failed: {error}"
+        )
+
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        app = QtWidgets.QApplication([])
+
+    selection = _DepthSelection()
+
+    dialog = QtWidgets.QDialog()
+    dialog.setWindowTitle(title)
+
+    layout = QtWidgets.QVBoxLayout(dialog)
+    canvas = FigureCanvas(Figure(figsize=(10, 6)))
+    layout.addWidget(canvas)
+
+    ax = canvas.figure.add_subplot(111)
+    ax.plot(depth_profile, linewidth=1.5)
+    ax.set_title(
+        f"{title}\n"
+        "Drag a rectangle to select the peak depth range, then close this window"
+    )
+    ax.set_xlabel("Depth pixel")
+    ax.set_ylabel("Depth profile (mean intensity)")
+    canvas.figure.tight_layout()
+
+    def onselect(eclick, erelease):
+        x1 = float(eclick.xdata)
+        x2 = float(erelease.xdata)
+        selection.xmin = min(x1, x2)
+        selection.xmax = max(x1, x2)
+
+    selector = RectangleSelector(
+        ax,
+        onselect,
+        useblit=True,
+        button=[1],
+        spancoords="data",
+        interactive=True,
+    )
+
+    # Keep references so Qt does not garbage-collect them while the loop runs.
+    dialog._selector = selector
+    dialog._canvas = canvas
+
+    dialog.resize(900, 600)
+    dialog.exec_()  # modal event loop; returns when the user closes the window
+
+    if selection.xmin is None or selection.xmax is None:
+        raise ValueError("No depth range was selected.")
+    if selection.xmax <= selection.xmin:
+        raise ValueError("Selected depth range is empty.")
+
+    start = int(round(selection.xmin))
+    end = int(round(selection.xmax))
+    print(f"{title}: selected depth range [{start}, {end})")
+    return start, end
 
 
 def phase_for_file1(data: np.ndarray, config: CalibrationConfig) -> tuple[np.ndarray, np.ndarray]:
@@ -259,24 +405,23 @@ def phase_for_file1(data: np.ndarray, config: CalibrationConfig) -> tuple[np.nda
     z_range = round(nk / 2)
     plot_columns(data, "file1 raw spectrum", config, xlim=(9, nk))
 
-    data_hp = highpass_spectra(data, config.highpass_smooth_span)
-    plot_columns(data_hp, "file1 DC removed raw spectrum", config, xlim=(0, nk))
+    data = highpass_spectra(data, config.highpass_smooth_span)
+    plot_columns(data, "file1 DC removed spectrum", config, xlim=(0, nk))
 
-    raw_phase = analytic_phase(data_hp)
+    raw_phase = analytic_phase(data)
     plot_columns(raw_phase, "file1 phase after HT", config, xlim=(0, nk))
 
-    plot_columns(data_hp, "file1 trimmed spectrum", config, xlim=(0, nk))
-    rr0 = np.fft.ifft(data_hp, axis=0)
+    rr0 = np.fft.ifft(data, axis=0)
     rra = np.abs(rr0[:z_range, :])
     plot_columns(rra, "file1 raw Alines", config, xlim=(0, z_range), linewidth=2.0)
 
-    z = int(np.argmax(np.mean(rra, axis=1)))
-    rr0_clean = clean_reflector_peak_complex(
-        data_hp,
-        z=z,
-        left_guard=config.file1_left_guard,
-        right_guard=config.file1_right_guard,
+    depth_profile = np.mean(rra, axis=1)
+    start, end = select_depth_range_interactively(
+        depth_profile,
+        "file1 peak selection",
+        config,
     )
+    rr0_clean = clean_reflector_peak_complex_from_range(data, start, end)
     plot_columns(np.abs(rr0_clean), "file1 cleaned Alines", config, xlim=(0, z_range), linewidth=2.0)
 
     cleaned = np.real(np.fft.fft(rr0_clean, axis=0))
@@ -296,21 +441,20 @@ def phase_for_file2(data: np.ndarray, config: CalibrationConfig) -> tuple[np.nda
     z_range = round(nk / 2)
     plot_columns(data, "file2 raw spectrum", config, xlim=(0, nk))
 
-    data_hp = highpass_spectra(data, config.highpass_smooth_span)
-    plot_columns(data_hp, "file2 trimmed spectrum", config, xlim=(0, nk))
+    data = highpass_spectra(data, config.highpass_smooth_span)
+    plot_columns(data, "file2 DC removed spectrum", config, xlim=(0, nk))
 
-    rr0 = np.fft.ifft(data_hp, axis=0)
+    rr0 = np.fft.ifft(data, axis=0)
     rrb = np.abs(rr0[:z_range, :])
     plot_columns(rrb, "file2 raw Alines", config, xlim=(0, z_range), linewidth=2.0)
 
-    search_start = nk//10
-    z = int(np.argmax(np.mean(rrb[search_start:, :], axis=1)) + search_start)
-    rr0_clean = clean_reflector_peak_complex(
-        data_hp,
-        z=z,
-        left_guard=config.file2_left_guard,
-        right_guard=config.file2_right_guard,
+    depth_profile = np.mean(rrb, axis=1)
+    start, end = select_depth_range_interactively(
+        depth_profile,
+        "file2 peak selection",
+        config,
     )
+    rr0_clean = clean_reflector_peak_complex_from_range(data, start, end)
     plot_columns(np.abs(rr0_clean), "file2 cleaned Alines", config, xlim=(0, z_range), linewidth=2.0)
 
     cleaned = np.real(np.fft.fft(rr0_clean, axis=0))
@@ -375,20 +519,25 @@ def residual_dispersion_phase(spectra: np.ndarray) -> np.ndarray:
     return phase_mean - line
 
 
-def load_generated_outputs(config: CalibrationConfig) -> dict[str, np.ndarray]:
-    """Load generated interpolation/dispersion files without recalibrating."""
+def interpolation_files_present(config: CalibrationConfig) -> bool:
+    """Return True when the provided interpolation files all exist."""
+    return all(
+        (config.data_path / name).is_file()
+        for name in ("intpX.bin", "intpXp.bin", "intpIndice.bin")
+    )
+
+
+def load_interpolation_files(config: CalibrationConfig) -> dict[str, np.ndarray]:
+    """Load provided interpolation files (intpX, intpXp, intpIndice)."""
     intp_x = np.fromfile(config.data_path / "intpX.bin", dtype=np.float32)
     intp_xp = np.fromfile(config.data_path / "intpXp.bin", dtype=np.float32)
     raw_indices = np.fromfile(config.data_path / "intpIndice.bin", dtype=np.uint16)
-    dsp_phase = np.fromfile(config.data_path / "dspPhase.bin", dtype=np.float32)
 
     expected_indices = 2 * config.nk
     if intp_x.size != config.nk:
         raise ValueError(f"intpX.bin has {intp_x.size} values, expected {config.nk}.")
     if intp_xp.size != config.nk:
         raise ValueError(f"intpXp.bin has {intp_xp.size} values, expected {config.nk}.")
-    if dsp_phase.size != config.nk:
-        raise ValueError(f"dspPhase.bin has {dsp_phase.size} values, expected {config.nk}.")
     if raw_indices.size != expected_indices:
         raise ValueError(
             f"intpIndice.bin has {raw_indices.size} values, expected {expected_indices}."
@@ -404,10 +553,19 @@ def load_generated_outputs(config: CalibrationConfig) -> dict[str, np.ndarray]:
                 "intpX": intp_x,
                 "intpXp": intp_xp,
                 "intpIndice": indices,
-                "dspPhase": dsp_phase,
             }
 
     raise ValueError("intpIndice.bin contains indices outside the valid sample range.")
+
+
+def load_generated_outputs(config: CalibrationConfig) -> dict[str, np.ndarray]:
+    """Load generated interpolation/dispersion files without recalibrating."""
+    outputs = load_interpolation_files(config)
+    dsp_phase = np.fromfile(config.data_path / "dspPhase.bin", dtype=np.float32)
+    if dsp_phase.size != config.nk:
+        raise ValueError(f"dspPhase.bin has {dsp_phase.size} values, expected {config.nk}.")
+    outputs["dspPhase"] = dsp_phase
+    return outputs
 
 
 def apply_generated_compensation(
@@ -504,6 +662,19 @@ def write_outputs(
     savemat(output_path / "indice.mat", {"indice": np.asarray(indices, dtype=np.uint16)})
 
 
+def write_dispersion_output(
+    output_path: Path,
+    dispersion_phase: np.ndarray,
+) -> None:
+    """Write only the dispersion phase file, leaving provided interpolation files intact."""
+    output_path.mkdir(parents=True, exist_ok=True)
+    np.asarray(dispersion_phase, dtype=np.float32).tofile(output_path / "dspPhase.bin")
+    savemat(
+        output_path / "dspPhase.mat",
+        {"dspPhase": np.asarray(dispersion_phase, dtype=np.float32)},
+    )
+
+
 def calibrate(config: CalibrationConfig = CalibrationConfig()) -> dict[str, np.ndarray]:
     if config.plot and plt is None:
         print("matplotlib is unavailable; skipping diagnostic plots.")
@@ -518,19 +689,26 @@ def calibrate(config: CalibrationConfig = CalibrationConfig()) -> dict[str, np.n
     dat_a_clean, phase_a = phase_for_file1(dat_a, config)
     dat_b_clean, phase_b = phase_for_file2(dat_b, config)
 
-    dphase = smooth_moving_mean(phase_b - phase_a, config.dphase_smooth_span)
-    lin_phase = np.linspace(dphase[0], dphase[-1], dphase.size)
-    plot_two_lines(
-        phase_a,
-        phase_b,
-        "phase of two Alines at different depths",
-        config,
-        first_style="r",
-        second_style="b",
-    )
-    plot_two_lines(dphase, lin_phase, "phaseB", config)
-
-    indices = find_interp_indices(dphase, lin_phase)
+    use_provided_interp = interpolation_files_present(config)
+    if use_provided_interp:
+        interp = load_interpolation_files(config)
+        dphase = interp["intpX"]
+        lin_phase = interp["intpXp"]
+        indices = interp["intpIndice"]
+        print("Using provided interpolation files: intpX.bin, intpXp.bin, intpIndice.bin")
+    else:
+        dphase = smooth_moving_mean(phase_b - phase_a, config.dphase_smooth_span)
+        lin_phase = np.linspace(dphase[0], dphase[-1], dphase.size)
+        plot_two_lines(
+            phase_a,
+            phase_b,
+            "phase of two Alines at different depths",
+            config,
+            first_style="r",
+            second_style="b",
+        )
+        plot_two_lines(dphase, lin_phase, "phaseB", config)
+        indices = find_interp_indices(dphase, lin_phase)
 
     dat_a_interp = interpolate_spectra(
         dphase,
@@ -575,7 +753,10 @@ def calibrate(config: CalibrationConfig = CalibrationConfig()) -> dict[str, np.n
         z_range=z_range,
     )
 
-    write_outputs(config.data_path, dphase, lin_phase, indices, dphase1)
+    if use_provided_interp:
+        write_dispersion_output(config.data_path, dphase1)
+    else:
+        write_outputs(config.data_path, dphase, lin_phase, indices, dphase1)
 
     if config.plot and plt is not None:
         plt.show()

@@ -230,6 +230,8 @@ class AODOThread(QThread):
                     self.CloseTask()
                 elif self.item.action == 'centergalvo':
                     self.centergalvo()
+                elif self.item.action == 'setYGalvo':
+                    self.set_ygalvo_voltage()
                 elif self.item.action == 'rotate_servo_out':
                     self.rotate_servo_out()
                 elif self.item.action == 'rotate_servo_back':
@@ -268,14 +270,16 @@ class AODOThread(QThread):
         self.ui_bridge.status_message.emit(str(message))
 
     def Init_all_termial(self):
-        # Galvo terminal
-        self.GalvoAO = self.ui.AODOboard.toPlainText()+'/'+self.ui.GalvoAO.currentText()
+        # Galvo terminals: XGalvo drives the scan waveform, YGalvo is the
+        # optional second galvo whose DC level is set from YGalvoBias.
+        self.XGalvo = self.ui.AODOboard.toPlainText()+'/'+self.ui.XGalvo.currentText()
+        self.YGalvo = self.ui.AODOboard.toPlainText()+'/'+self.ui.YGalvo.currentText()
 
         # synchronized DO terminal
         self.SyncDO = self.ui.AODOboard.toPlainText()+'/'+self.ui.SyncDO.currentText()
         self.Trigger_out = '/'+ self.ui.AODOboard.toPlainText()+'/'+AODO_TRIGGER_OUT_PFI
         self.Trigger_in ='/'+ self.ui.AODOboard.toPlainText()+'/'+AODO_TRIGGER_IN_PFI
-        # print(self.GalvoAO, self.SyncDO)
+        # print(self.XGalvo, self.YGalvo, self.SyncDO)
         self.ui.Xcurrent.setValue(self.ui.XPosition.value())
         self.ui.Ycurrent.setValue(self.ui.YPosition.value())
         self.ui.Zcurrent.setValue(self.ui.ZPosition.value())
@@ -332,7 +336,7 @@ class AODOThread(QThread):
             # init AO task
             self.AOtask = ni.Task('AOtask')
             # Config channel and vertical
-            self.AOtask.ao_channels.add_ao_voltage_chan(physical_channel=self.GalvoAO, \
+            self.AOtask.ao_channels.add_ao_voltage_chan(physical_channel=self.XGalvo, \
                                                   min_val=AODO_AO_VOLTAGE_MIN, max_val=AODO_AO_VOLTAGE_MAX, \
                                                   units=ni.constants.VoltageUnits.VOLTS)
             # depending on whether continuous or finite, config clock and mode
@@ -419,12 +423,41 @@ class AODOThread(QThread):
     def centergalvo(self):
         if not (ARTDAQ_SIM or self.SIM):
             with ni.Task('AOtask') as AOtask:
-                AOtask.ao_channels.add_ao_voltage_chan(physical_channel=self.GalvoAO, \
+                AOtask.ao_channels.add_ao_voltage_chan(physical_channel=self.XGalvo, \
                                                       min_val=AODO_AO_VOLTAGE_MIN, max_val=AODO_AO_VOLTAGE_MAX, \
                                                       units=ni.constants.VoltageUnits.VOLTS)
                 AOtask.write(self.ui.GalvoBias.value(), auto_start = True)
                 AOtask.wait_until_done(timeout = 1)
                 AOtask.stop()
+
+    def set_ygalvo_voltage(self):
+        """Write the current YGalvoBias DC voltage to the Y galvo AO channel.
+
+        This is triggered by the YGalvoBias spin box on the FOV panel (debounced
+        in OCT_MT.GUI). It opens a short AO task on the YGalvo terminal, writes a
+        single DC voltage, and closes the task again. Fire-and-forget: it
+        intentionally does not signal StagebackQueue so it can never leave a stale
+        acknowledgement behind for a later synchronous _wait_stageback() caller.
+        """
+        if ARTDAQ_SIM or self.SIM:
+            return
+        try:
+            ygalvo_terminal = self.ui.AODOboard.toPlainText() + '/' + self.ui.YGalvo.currentText()
+            with ni.Task('YGalvoVoltageTask') as AOtask:
+                AOtask.ao_channels.add_ao_voltage_chan(
+                    physical_channel=ygalvo_terminal,
+                    min_val=AODO_AO_VOLTAGE_MIN,
+                    max_val=AODO_AO_VOLTAGE_MAX,
+                    units=ni.constants.VoltageUnits.VOLTS,
+                )
+                AOtask.write(self.ui.YGalvoBias.value(), auto_start=True)
+                AOtask.wait_until_done(timeout=1)
+                AOtask.stop()
+        except Exception as error:
+            message = f"YGalvo voltage update failed: {error}"
+            self.emit_status(message)
+            print(message)
+            print(traceback.format_exc())
 
     def add_do_chan_single_line(self, task, line_name):
         if LineGrouping is None:
