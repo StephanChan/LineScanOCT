@@ -187,14 +187,7 @@ This replaced the earlier split between mode strings and action strings.
   - Y-FOV resizing
   - candidate acceptance
 
-- `mosaic_correction.py`
-  - converts mosaic-drawn polygons back into stage/FOV coordinates
-
-- `InteractiveWidget.py`
-  - interactive mosaic image view and polygon editing
-
 ### Structured Domain Models
-
 - `ScanModels.py`
   - explicit dataclasses:
     - `SampleCenter`
@@ -368,7 +361,7 @@ This section is intended to mirror the current control logic closely enough to d
 ### LocationCameraLive
 
 1. `ThreadWeaver.py::QueueOut()` calls `live()`.
-2. This path uses the USB/sample-localization workflow and rendering helpers such as `display_sample_overlay(...)` and `render_mosaic_correction_overlay(...)`.
+2. This path uses the USB/sample-localization workflow and rendering helpers such as `display_sample_overlay(...)`.
 3. It does not use the OCT FFT pipeline in `ThreadGPU.py` or the OCT display/save path in `ThreadDnS.py`.
 
 ## Barrier And Cleanup Policy

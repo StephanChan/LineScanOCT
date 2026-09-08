@@ -29,15 +29,10 @@ from mosaic_scan_planner import (
     ROI_OCCUPANCY_TARGET,
     plan_mosaic_scan,
 )
-from mosaic_correction import (
-    build_mosaic_correction_overlay_source,
-    mosaic_polygons_to_stage_mm,
-)
 from SampleLocator import open_usb_camera, orient_usb_frame_live
 from Display_rendering import (
     display_sample_overlay,
     mosaic_label_render_size,
-    render_mosaic_correction_overlay,
     set_label_pixmap_fit,
 )
 from DynamicPostprocessing import (
@@ -113,8 +108,6 @@ class WeaverThread(QThread):
         self.mosaic_roi_occupancy = ROI_OCCUPANCY_TARGET
         self.mosaic_fov_overlap = FOV_OVERLAP
         self.mosaic_center_mode = CENTER_MODE
-        self.debug_mosaic_correction = False
-        self._restore_y_geometry = None
         self.exit_message = 'Acquisition thread exited.'
         
     def run(self):
@@ -285,7 +278,7 @@ class WeaverThread(QThread):
 
     def clear_mosaic_display(self):
         if getattr(self.ui, "mosaic_viewer", None) is not None:
-            self.ui.mosaic_viewer.clear_image()
+            self.ui.mosaic_viewer.clear()
 
     def processing_backlog(self):
         gpu_pending = self.GPUQueue.qsize()
@@ -329,15 +322,6 @@ class WeaverThread(QThread):
 
     def current_y_pixels(self):
         return max(1, int(self.ui.Ypixels.value()))
-
-    def current_mosaic_display_downsample(self):
-        """Downsample factor applied by DnS to the stitched mosaic volumes.
-
-        Set by ThreadDnS.Init_Mosaic from the UI "downsample scale" spinbox;
-        used to scale the mosaic-correction pixel->stage-mm conversion so it
-        stays correct when the displayed mosaic image is downsampled in X/Y.
-        """
-        return max(1, int(getattr(self.ui, "mosaic_display_downsample", 1)))
 
     def current_max_y_fov_mm(self):
         objective = get_objective_spec(self.ui.Objective.currentText())
@@ -1016,11 +1000,13 @@ class WeaverThread(QThread):
         BlineAVG = self.ui.BlineAVG.value()
         self.ui.BlineAVG.setValue(1)
         self.ui.RunButton.setChecked(True)
+        self.ui.RunButton.setText('Stop')
         message = "PlatePreScan completed."
-        for sample_center in self.sample_centers:
-            if self.ui.RunButton.isChecked():
-                self.ui.NextSampleButton.setText('扫描中，请等待')
-                self.ui.RepeatSampleButton.setText('扫描中，请等待')
+        sample_count = len(self.sample_centers)
+        try:
+            for index, sample_center in enumerate(self.sample_centers):
+                if not self.ui.RunButton.isChecked():
+                    break
                 barrier_sample_id = max(1, sample_center.sample_id - 1)
                 if not self.wait_for_processing_barrier(
                     label=f"sampleID-{barrier_sample_id} pre-scan"
@@ -1039,7 +1025,7 @@ class WeaverThread(QThread):
                         f"  FOV {idx}: X={location.x:.4f}, Y={location.y:.4f}, Z={location.z:.4f}"
                     )
                 self.display_sample_overlay(sample_center.sample_id)
-                
+
                 # User stopped continuousBline, then we do Mosaic scan for this sample
                 self.AdjustZstage(
                     sample_center.sample_id,
@@ -1059,57 +1045,22 @@ class WeaverThread(QThread):
                         stop_if_run_unchecked=False,
                     ):
                         return "Plate pre-scan stopped by user."
-                self.ui.NextSampleButton.setText('下一个样品')
-                self.ui.RepeatSampleButton.setText('重新扫描')
-                while (not self.ui.NextSampleButton.isChecked()) and self.ui.RunButton.isChecked():
-                    if self.ui.RepeatSampleButton.isChecked():
-                        self.ui.NextSampleButton.setText('扫描中，请等待')
-                        self.ui.RepeatSampleButton.setText('扫描中，请等待')
-                        if not SKIP_PLATE_PRESCAN_FULL_SAMPLE_SCAN:
-                            correction_applied = self.process_mosaic_correction()
-                            if not correction_applied:
-                                self.CurrentSampleLocations = [
-                                    location
-                                    for location in self.FOV_locations
-                                    if location.sample_id == sample_center.sample_id
-                                ]
-                        self.AdjustZstage(sample_center.sample_id, start_from_current_z=True)
-                        if SKIP_PLATE_PRESCAN_FULL_SAMPLE_SCAN:
-                            message = (
-                                f"PlatePreScan repeat full sample scan skipped for sampleID-{sample_center.sample_id}; "
-                                "Z adjustment was saved to FOV locations."
-                            )
-                            print(message)
-                        else:
-                            message = self.iterate_FOVs(acq_mode=acq_mode)
-                            if not self.wait_for_processing_barrier(
-                                label=f"finishing sampleID-{sample_center.sample_id} repeat pre-scan",
-                                stop_if_run_unchecked=False,
-                            ):
-                                return "Plate pre-scan stopped by user."
-                        self.ui.NextSampleButton.setText('下一个样品')
-                        self.ui.RepeatSampleButton.setText('重新扫描')
-                        self.ui.RepeatSampleButton.setChecked(False)
-                    time.sleep(1)
-                        
-                self.ui.NextSampleButton.setChecked(False)
-                self.ui.sampleSelector.setCurrentIndex(self.ui.sampleSelector.currentIndex() + 1)
-                # 1. Remove all old entries matching this sample_id
-                # We keep everything that DOES NOT match the ID we are updating
+
+                # Save this sample's (possibly Z-corrected) FOV list back into
+                # the master plan.
                 lower_id_locations = [
                     location
                     for location in self.FOV_locations
                     if location.sample_id < sample_center.sample_id
                 ]
-                
                 higher_id_locations = [
                     location
                     for location in self.FOV_locations
                     if location.sample_id > sample_center.sample_id
                 ]
-            
-                # 2. Combine them back together
-                self.FOV_locations = lower_id_locations + self.CurrentSampleLocations + higher_id_locations
+                self.FOV_locations = (
+                    lower_id_locations + self.CurrentSampleLocations + higher_id_locations
+                )
                 saved_sample_locations = [
                     location
                     for location in self.FOV_locations
@@ -1120,15 +1071,29 @@ class WeaverThread(QThread):
                     print(
                         f"  FOV {idx}: X={location.x:.4f}, Y={location.y:.4f}, Z={location.z:.4f}"
                     )
-                
-        
+
+                # Move to the next sample when the operator clicks RunButton,
+                # which is relabelled "下一个样品" while we are waiting. The
+                # clicked handler knows we are waiting via _prescan_awaiting_next
+                # and does not enqueue a duplicate PlatePreScan action.
+                if index + 1 < sample_count:
+                    setattr(self.ui, "_prescan_awaiting_next", True)
+                    self.ui.RunButton.setChecked(False)
+                    self.ui.RunButton.setText('下一个样品')
+                    while not self.ui.RunButton.isChecked():
+                        time.sleep(0.2)
+                    setattr(self.ui, "_prescan_awaiting_next", False)
+                    self.ui.RunButton.setText('Stop')
+        finally:
+            setattr(self.ui, "_prescan_awaiting_next", False)
+
         # save self.FOV_locations, self.sample_centers, self.overlay_images
-        self.save_session_data(self.ui.DIR.toPlainText()+'/Mosaic')
-        self.ui.NextSampleButton.setText('扫描结束')
-        self.ui.RepeatSampleButton.setText('扫描结束')
+        self.save_session_data(self.ui.DIR.toPlainText() + '/Mosaic')
         self.ui.BlineAVG.setValue(BlineAVG)
-        return(message)
-            
+        self.ui.RunButton.setChecked(False)
+        self.ui.RunButton.setText('Go')
+        return message
+
     def PlateScan(self, acq_mode, context):
         self.ui.MosaicLabel.clear()
         # self.FOV_locations, self.sample_centers, self.raw_img, self.pixel_polygons= context
@@ -1624,36 +1589,10 @@ class WeaverThread(QThread):
         y_step_um = max(float(self.ui.YStepSize.value()), 1e-6)
         return max(1, int(np.round(float(y_length_mm) * 1000.0 / y_step_um)))
 
-    def apply_y_geometry_for_correction(self, y_length_mm, y_pixels=None):
+    def apply_y_geometry_for_scan(self, y_length_mm, y_pixels=None):
         computed_y_pixels = self.y_pixels_from_length(y_length_mm)
-        if self._restore_y_geometry is None:
-            self._restore_y_geometry = {
-                "YLength": self.ui.YLength.value(),
-                "Ypixels": self.ui.Ypixels.value(),
-            }
-        if self.debug_mosaic_correction:
-            print(
-                "Mosaic correction Y geometry apply: "
-                f"YLength {self.ui.YLength.value():.3f} -> {y_length_mm:.3f}, "
-                f"Ypixels {self.ui.Ypixels.value()} -> {computed_y_pixels}"
-            )
         self.ui.YLength.setValue(float(y_length_mm))
         self.ui.Ypixels.setValue(int(computed_y_pixels))
-
-    def restore_y_geometry_after_correction(self):
-        if self._restore_y_geometry is None:
-            return
-        y_length = self._restore_y_geometry["YLength"]
-        y_pixels = self._restore_y_geometry["Ypixels"]
-        if self.debug_mosaic_correction:
-            print(
-                "Mosaic correction Y geometry restore: "
-                f"YLength {self.ui.YLength.value():.3f} -> {y_length:.3f}, "
-                f"Ypixels {self.ui.Ypixels.value()} -> {y_pixels}"
-            )
-        self.ui.YLength.setValue(float(y_length))
-        self.ui.Ypixels.setValue(int(y_pixels))
-        self._restore_y_geometry = None
 
     def apply_y_geometry_from_locations(self):
         if not self.CurrentSampleLocations:
@@ -1662,154 +1601,8 @@ class WeaverThread(QThread):
         y_length = first_fov_location.y_length_mm
         if y_length is None:
             return
-        self.apply_y_geometry_for_correction(float(y_length))
+        self.apply_y_geometry_for_scan(float(y_length))
 
-    def current_location_y_length(self):
-        if self.CurrentSampleLocations:
-            y_length = self.CurrentSampleLocations[0].y_length_mm
-            if y_length is not None:
-                return float(y_length)
-        return self.ui.YLength.value()
-
-    def process_mosaic_correction(self):
-        """Called when user finishes drawing in XYPlane/InteractiveWidget."""
-        # Assume this is triggered for the currently active sample_id
-        current_id = self.ui.sampleSelector.currentIndex() + 1 
-        self.ui.mosaic_viewer.finalize_polygon()
-        # Get new regions from the interactive widget
-        new_polygons = self.ui.mosaic_viewer.polygons
-        if not new_polygons:
-            print('No regions draw, please re-draw interested region')
-            return False
-
-        # Convert the interactive widget polygons back to mm coordinates
-        source_y_length = self.current_location_y_length()
-        mosaic_ds = self.current_mosaic_display_downsample()
-        correction_geometry = mosaic_polygons_to_stage_mm(
-            raw_polygons=new_polygons,
-            current_fov_locations=self.CurrentSampleLocations,
-            x_fov_mm=self.ui.XLength.value(),
-            source_y_length_mm=source_y_length,
-            x_step_um=self.ui.XStepSize.value() * mosaic_ds,
-            y_step_um=self.ui.YStepSize.value() * mosaic_ds,
-        )
-        mm_polygons = correction_geometry["mm_polygons"]
-        px_w_mm = correction_geometry["px_w_mm"]
-        px_h_mm = correction_geometry["px_h_mm"]
-        v_anchor_x, v_anchor_y = correction_geometry["anchor"]
-
-        viewer = self.ui.mosaic_viewer
-        if self.debug_mosaic_correction and hasattr(viewer, "adj"):
-            print(
-                "Mosaic correction input: "
-                f"sample_id={current_id}, mosaic_shape={viewer.adj.shape}, "
-                f"pixel_aspect_ratio={getattr(viewer, 'pixel_aspect_ratio', None)}, "
-                f"px_w_mm={px_w_mm:.6g}, px_h_mm={px_h_mm:.6g}, "
-                f"anchor=({v_anchor_x:.3f}, {v_anchor_y:.3f}), source_YLength={source_y_length:.3f}, "
-                f"current_fovs={len(self.CurrentSampleLocations)}"
-            )
-
-        for ii, poly_debug in enumerate(correction_geometry["polygon_debug"], start=1):
-            if self.debug_mosaic_correction:
-                raw_bounds = poly_debug["raw_bounds"]
-                raw_size = poly_debug["raw_size"]
-                mm_bounds = poly_debug["mm_bounds"]
-                mm_size = poly_debug["mm_size"]
-                print(
-                    "Mosaic correction polygon: "
-                    f"#{ii}, vertices={poly_debug['vertices']}, "
-                    f"raw_bounds=(x:{raw_bounds[0]:.2f}-{raw_bounds[2]:.2f}, "
-                    f"y:{raw_bounds[1]:.2f}-{raw_bounds[3]:.2f}), "
-                    f"raw_size=({raw_size[0]:.2f}, {raw_size[1]:.2f}), "
-                    f"mm_bounds=(x:{mm_bounds[0]:.3f}-{mm_bounds[2]:.3f}, "
-                    f"y:{mm_bounds[1]:.3f}-{mm_bounds[3]:.3f}), "
-                    f"mm_size=({mm_size[0]:.3f}, {mm_size[1]:.3f})"
-                )
-
-        scan_plan = plan_mosaic_scan(
-            sample_id=current_id,
-            mm_polygons=mm_polygons,
-            x_fov_mm=self.ui.XLength.value(),
-            y_step_um=self.ui.YStepSize.value(),
-            stage_bounds=(
-                self.ui.Xmin.value(),
-                self.ui.Xmax.value(),
-                self.ui.Ymin.value(),
-                self.ui.Ymax.value(),
-            ),
-            occupancy=self.mosaic_roi_occupancy,
-            overlap=self.mosaic_fov_overlap,
-            max_y_fov_mm=self.current_max_y_fov_mm(),
-            center_mode=self.mosaic_center_mode,
-        )
-        reference_z = self.sample_centers[current_id - 1].z
-        if self.CurrentSampleLocations:
-            reference_z = self.CurrentSampleLocations[0].z
-        if self.debug_mosaic_correction:
-            print(
-                "Mosaic correction scan plan: "
-                f"center_mode={self.mosaic_center_mode}, "
-                f"center=({scan_plan.center_x:.3f}, {scan_plan.center_y:.3f}), "
-                f"roi_bounds=(x:{scan_plan.roi_bounds[0]:.3f}-{scan_plan.roi_bounds[2]:.3f}, "
-                f"y:{scan_plan.roi_bounds[1]:.3f}-{scan_plan.roi_bounds[3]:.3f}), "
-                f"roi_size=({scan_plan.roi_size[0]:.3f}, {scan_plan.roi_size[1]:.3f}), "
-                f"required_span=({scan_plan.required_span[0]:.3f}, {scan_plan.required_span[1]:.3f}), "
-                f"tile_count={scan_plan.tile_count}, candidates={scan_plan.candidate_count}, "
-                f"accepted={len(scan_plan.fov_locations)}, "
-                f"planned_YLength={scan_plan.y_length_mm:.3f}, planned_Ypixels={scan_plan.y_pixels}, "
-                f"locations={scan_plan.fov_locations}"
-            )
-        for fov_location in scan_plan.fov_locations:
-            fov_location.z = reference_z
-            fov_location.y_length_mm = scan_plan.y_length_mm
-        print(
-            "Mosaic correction new FOV centers: "
-            + ", ".join(
-                f"(x={fov_location.x:.3f}, y={fov_location.y:.3f}, z={fov_location.z:.3f}, "
-                f"YLength={fov_location.y_length_mm if fov_location.y_length_mm is not None else 'None'})"
-                for fov_location in scan_plan.fov_locations
-            )
-        )
-        self.apply_y_geometry_for_correction(scan_plan.y_length_mm, scan_plan.y_pixels)
-
-        # Apply the corrected scan plan and update the overlay.
-        self.apply_mosaic_correction_plan(current_id, mm_polygons, scan_plan, source_y_length)
-        self.ui.mosaic_viewer.clear_polygons()
-        return True
-
-    def apply_mosaic_correction_plan(self, sample_id, mm_polygons, scan_plan, source_y_length=None):
-        """Apply a corrected scan plan and create the corresponding overlay source."""
-        XFOV = self.ui.XLength.value()
-        YFOV = self.ui.YLength.value()
-        new_fov_locations = scan_plan.fov_locations
-        
-        self.sample_centers[sample_id - 1].x = scan_plan.center_x
-        self.sample_centers[sample_id - 1].y = scan_plan.center_y
-        if self.debug_mosaic_correction:
-            print(
-                "Mosaic correction FOV grid result: "
-                f"sample_id={sample_id}, accepted_tiles={len(new_fov_locations)}, "
-                f"YFOV={YFOV:.3f}"
-            )
-
-        mosaic_source_y_fov = source_y_length if source_y_length is not None else YFOV
-        self.overlay_images[sample_id] = build_mosaic_correction_overlay_source(
-            mosaic_image=self.ui.mosaic_viewer.adj,
-            current_fov_locations=self.CurrentSampleLocations,
-            mm_polygons=mm_polygons,
-            new_fov_locations=new_fov_locations,
-            x_fov_mm=XFOV,
-            y_fov_mm=YFOV,
-            source_y_length_mm=mosaic_source_y_fov,
-            x_step_um=self.ui.XStepSize.value() * self.current_mosaic_display_downsample(),
-            y_step_um=self.ui.YStepSize.value() * self.current_mosaic_display_downsample(),
-        )
-        self.render_mosaic_correction_overlay(sample_id, self.overlay_images[sample_id])
-        self.CurrentSampleLocations = new_fov_locations        
-
-    def render_mosaic_correction_overlay(self, sample_id, source):
-        render_mosaic_correction_overlay(self.ui, source)
-        
     def get_background(self):
         an_action = AODOActionField('rotate_servo_out')
         self.AODOQueue.put(an_action)

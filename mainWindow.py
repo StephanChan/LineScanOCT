@@ -7,6 +7,7 @@ Created on Tue Dec 12 16:35:04 2023
 
 from GUI import Ui_MainWindow
 import os
+from ActionTypes import AcqTypes
 from PyQt5 import QtWidgets as QW
 from PyQt5.QtWidgets import  QMainWindow, QFileDialog, QWidget, QVBoxLayout
 from Dialogs import  StageDialog
@@ -17,7 +18,7 @@ from Generaic_functions import *
 from HardwareSpecs import camera_step_size_um, get_camera_spec, get_objective_spec
 from CameraUi import effective_camera_sample_count
 import traceback
-from InteractiveWidget import InteractiveMosaicWidget
+from ImageViewer import PanZoomImageView
 # try:
 #     from traits.api import HasTraits, Instance, on_trait_change
 #     from traitsui.api import View, Item
@@ -107,25 +108,36 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        # TD-enface acquisition mode (raw spectra -> spectral-mean en-face).
+        if self.ui.ACQMode.findText(AcqTypes.TD_ENFACE) < 0:
+            self.ui.ACQMode.addItem(AcqTypes.TD_ENFACE)
         self.LoadSettings("config.ini")
         self.setStageMinMax()
         self.Calculate_CameraWidth_settings()
         self.Calculate_Galvo_settings()
-        ##################### Swap the intensity XY label for the interactive widget
-        # 1. Initialize the interactive widget (structure view + ROI drawing).
-        # It replaces the XYplaneInt intensity view (XYplaneDyn stays a pure
-        # dynamic display label).
-        self.ui.mosaic_viewer = InteractiveMosaicWidget(self.ui.XYplaneInt.parent())
-
-        # 2. Replace the static QLabel in the layout
-        layout = self.ui.XYplaneInt.parentWidget().layout()
-        layout.replaceWidget(self.ui.XYplaneInt, self.ui.mosaic_viewer)
-
-        # 3. Clean up the old reference
-        self.ui.XYplaneInt.hide()
-
-        # 4. Keep a convenience alias used by the display code.
-        self.ui.XYplaneInt = self.ui.mosaic_viewer
+        ##################### Unify every OCT display window on PanZoomImageView
+        # XZplane (B-scan / USB live), the two mosaic XZ-plane views, the dynamic
+        # XY view and the XYplaneInt structure view all become the same
+        # interactive widget: wheel zoom, middle-drag pan, double-click reset and
+        # viewport-locked physical rulers. No ROI drawing is provided here.
+        for display_name in ("XZplane", "XZplaneDyn", "XZplaneInt", "XYplaneDyn", "XYplaneInt"):
+            label = getattr(self.ui, display_name, None)
+            if label is None or isinstance(label, PanZoomImageView):
+                continue
+            parent = label.parentWidget()
+            if parent is None:
+                continue
+            layout = parent.layout()
+            if layout is None:
+                continue
+            viewer = PanZoomImageView(parent)
+            viewer.setMinimumSize(label.minimumSize())
+            layout.replaceWidget(label, viewer)
+            label.hide()
+            setattr(self.ui, display_name, viewer)
+        # Keep the convenience alias used by the display/rendering code for the
+        # structure (intensity) en-face view.
+        self.ui.mosaic_viewer = self.ui.XYplaneInt
         #################### load configuration settings
 
         # self.Update_laser()

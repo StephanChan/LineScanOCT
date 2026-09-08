@@ -247,7 +247,7 @@ def GenAODO(mode='ContinuousBline',obj = '5X',postclocks = 50, YStepSize = 1, YS
         status = 'waveform updated'
         return np.uint32(DOwaveform), AOwaveform, status
 
-    elif mode in ['FiniteCscan','ContinuousCscan', 'PlateScan','PlatePreScan', 'WellScan','TimedPlateScan']:
+    elif mode in ['FiniteCscan','ContinuousCscan', 'TD-Enface', 'PlateScan','PlatePreScan', 'WellScan','TimedPlateScan']:
         # generate AO waveform for Galvo control for one Bline
         AOwaveform, status = GenGalvoWave(YStepSize, YSteps, BVG*2, obj, postclocks, Galvo_bias)
         DOwaveform = np.ones([YSteps*BVG, 2],dtype = np.uint32)

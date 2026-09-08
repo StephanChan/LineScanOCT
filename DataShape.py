@@ -10,6 +10,7 @@ CSCAN_MODES = (
     AcqTypes.FINITE_CSCAN,
     AcqTypes.CONTINUOUS_CSCAN,
     AcqTypes.FAST_VOLUME_CSCAN,
+    AcqTypes.TD_ENFACE,
 )
 
 MOSAIC_DISPLAY_MODES = (

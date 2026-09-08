@@ -12,6 +12,9 @@ class AcqTypes:
     CONTINUOUS_CSCAN = "ContinuousCscan"
     FINITE_CSCAN = "FiniteCscan"
     FAST_VOLUME_CSCAN = "FastVolumeCscan"
+    # Time-domain en-face: finite single C-scan acquired as raw spectra
+    # (FFTDevice = None); display = mean over the spectral axis on XYplaneInt only.
+    TD_ENFACE = "TD-Enface"
     LOCATION_CAMERA_LIVE = "LocationCameraLive"
     MOSAIC = "Mosaic"
     PLATE_PRESCAN = "PlatePreScan"

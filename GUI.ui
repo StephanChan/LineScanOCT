@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>1609</width>
-    <height>700</height>
+    <height>924</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -185,7 +185,7 @@
               </property>
              </widget>
             </item>
-            <item row="0" column="2" rowspan="2">
+            <item row="0" column="2" rowspan="3">
              <widget class="QScrollBar" name="DepthEndBar">
               <property name="maximum">
                <number>1024</number>
@@ -195,7 +195,7 @@
               </property>
              </widget>
             </item>
-            <item row="0" column="0" rowspan="2">
+            <item row="0" column="0" rowspan="3">
              <widget class="QScrollBar" name="DepthStartBar">
               <property name="maximum">
                <number>1024</number>
@@ -286,22 +286,28 @@
          </layout>
         </item>
         <item>
-         <layout class="QGridLayout" name="gridLayout_20" columnstretch="1,1,1">
-          <item row="1" column="2">
-           <widget class="QLabel" name="XYplaneInt">
-            <property name="minimumSize">
-             <size>
-              <width>300</width>
-              <height>300</height>
-             </size>
-            </property>
+         <layout class="QGridLayout" name="gridLayout_20" rowstretch="0,3,1" columnstretch="1,1,1">
+          <item row="0" column="0">
+           <widget class="QLabel" name="label_5">
             <property name="font">
              <font>
-              <pointsize>25</pointsize>
+              <pointsize>20</pointsize>
              </font>
             </property>
-            <property name="autoFillBackground">
-             <bool>true</bool>
+            <property name="text">
+             <string>XY活性视图</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="label_21">
+            <property name="font">
+             <font>
+              <pointsize>20</pointsize>
+             </font>
             </property>
             <property name="text">
              <string>XY结构视图</string>
@@ -350,27 +356,31 @@
             </property>
            </widget>
           </item>
-          <item row="0" column="0">
-           <widget class="QLabel" name="label_5">
-            <property name="font">
-             <font>
-              <pointsize>20</pointsize>
-             </font>
+          <item row="0" column="1" rowspan="2">
+           <widget class="QScrollBar" name="ZDepthBar">
+            <property name="maximum">
+             <number>1024</number>
             </property>
-            <property name="text">
-             <string>XY活性视图</string>
-            </property>
-            <property name="alignment">
-             <set>Qt::AlignCenter</set>
+            <property name="orientation">
+             <enum>Qt::Vertical</enum>
             </property>
            </widget>
           </item>
-          <item row="0" column="2">
-           <widget class="QLabel" name="label_21">
+          <item row="1" column="2">
+           <widget class="QLabel" name="XYplaneInt">
+            <property name="minimumSize">
+             <size>
+              <width>300</width>
+              <height>300</height>
+             </size>
+            </property>
             <property name="font">
              <font>
-              <pointsize>20</pointsize>
+              <pointsize>25</pointsize>
              </font>
+            </property>
+            <property name="autoFillBackground">
+             <bool>true</bool>
             </property>
             <property name="text">
              <string>XY结构视图</string>
@@ -380,11 +390,56 @@
             </property>
            </widget>
           </item>
-          <item row="0" column="1" rowspan="2">
-           <widget class="QScrollBar" name="ZDepthBar">
-            <property name="maximum">
-             <number>1024</number>
+          <item row="2" column="0">
+           <widget class="QLabel" name="XZplaneDyn">
+            <property name="minimumSize">
+             <size>
+              <width>0</width>
+              <height>0</height>
+             </size>
             </property>
+            <property name="font">
+             <font>
+              <pointsize>24</pointsize>
+             </font>
+            </property>
+            <property name="autoFillBackground">
+             <bool>true</bool>
+            </property>
+            <property name="text">
+             <string>XZ活性视图</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="2">
+           <widget class="QLabel" name="XZplaneInt">
+            <property name="minimumSize">
+             <size>
+              <width>0</width>
+              <height>0</height>
+             </size>
+            </property>
+            <property name="font">
+             <font>
+              <pointsize>24</pointsize>
+             </font>
+            </property>
+            <property name="autoFillBackground">
+             <bool>true</bool>
+            </property>
+            <property name="text">
+             <string>XZ结构视图</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QScrollBar" name="MosaicYbar">
             <property name="orientation">
              <enum>Qt::Vertical</enum>
             </property>
@@ -1643,51 +1698,6 @@
              </size>
             </property>
            </spacer>
-          </item>
-          <item>
-           <widget class="QPushButton" name="RepeatSampleButton">
-            <property name="minimumSize">
-             <size>
-              <width>150</width>
-              <height>50</height>
-             </size>
-            </property>
-            <property name="text">
-             <string>重复该样品</string>
-            </property>
-            <property name="checkable">
-             <bool>true</bool>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <spacer name="horizontalSpacer_7">
-            <property name="orientation">
-             <enum>Qt::Horizontal</enum>
-            </property>
-            <property name="sizeHint" stdset="0">
-             <size>
-              <width>40</width>
-              <height>20</height>
-             </size>
-            </property>
-           </spacer>
-          </item>
-          <item>
-           <widget class="QPushButton" name="NextSampleButton">
-            <property name="minimumSize">
-             <size>
-              <width>150</width>
-              <height>50</height>
-             </size>
-            </property>
-            <property name="text">
-             <string>下一个样品</string>
-            </property>
-            <property name="checkable">
-             <bool>true</bool>
-            </property>
-           </widget>
           </item>
           <item>
            <spacer name="horizontalSpacer_12">
@@ -3402,6 +3412,13 @@
             </property>
             <property name="value">
              <double>0.250000000000000</double>
+            </property>
+           </widget>
+          </item>
+          <item row="5" column="3" colspan="2">
+           <widget class="QCheckBox" name="HoloYFilterCheckBox">
+            <property name="text">
+             <string>Y notch filter</string>
             </property>
            </widget>
           </item>

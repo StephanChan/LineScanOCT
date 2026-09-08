@@ -53,8 +53,11 @@ from Display_rendering import (
     render_aline_ready,
     render_bline_ready,
     render_cscan_ready,
+    render_cscan_xz_dual,
     render_cscan_xz_from_volume,
     render_mosaic_ready,
+    render_mosaic_xz_slices,
+    render_td_enface,
 )
 from HardwareSpecs import PHOTONFOCUS_STATIC_NORMALIZATION_MEAN, get_objective_spec
 
@@ -75,6 +78,7 @@ FINITE_ACQ_MODES = (
     AcqTypes.FINITE_BLINE,
     AcqTypes.FINITE_CSCAN,
     AcqTypes.FAST_VOLUME_CSCAN,
+    AcqTypes.TD_ENFACE,
     AcqTypes.PLATE_PRESCAN,
     AcqTypes.PLATE_SCAN,
     AcqTypes.WELL_SCAN,
@@ -271,6 +275,8 @@ class GUI(MainWindow):
             self.ui.DynBrightness.valueChanged.connect(self.Update_contrast)
         if hasattr(self.ui, "YBar"):
             self.ui.YBar.valueChanged.connect(self._on_ybar_changed)
+        if hasattr(self.ui, "MosaicYbar"):
+            self.ui.MosaicYbar.valueChanged.connect(self._on_mosaic_ybar_changed)
         # self.ui.Dynmax.valueChanged.connect(self.Update_contrast_Dyn)
         # self.ui.Dynmin.valueChanged.connect(self.Update_contrast_Dyn)
 
@@ -457,8 +463,6 @@ class GUI(MainWindow):
         live_names = (
             "RunButton",
             "PauseButton",
-            "RepeatSampleButton",
-            "NextSampleButton",
             "Xmove2",
             "Ymove2",
             "Zmove2",
@@ -573,21 +577,34 @@ class GUI(MainWindow):
             return
         render_bline_ready(self.ui, payload)
 
+    def _sync_ybar_to_volume(self, volume):
+        """Clamp/sync the YBar range to the number of Y rows in a C-scan volume."""
+        if volume is None or np.size(volume) == 0:
+            return
+        if not hasattr(self.ui, "YBar"):
+            return
+        y_pixels = int(np.asarray(volume).shape[0])
+        bar = self.ui.YBar
+        if bar.maximum() != y_pixels - 1:
+            bar.setMaximum(y_pixels - 1)
+            if bar.value() == 0:
+                bar.setValue(max(0, (y_pixels - 1) // 2))
+
     def _on_cscan_ready(self, payload: dict):
         self._last_display_payloads["cscan"] = payload
+        mode = payload.get("mode")
+        if mode == AcqTypes.TD_ENFACE:
+            # TD-enface shows only the spectral-mean en-face on XYplaneInt;
+            # all other OCT display windows stay cleared.
+            if self._fps_ok("cscan"):
+                render_td_enface(self.ui, payload)
+            return
         # Keep the last volume so YBar can re-slice the XZ view immediately.
         self._last_cscan_render_payload = {
             "volume": payload.get("volume"),
             "hsv_volume": payload.get("hsv_volume"),
         }
-        volume = payload.get("volume", None)
-        if volume is not None and np.size(volume) > 0 and hasattr(self.ui, "YBar"):
-            y_pixels = int(np.asarray(volume).shape[0])
-            bar = self.ui.YBar
-            if bar.maximum() != y_pixels - 1:
-                bar.setMaximum(y_pixels - 1)
-                if bar.value() == 0:
-                    bar.setValue(max(0, (y_pixels - 1) // 2))
+        self._sync_ybar_to_volume(payload.get("volume", None))
         if not self._fps_ok("cscan"):
             return
         render_cscan_ready(self.ui, payload)
@@ -598,11 +615,45 @@ class GUI(MainWindow):
             return
         try:
             render_cscan_xz_from_volume(self.ui, payload)
+            render_cscan_xz_dual(self.ui, payload)
         except Exception as error:
             print(f"YBar re-render failed: {error}")
 
+    def _sync_mosaic_ybar_to_volume(self, volume):
+        """Clamp/sync the MosaicYbar range to the rows of the stitched mosaic volume."""
+        if volume is None or np.size(volume) == 0:
+            return
+        if not hasattr(self.ui, "MosaicYbar"):
+            return
+        y_pixels = int(np.asarray(volume).shape[0])
+        bar = self.ui.MosaicYbar
+        if bar.maximum() != y_pixels - 1:
+            bar.setMaximum(y_pixels - 1)
+            if bar.value() == 0:
+                bar.setValue(max(0, (y_pixels - 1) // 2))
+
+    def _on_mosaic_ybar_changed(self, *_args):
+        payload = self._last_display_payloads.get("mosaic")
+        if payload is None:
+            return
+        try:
+            render_mosaic_xz_slices(self.ui, payload)
+        except Exception as error:
+            print(f"MosaicYbar re-render failed: {error}")
+
     def _on_mosaic_ready(self, payload: dict):
         self._last_display_payloads["mosaic"] = payload
+        # Mosaic/WellScan FOVs arrive through the mosaic path (no cscan_ready
+        # volume), so cache the per-FOV tile volume to let YBar re-slice the XZ
+        # B-scan plane.
+        tile_volume = payload.get("tile_volume", None)
+        if tile_volume is not None and np.size(tile_volume) > 0:
+            self._last_cscan_render_payload = {
+                "volume": tile_volume,
+                "hsv_volume": payload.get("tile_hsv_volume", None),
+            }
+            self._sync_ybar_to_volume(tile_volume)
+        self._sync_mosaic_ybar_to_volume(payload.get("mosaic_volume", None))
         if not self._fps_ok("mosaic"):
             return
         render_mosaic_ready(self.ui, payload)
@@ -645,6 +696,15 @@ class GUI(MainWindow):
         
     def run_task(self):
         acq_mode = self.ui.ACQMode.currentText()
+        if (
+            acq_mode == AcqTypes.PLATE_PRESCAN
+            and getattr(self.ui, "_prescan_awaiting_next", False)
+        ):
+            # The running PlatePreScan has finished a sample and relabelled the
+            # Run button "下一个样品". This click just advances to the next
+            # sample - the prescan loop consumes it, so do NOT enqueue another
+            # PlatePreScan action here.
+            return
         if acq_mode in CONTINUOUS_ACQ_MODES + LIVE_ONLY_MODES:
             if self.ui.RunButton.isChecked():
                 self.ui.RunButton.setText('Stop')
@@ -1352,7 +1412,11 @@ class GUI(MainWindow):
         
     def Update_contrast(self):
         acq_mode = self.ui.ACQMode.currentText()
-        if acq_mode in ["FiniteAline", "ContinuousAline"]:
+        if acq_mode == AcqTypes.TD_ENFACE:
+            payload = self._last_display_payloads.get("cscan")
+            if payload is not None:
+                render_td_enface(self.ui, payload)
+        elif acq_mode in ["FiniteAline", "ContinuousAline"]:
             payload = self._last_display_payloads.get("aline")
             if payload is not None:
                 render_aline_ready(self.ui, payload)

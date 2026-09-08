@@ -28,7 +28,7 @@ def _ruler_font():
     global _FONT
     if _FONT is None:
         _FONT = QFont("Arial")
-        _FONT.setPixelSize(9)
+        _FONT.setPixelSize(14)
     return _FONT
 
 
@@ -111,7 +111,7 @@ def draw_bottom_ruler(painter, rect, total_um, caption="", canvas_right=None, or
             px = x_left + value * per_um_px
         painter.drawLine(int(px), int(y0), int(px), int(y0 + 5))
         painter.drawText(
-            QRectF(px - 45, y0 + 7, 90, 15),
+            QRectF(px - 45, y0 + 5, 90, 18),
             Qt.AlignHCenter | Qt.AlignTop,
             _format_tick(value, total_um),
         )
@@ -125,13 +125,13 @@ def draw_bottom_ruler(painter, rect, total_um, caption="", canvas_right=None, or
         if canvas_right is not None:
             width = max(10.0, float(canvas_right) - left)
             painter.drawText(
-                QRectF(left, y0 + 7, width, 15),
+                QRectF(left, y0 + 5, width, 18),
                 Qt.AlignRight | Qt.AlignTop,
                 caption,
             )
         else:
             painter.drawText(
-                QRectF(left, y0 + 7, 120, 15),
+                QRectF(left, y0 + 5, 120, 18),
                 Qt.AlignLeft | Qt.AlignTop,
                 caption,
             )
@@ -165,7 +165,7 @@ def draw_left_ruler(painter, rect, total_um, caption=""):
         ty = y0 + value * per_um_px
         painter.drawLine(int(x0), int(ty), int(x0 - 5), int(ty))
         painter.drawText(
-            QRectF(x0 - 52, ty - 8, 40, 16),
+            QRectF(x0 - 64, ty - 10, 56, 20),
             Qt.AlignRight | Qt.AlignVCenter,
             _format_tick(value, total_um),
         )
@@ -180,7 +180,154 @@ def draw_left_ruler(painter, rect, total_um, caption=""):
         painter.translate(4.0, rect.bottom())
         painter.rotate(-90.0)
         painter.drawText(
-            QRectF(0, -8, 600, 16),
+            QRectF(0, -12, 600, 20),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            caption,
+        )
+        painter.restore()
+    painter.restore()
+
+
+# =============================================================================
+# Viewport-locked rulers
+#
+# These are used by PanZoomImageView when the content image is zoomed / panned.
+# Ticks are drawn in the fixed gutter strips along the widget edges, at the
+# CURRENT screen position of each physical value, so the ruler always stays
+# glued to the window border and the numbers slide / renumber as the view
+# changes.
+# =============================================================================
+
+def draw_viewport_bottom_ruler(
+    painter,
+    inner_rect,
+    lo_um,
+    hi_um,
+    value_to_x,
+    total_um_for_units,
+    caption="",
+    outer_width=None,
+):
+    """Horizontal ticks along the bottom edge of the content viewport.
+
+    ``value_to_x(v)`` maps a physical value (µm) to the screen x of that value
+    (takes pan/zoom into account). Only ticks in [lo_um, hi_um] are drawn.
+    """
+    span_um = abs(float(hi_um) - float(lo_um))
+    if span_um <= 0:
+        return
+    try:
+        span_px = abs(float(value_to_x(hi_um)) - float(value_to_x(lo_um)))
+    except Exception:
+        return
+    step_um = _nice_step_um(span_um, span_px)
+    if step_um is None:
+        return
+    edge_y = inner_rect.bottom()
+    total_um = float(total_um_for_units)
+
+    painter.save()
+    painter.setPen(QPen(_RULER_PEN, 1))
+    painter.setFont(_ruler_font())
+
+    lo = min(float(lo_um), float(hi_um))
+    hi = max(float(lo_um), float(hi_um))
+    index = 0
+    value = math.ceil(lo / step_um - 1e-9) * step_um
+    while value <= hi * (1.0 + 1e-9):
+        try:
+            px = float(value_to_x(value))
+        except Exception:
+            break
+        if outer_width is not None:
+            if px < -5 or px > float(outer_width) + 5:
+                value += step_um
+                index += 1
+                if index > 2000:
+                    break
+                continue
+        painter.drawLine(int(px), int(edge_y), int(px), int(edge_y + 5))
+        painter.drawText(
+            QRectF(px - 45, edge_y + 5, 90, 18),
+            Qt.AlignHCenter | Qt.AlignTop,
+            _format_tick(value, total_um),
+        )
+        value += step_um
+        index += 1
+        if index > 2000:
+            break
+
+    if caption:
+        left = inner_rect.right() + 4
+        if outer_width is not None:
+            width = max(10.0, float(outer_width) - left)
+        else:
+            width = 140.0
+        painter.drawText(
+            QRectF(left, edge_y + 5, width, 18),
+            Qt.AlignRight | Qt.AlignTop,
+            caption,
+        )
+    painter.restore()
+
+
+def draw_viewport_left_ruler(
+    painter,
+    inner_rect,
+    lo_um,
+    hi_um,
+    value_to_y,
+    total_um_for_units,
+    caption="",
+):
+    """Vertical ticks along the left edge of the content viewport.
+
+    ``value_to_y(v)`` maps a physical value (µm) to the screen y of that value.
+    Only ticks in [lo_um, hi_um] are drawn.
+    """
+    span_um = abs(float(hi_um) - float(lo_um))
+    if span_um <= 0:
+        return
+    try:
+        span_px = abs(float(value_to_y(hi_um)) - float(value_to_y(lo_um)))
+    except Exception:
+        return
+    step_um = _nice_step_um(span_um, span_px)
+    if step_um is None:
+        return
+    edge_x = inner_rect.left()
+    total_um = float(total_um_for_units)
+
+    painter.save()
+    painter.setPen(QPen(_RULER_PEN, 1))
+    painter.setFont(_ruler_font())
+
+    lo = min(float(lo_um), float(hi_um))
+    hi = max(float(lo_um), float(hi_um))
+    index = 0
+    value = math.ceil(lo / step_um - 1e-9) * step_um
+    while value <= hi * (1.0 + 1e-9):
+        try:
+            py = float(value_to_y(value))
+        except Exception:
+            break
+        painter.drawLine(int(edge_x), int(py), int(edge_x - 5), int(py))
+        painter.drawText(
+            QRectF(edge_x - 64, py - 10, 56, 20),
+            Qt.AlignRight | Qt.AlignVCenter,
+            _format_tick(value, total_um),
+        )
+        value += step_um
+        index += 1
+        if index > 2000:
+            break
+
+    if caption:
+        painter.save()
+        painter.translate(inner_rect.left() - 6.0, inner_rect.bottom())
+        painter.rotate(-90.0)
+        painter.drawText(
+            QRectF(0, -12, 600, 20),
             Qt.AlignLeft | Qt.AlignVCenter,
             caption,
         )

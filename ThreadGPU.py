@@ -12,7 +12,7 @@ from ActionFields import DnSActionField
 import os
 import time
 import traceback
-from ActionTypes import DnSActions, EXIT_ACTION, GPUActions
+from ActionTypes import AcqTypes, DnSActions, EXIT_ACTION, GPUActions
 from DataShape import fast_volume_regroup
 from CameraUi import effective_camera_sample_count
 from HardwareSpecs import DISCARD_INITIAL_FRAMES_PER_Y, get_camera_spec
@@ -99,6 +99,20 @@ HOLO_X_FILTER_ENABLED = True
 HOLO_CENTER_BAND_HALF_WIDTH_FRACTION = 0.25
 HOLO_PRINT_FILTER_INFO = True
 
+# Y-sideband (volume) notch filtering ----------------------------------------
+# DC-centered Y notch applied on the FULL post-FFT [Y, X, Z] complex C-scan
+# volume (FFT along axis 0). Controlled by the UI "Y notch filter" checkbox
+# (HoloYFilterCheckBox); this constant is only the offline/fallback default.
+# Skipped for FastVolumeCscan and any dynamic (incl. per-Y realtime) paths.
+HOLO_Y_FILTER_ENABLED = False
+HOLO_Y_FILTER_MODES = (
+    AcqTypes.FINITE_CSCAN,
+    AcqTypes.CONTINUOUS_CSCAN,
+    AcqTypes.WELL_SCAN,
+    AcqTypes.PLATE_SCAN,
+    AcqTypes.TIMED_PLATE_SCAN,
+)
+
 # Static/background normalization --------------------------------------------
 # Shared small denominator protection for background X normalization and dynamic
 # normalization. Usually leave this tiny; increase only if weak-signal pixels
@@ -148,6 +162,11 @@ class GPUThread(QThread):
         self.holo_filter_info_printed = False
         self.holo_filter_cache = {}
         self.holo_filter_cpu_cache = {}
+        self.holo_y_filter_enabled = HOLO_Y_FILTER_ENABLED
+        self.holo_y_filter_info_printed = False
+        self.holo_y_filter_cache = {}
+        self.holo_y_filter_cpu_cache = {}
+        self._holo_y_run = False
         self.dynamic_normalization_eps = NORMALIZATION_EPS
         self.dynamic_temporal_lowpass_enabled = DYNAMIC_TEMPORAL_LOWPASS_ENABLED
         self.dynamic_uniform_filter_size = DYNAMIC_TEMPORAL_LOWPASS_WINDOW_SIZE
@@ -536,9 +555,97 @@ class GPUThread(QThread):
         field = np.fft.ifft(filtered_kx, axis=1)
         return field.reshape(int(frames) * int(x_pixels), int(samples))
 
-    def select_fft_depth_result(self, fft_data, pixel_start, pixel_range, xp):
+    def current_holo_y_filter_enabled(self):
+        widget = getattr(self.ui, "HoloYFilterCheckBox", None)
+        if widget is not None and hasattr(widget, "isChecked"):
+            try:
+                return bool(widget.isChecked())
+            except Exception:
+                pass
+        return bool(self.holo_y_filter_enabled)
+
+    def should_run_holo_y_filter(self, acq_mode):
+        """True when the full-volume Y notch should be applied.
+
+        Only whole-volume, non-dynamic C-scan acquisitions in the listed modes:
+        FastVolumeCscan and any dynamic path (incl. per-Y realtime) are skipped.
+        """
+        if not self.current_holo_y_filter_enabled():
+            return False
+        if acq_mode not in HOLO_Y_FILTER_MODES:
+            return False
+        item = getattr(self, "item", None)
+        if item is not None and getattr(item, "fast_volume", False):
+            return False
+        if self.current_dynamic_enabled():
+            return False
+        if self.should_run_realtime_dynamic():
+            return False
+        return True
+
+    def holo_y_filter_weights_gpu(self, y_pixels):
+        y_pixels = int(y_pixels)
+        fraction = self.current_holo_center_band_half_width_fraction()
+        cache_key = (y_pixels, float(fraction))
+        cached = self.holo_y_filter_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        pixel_size_m = self.current_camera_pixel_size_m()
+        ky_axis = cupy.fft.fftfreq(y_pixels, d=pixel_size_m).astype(cupy.float32)
+        ky_axis *= cupy.float32(2.0 * np.pi)
+        ky_nyquist = np.pi / pixel_size_m
+        cutoff = fraction * ky_nyquist
+        weights = (cupy.abs(ky_axis) > cutoff).astype(cupy.float32)
+        if self.holo_print_filter_info and not self.holo_y_filter_info_printed:
+            self.holo_y_filter_info_printed = True
+            print(
+                "Volume Y notch (band-stop) filter: "
+                f"enabled={self.current_holo_y_filter_enabled()}, "
+                f"notch_half_width/Nyquist={fraction:.3f}, y_rows={y_pixels}"
+            )
+        self.holo_y_filter_cache = {cache_key: weights}
+        return weights
+
+    def holo_y_filter_weights_cpu(self, y_pixels):
+        y_pixels = int(y_pixels)
+        fraction = self.current_holo_center_band_half_width_fraction()
+        cache_key = (y_pixels, float(fraction))
+        cached = self.holo_y_filter_cpu_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        pixel_size_m = self.current_camera_pixel_size_m()
+        ky_axis = np.fft.fftfreq(y_pixels, d=pixel_size_m).astype(np.float32)
+        ky_axis *= np.float32(2.0 * np.pi)
+        ky_nyquist = np.pi / pixel_size_m
+        cutoff = fraction * ky_nyquist
+        weights = (np.abs(ky_axis) > cutoff).astype(np.float32)
+        if self.holo_print_filter_info and not self.holo_y_filter_info_printed:
+            self.holo_y_filter_info_printed = True
+            print(
+                "Volume Y notch (band-stop) filter: "
+                f"enabled={self.current_holo_y_filter_enabled()}, "
+                f"notch_half_width/Nyquist={fraction:.3f}, y_rows={y_pixels}"
+            )
+        self.holo_y_filter_cpu_cache = {cache_key: weights}
+        return weights
+
+    def apply_holo_y_filter_gpu(self, volume_gpu):
+        y_pixels = int(volume_gpu.shape[0])
+        weights_gpu = self.holo_y_filter_weights_gpu(y_pixels)
+        filtered_ky_gpu = cupy.fft.fft(volume_gpu, axis=0)
+        filtered_ky_gpu *= weights_gpu[:, cupy.newaxis, cupy.newaxis]
+        return cupy.fft.ifft(filtered_ky_gpu, axis=0)
+
+    def apply_holo_y_filter_cpu(self, volume):
+        y_pixels = int(volume.shape[0])
+        weights = self.holo_y_filter_weights_cpu(y_pixels)
+        filtered_ky = np.fft.fft(volume, axis=0)
+        filtered_ky *= weights[:, np.newaxis, np.newaxis]
+        return np.fft.ifft(filtered_ky, axis=0)
+
+    def select_fft_depth_result(self, fft_data, pixel_start, pixel_range, xp, keep_complex=False):
         depth_data = fft_data[:, pixel_start:pixel_start + pixel_range]
-        if self.current_fft_result_mode() == "AMP+PHASE":
+        if self.current_fft_result_mode() == "AMP+PHASE" or keep_complex:
             return depth_data
         return xp.absolute(depth_data)
 
@@ -729,8 +836,14 @@ class GPUThread(QThread):
             # by the same factor to match the averaged data.
             background_reference_gpu = self.block_mean_axis0(background_reference_gpu, aline_avg)
         # Allocate output with effective frame count. In AMP+PHASE mode, keep the
-        # complex FFT result through the device-to-host transfer.
-        output_dtype = np.complex64 if self.current_fft_result_mode() == "AMP+PHASE" else np.float32
+        # complex FFT result through the device-to-host transfer. When the Y notch
+        # is active we also keep the complex field so the filter is linear.
+        run_y_filter = self.should_run_holo_y_filter(acq_mode)
+        self._holo_y_run = run_y_filter
+        if self.current_fft_result_mode() == "AMP+PHASE" or run_y_filter:
+            output_dtype = np.complex64
+        else:
+            output_dtype = np.float32
         self.data_CPU = np.empty((effective_frames, x_pixels_out, Pixel_range), dtype=output_dtype)
         dynamic_gpu_stack = None
         if self.should_run_realtime_dynamic():
@@ -741,21 +854,32 @@ class GPUThread(QThread):
         log_filename = self.current_log_filename()
         y_slice_index = self.item.dynamic_bline_idx if DnS_action == DnSActions.PROCESS_MOSAIC else None
         self.gpu_timing_end(timing, "prepare_request", request_start)
-        self.cudaFFT_chunked_overlapped(
-            memory_slot,
-            samples,
-            Pixel_start,
-            Pixel_range,
-            chunk_frames,
-            background_reference_gpu,
-            pre_avg_count,
-            log_filename,
-            y_slice_index,
-            timing,
-            dynamic_gpu_stack,
-            x_pixels_out=x_pixels_out,
-        )
+        try:
+            self.cudaFFT_chunked_overlapped(
+                memory_slot,
+                samples,
+                Pixel_start,
+                Pixel_range,
+                chunk_frames,
+                background_reference_gpu,
+                pre_avg_count,
+                log_filename,
+                y_slice_index,
+                timing,
+                dynamic_gpu_stack,
+                x_pixels_out=x_pixels_out,
+            )
+        finally:
+            self._holo_y_run = False
         del background_reference_gpu
+
+        if run_y_filter:
+            # Full-volume Y notch on the complex field (axis 0 = Y), then convert
+            # to magnitude for AMP mode.
+            self.data_CPU = np.asarray(self.data_CPU, dtype=np.complex64)
+            self.data_CPU = self.apply_holo_y_filter_cpu(self.data_CPU)
+            if self.current_fft_result_mode() != "AMP+PHASE":
+                self.data_CPU = np.absolute(self.data_CPU).astype(np.float32)
         # print('data_CPU shape', self.data_CPU.shape)
         # print('data_CPU:', self.data_CPU[0,0,0:15])
         if self.should_run_realtime_dynamic():
@@ -885,12 +1009,29 @@ class GPUThread(QThread):
         else:
             self.data_CPU = np.fft.fft(self.data_CPU, axis=1) / samples
 
-        self.data_CPU = self.select_fft_depth_result(self.data_CPU, pixel_start, pixel_range, np)
-        if self.current_fft_result_mode() == "AMP+PHASE":
+        run_y_filter = self.should_run_holo_y_filter(acq_mode)
+        if run_y_filter:
+            # Keep the complex depth-trimmed field so the Y notch is a linear
+            # filter on the complex volume.
+            self.data_CPU = self.select_fft_depth_result(
+                self.data_CPU, pixel_start, pixel_range, np, keep_complex=True
+            )
             self.data_CPU = np.asarray(self.data_CPU, dtype=np.complex64)
+            self.data_CPU = self.data_CPU.reshape(
+                processed_shape[0], processed_shape[1], pixel_range
+            )
+            self.data_CPU = self.apply_holo_y_filter_cpu(self.data_CPU)
+            if self.current_fft_result_mode() != "AMP+PHASE":
+                self.data_CPU = np.absolute(self.data_CPU).astype(np.float32)
         else:
-            self.data_CPU = np.float32(self.data_CPU)
-        self.data_CPU = self.data_CPU.reshape(processed_shape[0], processed_shape[1], pixel_range)
+            self.data_CPU = self.select_fft_depth_result(self.data_CPU, pixel_start, pixel_range, np)
+            if self.current_fft_result_mode() == "AMP+PHASE":
+                self.data_CPU = np.asarray(self.data_CPU, dtype=np.complex64)
+            else:
+                self.data_CPU = np.float32(self.data_CPU)
+            self.data_CPU = self.data_CPU.reshape(
+                processed_shape[0], processed_shape[1], pixel_range
+            )
         if self.current_dynamic_enabled():
             self.apply_post_fft_dynamic_normalization_cpu(self.data_CPU)
         else:
@@ -1440,7 +1581,13 @@ class GPUThread(QThread):
         self.gpu_timing_end(timing, "fft", step_start, stream)
 
         step_start = self.gpu_timing_start(stream)
-        data_gpu = self.select_fft_depth_result(data_gpu, Pixel_start, Pixel_range, cupy)
+        data_gpu = self.select_fft_depth_result(
+            data_gpu,
+            Pixel_start,
+            Pixel_range,
+            cupy,
+            keep_complex=bool(getattr(self, "_holo_y_run", False)),
+        )
         self.gpu_timing_end(timing, "select_depth_result", step_start, stream)
 
         step_start = self.gpu_timing_start(stream)

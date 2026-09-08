@@ -38,6 +38,7 @@ CSCAN_MODES = (
     AcqTypes.FINITE_CSCAN,
     AcqTypes.CONTINUOUS_CSCAN,
     AcqTypes.FAST_VOLUME_CSCAN,
+    AcqTypes.TD_ENFACE,
 )
 
 SAVE_SAMPLE_TIME_MODES = (
@@ -185,6 +186,7 @@ class DnSThread(QThread):
                     AcqTypes.FINITE_CSCAN,
                     AcqTypes.CONTINUOUS_CSCAN,
                     AcqTypes.FAST_VOLUME_CSCAN,
+                    AcqTypes.TD_ENFACE,
                 ):
                     self.display_actions += 1
                     # Dynamic results (HSV; the std is only the HSV value
@@ -592,6 +594,16 @@ class DnSThread(QThread):
                     "mosaic_hsv_volume": (
                         np.array(self.SampleMosaicHSVVolume, copy=False)
                         if hasattr(self, "SampleMosaicHSVVolume") and np.size(self.SampleMosaicHSVVolume) > 0
+                        else None
+                    ),
+                    "tile_volume": (
+                        np.array(self.XYVolume, copy=True)
+                        if hasattr(self, "XYVolume") and np.size(self.XYVolume) > 0
+                        else None
+                    ),
+                    "tile_hsv_volume": (
+                        np.array(self.DynamicHSVVolume, copy=True)
+                        if hasattr(self, "DynamicHSVVolume") and np.size(self.DynamicHSVVolume) > 0
                         else None
                     ),
                     "mosaic_freq": mosaic_freq,

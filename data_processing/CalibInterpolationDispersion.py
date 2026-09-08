@@ -26,11 +26,11 @@ except Exception:
 @dataclass(frozen=True)
 class CalibrationConfig:
 
-    data_path: Path = Path(r"E:\IOCTData\dispersion260906")
+    data_path: Path = Path(r"E:\IOCTData\BJRcellcluster\20XNomiror\dispersion")
     test_path: Path = Path(r"E:\EyeOCT\CalibInterpolation Disepersion-0825")
     nk: int = 1152
 
-    nx: int = 1104
+    nx: int = 1016
     ny: int = 1
     highpass_smooth_span: int = 15
     phase_smooth_span: int = 21
@@ -38,7 +38,7 @@ class CalibrationConfig:
     phase_column_start: int = 330  # MATLAB columns 701:800
     phase_column_stop: int = 355
     interpolation_epsilon: float = 1.0e-5
-    holo_x_filter_enabled: bool = True
+    holo_x_filter_enabled: bool = False
     holo_x_pixel_size_um: float = 9.0
     holo_x_notch_cutoff_fraction: float = 0.2
     plot: bool = True

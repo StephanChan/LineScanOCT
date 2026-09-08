@@ -8,7 +8,6 @@ from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 from PyQt5.QtCore import Qt, QRectF
 
 from Generaic_functions import RGBImagePlot, fastLinePlot, LinePlot
-import Rulers
 from SampleLocator import (
     affine_fov_half_size_pixels,
     calibration_uses_affine,
@@ -264,15 +263,13 @@ def downsample_rgb(rgb, factor):
 def set_xyplane_dyn_pixmap(ui, rgb, pixel_size_x=1.0, pixel_size_y=1.0):
     """Draw an HSV/RGB en-face plane on XYplaneDyn.
 
-    Applies exactly the same geometry as XYplaneInt's interactive mosaic widget:
-    ``usb_top_view`` orientation (transpose + one vertical flip, matching the
-    XYplaneInt mosaic viewer exactly) and a physical
-    pixel-size aspect stretch. The image is drawn bottom-left anchored inside
-    the ruler margins and physical axis rulers are painted in the margins.
-    ``pixel_size_x`` / ``pixel_size_y`` must be the effective pitch (µm per
-    displayed pixel) of the supplied array, i.e. the raw pitch already scaled
-    by any X/Y downsampling applied before this call. Bottom ruler = stage Y,
-    left ruler = stage X.
+    Applies exactly the same geometry as XYplaneInt's structure view:
+    ``usb_top_view`` orientation (transpose + one vertical flip). The viewer
+    handles the physical pixel-size aspect stretch and draws the viewport-locked
+    rulers. ``pixel_size_x`` / ``pixel_size_y`` must be the effective pitch
+    (µm per displayed pixel) of the supplied array, i.e. the raw pitch already
+    scaled by any X/Y downsampling applied before this call. Bottom ruler =
+    stage Y, left ruler = stage X.
     """
     label = getattr(ui, "XYplaneDyn", None)
     if label is None or rgb is None or np.size(rgb) == 0:
@@ -289,59 +286,28 @@ def set_xyplane_dyn_pixmap(ui, rgb, pixel_size_x=1.0, pixel_size_y=1.0):
         try:
             sx = float(pixel_size_x)
             sy = float(pixel_size_y)
-            aspect = (sx / sy) if sy != 0 else 1.0
         except (TypeError, ValueError):
             sx = sy = 1.0
-            aspect = 1.0
+        if sx <= 0:
+            sx = 1.0
+        if sy <= 0:
+            sy = 1.0
 
-        base_pixmap = rgb_pixmap(display)
-        label_w, label_h = mosaic_label_render_size(label)
-
-        phys_w = float(width)
-        phys_h = float(height) * aspect
-        if phys_w <= 0 or phys_h <= 0:
-            return
-        inner = Rulers.inner_rect(label_w, label_h)
-        if inner.width() <= 0 or inner.height() <= 0:
-            return
-        fit = min(inner.width() / phys_w, inner.height() / phys_h)
-        draw_w = max(1, int(round(phys_w * fit)))
-        draw_h = max(1, int(round(phys_h * fit)))
-        # Anchor the image to the bottom-left corner of the inner area so the
-        # bottom and left rulers hug the image edges.
-        draw_x = int(inner.left())
-        draw_y = int(inner.bottom() - draw_h)
-
-        canvas = QPixmap(label_w, label_h)
-        canvas.fill(Qt.black)
-        painter = QPainter(canvas)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        painter.drawPixmap(
-            QRectF(draw_x, draw_y, draw_w, draw_h),
-            base_pixmap,
-            QRectF(base_pixmap.rect()),
-        )
-        image_rect = QRectF(draw_x, draw_y, draw_w, draw_h)
-        stage_y_total = float(width) * sy
-        stage_x_total = float(height) * sx
-        y_unit = Rulers.unit_suffix(stage_y_total)
-        x_unit = Rulers.unit_suffix(stage_x_total)
-        Rulers.draw_bottom_ruler(
-            painter,
-            image_rect,
-            stage_y_total,
-            caption=f"stage Y ({y_unit})",
-            canvas_right=label_w,
-            origin_at_right=True,
-        )
-        Rulers.draw_left_ruler(
-            painter,
-            image_rect,
-            stage_x_total,
-            caption=f"stage X ({x_unit})",
-        )
-        painter.end()
-        label.setPixmap(canvas)
+        pixmap = rgb_pixmap(display)
+        # Display rows are stage-X pixels (µm = sx) and display columns are
+        # stage-Y pixels (µm = sy). Rulers/pan/zoom live in the viewer now.
+        geometry = {
+            "um_per_col": float(sy) if sy else 1.0,
+            "um_per_row": float(sx) if sx else 1.0,
+            "bottom_axis": {"caption": "stage Y", "origin": "right"},
+            "left_axis": {"caption": "stage X", "origin": "top"},
+            "bottom_total_um": float(width) * (float(sy) if sy else 1.0),
+            "left_total_um": float(height) * (float(sx) if sx else 1.0),
+        }
+        if hasattr(label, "set_data"):
+            label.set_data(pixmap, geometry)
+        else:
+            label.setPixmap(pixmap)
     except Exception as error:
         print(f"XYplaneDyn update failed: {error}")
 
@@ -426,16 +392,17 @@ def xz_physical_pixel_sizes_um(ui):
     return x_um, z_um
 
 
-def set_xzplane_pixmap_with_aspect(ui, pixmap):
-    """Display a pixmap on XZplane preserving its true physical aspect.
+def set_xzplane_pixmap_with_aspect(ui, pixmap, label=None, x_pixel_um=None, z_pixel_um=None):
+    """Display a content pixmap on an XZ view preserving its physical aspect.
 
     XZ images are stored with rows = depth (Z) and columns = lateral (X), so
-    each column spans x_um and each row spans axial z_um. The image is drawn
-    bottom-left anchored inside the ruler margins and physical axis rulers are
-    painted in the margins (bottom = lateral X, left = depth Z from 0 at the
-    top of the displayed depth window).
+    each column spans x_um and each row spans axial z_um. ``label`` defaults to
+    ``ui.XZplane``; pass it explicitly for XZplaneInt / XZplaneDyn. Rows are
+    depth (Z, µm = z_um, zero at the top); columns are lateral X (µm = x_um).
+    The viewer owns the physical-aspect fit and the viewport-locked rulers.
     """
-    label = getattr(ui, "XZplane", None)
+    if label is None:
+        label = getattr(ui, "XZplane", None)
     if label is None or pixmap is None or pixmap.isNull():
         return
     try:
@@ -444,58 +411,214 @@ def set_xzplane_pixmap_with_aspect(ui, pixmap):
         if x_count <= 0 or z_count <= 0:
             label.setPixmap(pixmap)
             return
-        x_um, z_um = xz_physical_pixel_sizes_um(ui)
+        default_x_um, default_z_um = xz_physical_pixel_sizes_um(ui)
+        if x_pixel_um is None:
+            x_um = default_x_um
+        else:
+            x_um = float(x_pixel_um)
+        if z_pixel_um is None:
+            z_um = default_z_um
+        else:
+            z_um = float(z_pixel_um)
         phys_w = x_count * x_um
         phys_h = z_count * z_um
         if phys_w <= 0 or phys_h <= 0:
             label.setPixmap(pixmap)
             return
-        label_w, label_h = mosaic_label_render_size(label)
-        inner = Rulers.inner_rect(label_w, label_h)
-        if inner.width() <= 0 or inner.height() <= 0:
+        # Physical-axis geometry for the viewport-locked rulers.
+        geometry = {
+            "um_per_col": float(x_um),
+            "um_per_row": float(z_um),
+            "bottom_axis": {"caption": "lateral X", "origin": "left"},
+            "left_axis": {"caption": "depth", "origin": "top"},
+            "bottom_total_um": phys_w,
+            "left_total_um": phys_h,
+        }
+        if hasattr(label, "set_data"):
+            label.set_data(pixmap, geometry)
+        else:
             label.setPixmap(pixmap)
-            return
-        fit = min(inner.width() / phys_w, inner.height() / phys_h)
-        draw_w = max(1, int(round(phys_w * fit)))
-        draw_h = max(1, int(round(phys_h * fit)))
-        # Anchor the image to the bottom-left corner of the inner area so the
-        # bottom and left rulers hug the image edges.
-        draw_x = int(inner.left())
-        draw_y = int(inner.bottom() - draw_h)
-
-        canvas = QPixmap(label_w, label_h)
-        canvas.fill(Qt.black)
-        painter = QPainter(canvas)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        painter.drawPixmap(
-            QRectF(draw_x, draw_y, draw_w, draw_h),
-            pixmap,
-            QRectF(pixmap.rect()),
-        )
-        image_rect = QRectF(draw_x, draw_y, draw_w, draw_h)
-        x_unit = Rulers.unit_suffix(x_count * x_um)
-        z_unit = Rulers.unit_suffix(z_count * z_um)
-        Rulers.draw_bottom_ruler(
-            painter,
-            image_rect,
-            x_count * x_um,
-            caption=f"lateral X ({x_unit})",
-            canvas_right=label_w,
-        )
-        Rulers.draw_left_ruler(
-            painter,
-            image_rect,
-            z_count * z_um,
-            caption=f"depth ({z_unit})",
-        )
-        painter.end()
-        label.setPixmap(canvas)
     except Exception as error:
         print(f"XZplane aspect-fit failed: {error}")
         try:
             label.setPixmap(pixmap)
         except Exception:
             pass
+
+
+def mosaic_xz_slice_index(ui, y_pixels):
+    """Clamp MosaicYbar to a valid mosaic-volume Y index (mid-plane fallback)."""
+    y_pixels = int(y_pixels)
+    if y_pixels <= 0:
+        return 0
+    bar = getattr(ui, "MosaicYbar", None)
+    if bar is None:
+        return y_pixels // 2
+    try:
+        value = int(bar.value())
+    except Exception:
+        value = y_pixels // 2
+    return max(0, min(value, y_pixels - 1))
+
+
+def _set_dual_xz_pixmaps(ui, xz_intensity, xz_hsv, x_pixel_um, z_pixel_um):
+    """Render XZplaneInt (structure) / XZplaneDyn (dynamic) from a prepared
+    ``(Z, X)`` intensity array and optional ``(Z, X, 3)`` HSV array."""
+    updated = False
+    int_label = getattr(ui, "XZplaneInt", None)
+    if int_label is not None:
+        pixmap = render_xz_pixmap(ui, xz_intensity)
+        set_xzplane_pixmap_with_aspect(
+            ui,
+            pixmap,
+            label=int_label,
+            x_pixel_um=x_pixel_um,
+            z_pixel_um=z_pixel_um,
+        )
+        updated = True
+
+    dyn_label = getattr(ui, "XZplaneDyn", None)
+    if dyn_label is not None:
+        if xz_hsv is not None and np.size(xz_hsv) > 0:
+            pixmap = render_xz_pixmap(ui, xz_intensity, None, xz_hsv)
+            set_xzplane_pixmap_with_aspect(
+                ui,
+                pixmap,
+                label=dyn_label,
+                x_pixel_um=x_pixel_um,
+                z_pixel_um=z_pixel_um,
+            )
+        else:
+            clear_label = QPixmap(max(10, dyn_label.width()), max(10, dyn_label.height()))
+            clear_label.fill(Qt.black)
+            dyn_label.setPixmap(clear_label)
+        updated = True
+    return updated
+
+
+def render_mosaic_xz_slices(ui, payload):
+    """Render the XZ cross-section of the stitched mosaic volumes.
+
+    XZplaneInt shows the intensity slice and XZplaneDyn shows the dynamic (HSV)
+    slice at the Y-plane selected by MosaicYbar. The stitched mosaic volume is
+    ``[Y, X, Z]`` (X/Y possibly pre-downsampled by the UI scale, depth unchanged),
+    so the lateral pixel pitch is scaled by ``ui.mosaic_display_downsample`` to
+    keep the µm extent (and the rulers) correct.
+    """
+    volume = payload.get("mosaic_volume", None) if payload is not None else None
+    if volume is None or np.size(volume) == 0:
+        return False
+    volume = np.asarray(volume)
+    if volume.ndim != 3:
+        return False
+    y_index = mosaic_xz_slice_index(ui, volume.shape[0])
+    # volume[y] is (X, Z); the XZ display wants (Z, X).
+    xz_intensity = np.transpose(volume[y_index]).copy()
+
+    default_x_um, z_um = xz_physical_pixel_sizes_um(ui)
+    x_downsample = max(1.0, float(getattr(ui, "mosaic_display_downsample", 1) or 1))
+    x_um = default_x_um * x_downsample
+
+    hsv_volume = payload.get("mosaic_hsv_volume", None)
+    xz_hsv = None
+    if hsv_volume is not None and np.size(hsv_volume) > 0:
+        hsv_volume = np.asarray(hsv_volume)
+        if hsv_volume.ndim == 4 and hsv_volume.shape[0] == volume.shape[0]:
+            xz_hsv = np.transpose(hsv_volume[y_index], (1, 0, 2)).copy()
+    _set_dual_xz_pixmaps(ui, xz_intensity, xz_hsv, x_um, z_um)
+    return True
+
+
+def render_cscan_xz_dual(ui, payload):
+    """Render XZplaneInt / XZplaneDyn from a single C-scan volume.
+
+    Uses the Y-plane selected by YBar (same slice the main XZplane shows), or
+    falls back to the payload's representative B-line arrays when no full volume
+    is available. Pixel pitches are the standard per-FOV XZ pitches.
+    """
+    if payload is None:
+        return False
+    x_um, z_um = xz_physical_pixel_sizes_um(ui)
+
+    volume = payload.get("volume", None)
+    if volume is not None and np.size(volume) > 0:
+        volume = np.asarray(volume)
+        if volume.ndim == 3:
+            y_index = cscan_display_y_index(ui, volume.shape[0])
+            xz_intensity = np.transpose(volume[y_index]).copy()
+            xz_hsv = None
+            hsv_volume = payload.get("hsv_volume", None)
+            if hsv_volume is not None and np.size(hsv_volume) > 0:
+                hsv_volume = np.asarray(hsv_volume)
+                if hsv_volume.ndim == 4 and hsv_volume.shape[0] == volume.shape[0]:
+                    xz_hsv = np.transpose(hsv_volume[y_index], (1, 0, 2)).copy()
+            return _set_dual_xz_pixmaps(ui, xz_intensity, xz_hsv, x_um, z_um)
+
+    # Fallback: the representative B-line arrays already in (Z, X) layout.
+    bline = payload.get("bline", None)
+    if bline is not None and np.size(bline) > 0:
+        xz_hsv = None
+        hsvb = payload.get("hsvb", None)
+        if hsvb is not None and np.size(hsvb) > 0:
+            xz_hsv = np.asarray(hsvb)
+        return _set_dual_xz_pixmaps(ui, bline, xz_hsv, x_um, z_um)
+    return False
+
+
+def _blank_oct_display_labels(ui):
+    """Blank every OCT image label except XYplaneInt (used by TD-enface mode)."""
+    for name in ("XZplane", "XZplaneInt", "XZplaneDyn", "XYplaneDyn"):
+        label = getattr(ui, name, None)
+        if label is None:
+            continue
+        try:
+            blank = QPixmap(max(10, label.width()), max(10, label.height()))
+            blank.fill(Qt.black)
+            label.setPixmap(blank)
+        except Exception:
+            pass
+
+
+def render_td_enface(ui, payload):
+    """TD-enface display: mean over the raw spectral axis -> XYplaneInt only.
+
+    ``payload['volume']`` is the raw (no-FFT) C-scan volume ``[Y, X, samples]``.
+    Each A-line's spectrum is averaged to a single scalar, giving a ``[Y, X]``
+    en-face intensity map shown on XYplaneInt with XZmin/XZmax contrast. All
+    other OCT display windows are cleared.
+    """
+    volume = payload.get("volume", None) if payload is not None else None
+    if volume is None or np.size(volume) == 0:
+        return False
+    volume = np.asarray(volume)
+    if volume.ndim != 3:
+        return False
+    enface = np.mean(volume.astype(np.float32, copy=False), axis=2)
+
+    _blank_oct_display_labels(ui)
+
+    mosaic_viewer = getattr(ui, "mosaic_viewer", None)
+    if mosaic_viewer is None:
+        return True
+    try:
+        x_step_size = float(ui.XStepSize.value())
+        y_step_size = float(ui.YStepSize.value())
+    except Exception:
+        x_step_size = y_step_size = 1.0
+    scale_control = getattr(ui, "scale", None)
+    downsample = max(1, int(scale_control.value())) if scale_control is not None else 1
+    try:
+        mosaic_viewer.set_image(
+            enface,
+            ui.XZmin.value(),
+            ui.XZmax.value(),
+            x_step_size,
+            y_step_size,
+            downsample=downsample,
+        )
+    except Exception as error:
+        print(f"TD-enface display failed: {error}")
+    return True
 
 
 def set_xy_projection(
@@ -611,8 +734,6 @@ def display_sample_overlay(ui, overlay_images, sample_id, fov_locations_getter):
         return
     if source.get('type') == 'usb_region':
         render_usb_region_overlay(ui, source, fov_locations_getter)
-    elif source.get('type') == 'mosaic_correction':
-        render_mosaic_correction_overlay(ui, source)
 
 
 def render_usb_region_overlay(ui, source, fov_locations_getter):
@@ -714,68 +835,6 @@ def render_usb_region_overlay(ui, source, fov_locations_getter):
     ui.MosaicLabel.setPixmap(final_buffer)
 
 
-def render_mosaic_correction_overlay(ui, source):
-    mos_img = np.ascontiguousarray(source['mos_img'])
-    orig_h, orig_w = mos_img.shape
-    px_w_mm = source['px_w_mm']
-    px_h_mm = source['px_h_mm']
-    xfov = source['XFOV']
-    yfov = source['YFOV']
-    mm_polygons = source['mm_polygons']
-    new_fov_locations = source['fov_locations']
-    mos_min_x, mos_min_y, _, _ = source['mosaic_bounds']
-    global_min_x, global_min_y, _, _ = source['global_bounds']
-    canvas_w_px, canvas_h_px = source['canvas_size_px']
-
-    label_w, label_h = mosaic_label_render_size(ui.MosaicLabel)
-    final_buffer = QPixmap(label_w, label_h)
-    final_buffer.fill(Qt.black)
-
-    painter = QPainter(final_buffer)
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.setRenderHint(QPainter.SmoothPixmapTransform)
-
-    scale_w = label_w / canvas_w_px
-    scale_h = label_h / canvas_h_px
-    sw, sh = int(canvas_w_px * scale_w), int(canvas_h_px * scale_h)
-    dx, dy = (label_w - sw) // 2, (label_h - sh) // 2
-
-    qt_mos = QImage(mos_img.tobytes(), orig_w, orig_h, orig_w, QImage.Format_Grayscale8).copy()
-    mos_pixmap = QPixmap.fromImage(qt_mos)
-
-    mos_offset_x = (mos_min_x - global_min_x) / px_w_mm
-    mos_offset_y = (mos_min_y - global_min_y) / px_h_mm
-    painter.drawPixmap(
-        int(dx + mos_offset_x * scale_w),
-        int(dy + mos_offset_y * scale_h),
-        int(orig_w * scale_w),
-        int(orig_h * scale_h),
-        mos_pixmap,
-    )
-
-    painter.setPen(QPen(QColor(0, 255, 0), 1))
-    for fov in new_fov_locations:
-        loc_y_fov = fov.y_length_mm if fov.y_length_mm is not None else yfov
-        tl_x = (fov.x - xfov / 2 - global_min_x) / px_w_mm
-        tl_y = (fov.y - loc_y_fov / 2 - global_min_y) / px_h_mm
-        br_x = (fov.x + xfov / 2 - global_min_x) / px_w_mm
-        br_y = (fov.y + loc_y_fov / 2 - global_min_y) / px_h_mm
-        painter.drawRect(QRectF(dx + tl_x * scale_w, dy + tl_y * scale_h, (br_x - tl_x) * scale_w, (br_y - tl_y) * scale_h))
-
-    painter.setPen(QPen(QColor(255, 0, 0), 2))
-    for mm_poly in mm_polygons:
-        for i in range(len(mm_poly)):
-            p1_mm, p2_mm = mm_poly[i], mm_poly[(i + 1) % len(mm_poly)]
-            x1_ui = dx + ((p1_mm[0] - global_min_x) / px_w_mm) * scale_w
-            y1_ui = dy + ((p1_mm[1] - global_min_y) / px_h_mm) * scale_h
-            x2_ui = dx + ((p2_mm[0] - global_min_x) / px_w_mm) * scale_w
-            y2_ui = dy + ((p2_mm[1] - global_min_y) / px_h_mm) * scale_h
-            painter.drawLine(int(x1_ui), int(y1_ui), int(x2_ui), int(y2_ui))
-
-    painter.end()
-    ui.MosaicLabel.setPixmap(final_buffer)
-
-
 def render_aodo_waveform_ready(ui, payload):
     ao_waveform = payload.get("ao_waveform", None)
     do_waveform = payload.get("do_waveform", None)
@@ -849,6 +908,14 @@ def render_cscan_ready(ui, payload):
                 ),
             )
 
+    # Keep the small structure/dynamic XZ panes (XZplaneInt / XZplaneDyn)
+    # populated with the same slice the main XZ view shows, not only when the
+    # user drags YBar.
+    try:
+        render_cscan_xz_dual(ui, payload)
+    except Exception as error:
+        print(f"XZplane dual render failed: {error}")
+
     set_xy_projection(
         ui,
         aip,
@@ -892,3 +959,10 @@ def render_mosaic_ready(ui, payload):
         payload.get("mosaic_hsv_volume", None),
         volume_downsample=float(getattr(ui, "mosaic_display_downsample", 1) or 1),
     )
+    # Keep the small structure/dynamic XZ panes populated with the mosaic Y
+    # slice selected by MosaicYbar (also on every mosaic-ready event, not only
+    # when the user drags the scrollbar).
+    try:
+        render_mosaic_xz_slices(ui, payload)
+    except Exception as error:
+        print(f"Mosaic XZ slices render failed: {error}")

@@ -67,8 +67,8 @@ DAHENG_SPECTRAL_DIMENSION = "horizontal"
 # Packed conversion and transpose-write are the long pole for long dynamic scans.
 # Increase this cautiously: block completion is still emitted in frame order below.
 DAHENG_CONSUMER_WORKERS = 4
-DAHENG_BUFFER_TIMEOUT_MS = 200
-DAHENG_MAX_CONSECUTIVE_TIMEOUTS = 20
+DAHENG_BUFFER_TIMEOUT_MS = 100
+DAHENG_MAX_CONSECUTIVE_TIMEOUTS = 10
 
 
 def daheng_spectral_axis():

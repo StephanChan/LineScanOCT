@@ -51,8 +51,8 @@ OBJECTIVE_SPECS = {
     ),
     "20X": ObjectiveSpec(
         name="20X",
-        angle_to_mm_ratio=2.094 / 1.19 / 4* 0.9,
-        magnification=20.0 * 1.05,
+        angle_to_mm_ratio=2.094 / 1.5 / 4,
+        magnification=5.4 * 2,
         max_y_fov_mm=0.5,
     ),
 }
