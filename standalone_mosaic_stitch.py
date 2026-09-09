@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
 """Standalone original-resolution static mosaic stitcher.
 
-Stitches per-tile static C-scan TIFF volumes into one
-``stitched-Y<y>-X<x>-Z<z>.tif`` mosaic at ORIGINAL resolution, using the same
-layout/orientation rules as ``DynamicPostprocessing.write_stitched_static_outputs``
-but WITHOUT allocating the whole mosaic volume in RAM.
+Tile files saved by the OCT software store one TIFF page per Y row: page
+``k`` has shape ``[X, Z]`` (X lines by Z depths), and the number of pages
+equals Y pixels. ``read_volume_stack`` reconstructs each tile as
+``[Y, X, Z]``.
 
-Strategy: each tile TIFF holds one XY page per depth slice. For every depth z
-we allocate only ONE mosaic XY plane (float32), place every tile's page z into
-its grid cell, append the plane to the output BigTIFF, then move to z+1. Peak
-RAM is about one mosaic plane + one tile page.
+This script builds the same layout the app's in-memory/offline stitcher
+produces (tile grid from tile_positions.json, both axes reversed, no tile
+rotation) WITHOUT allocating the whole mosaic volume in RAM. It creates the
+output directly on disk as a memory-mapped BigTIFF of shape
+``[Y_total, X_total, Z]`` and copies one tile volume into it at a time, so peak
+RAM is roughly one tile volume (~160 MB), independent of mosaic size.
 
 Usage:
     python standalone_mosaic_stitch.py "E:\\IOCTData\\BJRcellcluster\\20XNomiror\\sampleID-1\\Time-2"
@@ -38,14 +40,22 @@ def load_manifest(folder):
     records = manifest.get("tiles")
     if not isinstance(records, list) or not records:
         sys.exit("tile_positions.json contains no tile records.")
-    # Acquisition order = tile file order. Keep manifest order so overlap
-    # handling (later tile wins) matches the in-app offline stitcher.
     return records
 
 
 def stitched_output_path(folder, y_px, x_px, z_px):
     filename = "stitched-Y{0}-X{1}-Z{2}.tif".format(y_px, x_px, z_px)
     return os.path.join(folder, filename)
+
+
+def read_tile_volume(path):
+    """Read a tile TIFF back as one [Y, X, Z] volume (same logic as the app)."""
+    with TIFF.TiffFile(path) as tif:
+        if len(tif.pages) <= 1:
+            return tif.pages[0].asarray()
+        if len(tif.series) == len(tif.pages):
+            return np.stack([page.asarray() for page in tif.pages])
+        return tif.series[0].asarray()
 def main():
     parser = argparse.ArgumentParser(
         description="Offline original-resolution static mosaic stitching."
@@ -132,14 +142,37 @@ def main():
     print(
         "Input        : {0}\n".format(folder)
         + "Tiles        : {0}\n".format(len(entries))
-        + "Grid         : {0} cols x {1} rows (some cells may be empty)\n".format(num_cols, num_rows)
-        + "Tile size    : {0} x {1} px, {2} depth slices\n".format(fh_px, fw_px, z_px)
+        + "Grid         : {0} cols x {1} rows\n".format(num_cols, num_rows)
+        + "Tile size    : {0} (Y) x {1} (X) x {2} (Z)\n".format(fh_px, fw_px, z_px)
         + "Mosaic size  : {0} (Y) x {1} (X) x {2} (Z)\n".format(mosaic_y, mosaic_x, z_px)
         + "Output       : {0}".format(out_path)
     )
-    # ---- disk-space estimate (assume float32 like the tile volumes) --------
-    plane_bytes = mosaic_y * mosaic_x * 4
-    total_bytes = plane_bytes * z_px
+    # ---- disk-space estimate from the first tile's dtype -------------------
+    with TIFF.TiffFile(placements[0][0]) as probe:
+        actual_pages = len(probe.pages)
+        print("First tile pages (Y rows): {0} (manifest y_pixels={1}).".format(
+            actual_pages, fh_px))
+        if actual_pages < fh_px:
+            print("WARNING: tile has fewer Y pages than the manifest expects.")
+            fh_px = actual_pages
+            mosaic_y = num_rows * fh_px
+        if actual_pages <= 0:
+            sys.exit("No TIFF pages found in the first tile.")
+        page0 = probe.pages[0].asarray()
+        page_shape = tuple(int(s) for s in page0.shape)
+        print("First tile page shape: {0} (expected {1}).".format(
+            page_shape, (fw_px, z_px)))
+        if page_shape != (fw_px, z_px):
+            sys.exit(
+                "Tile page shape {0} does not match expected [X={1}, Z={2}]. "
+                "Aborting to avoid producing a misaligned mosaic.".format(
+                    page_shape, fw_px, z_px)
+            )
+        dtype = page0.dtype
+        del page0
+
+    plane_bytes = mosaic_x * z_px * int(dtype.itemsize)
+    total_bytes = plane_bytes * mosaic_y
     free_bytes = shutil.disk_usage(out_folder).free
     print(
         "Estimated output size : {0:.2f} GB\n".format(total_bytes / 1e9)
@@ -151,53 +184,49 @@ def main():
         if not args.force:
             sys.exit("Output already exists: {0} (use --force to overwrite).".format(out_path))
         print("Overwriting existing output (--force).")
-
+        try:
+            os.remove(out_path)
+        except PermissionError:
+            sys.exit(
+                "Cannot overwrite {0}: the file is open/locked by another program "
+                "(e.g. an image viewer or a previous stitcher run still running). "
+                "Close it and re-run.".format(out_path)
+            )
     os.makedirs(out_folder, exist_ok=True)
 
-    # ---- sanity check the first tile's page count / dtype -------------------
-    with TIFF.TiffFile(placements[0][0]) as probe:
-        actual_pages = len(probe.pages)
-        if actual_pages < z_px:
-            print(
-                "WARNING: first tile has {0} pages, manifest says {1}; "
-                "using the actual page count.".format(actual_pages, z_px)
-            )
-            z_px = actual_pages
-        if z_px <= 0:
-            sys.exit("No TIFF pages found in the first tile.")
-        page0 = probe.pages[0].asarray()
-        dtype = page0.dtype
-        itemsize = int(dtype.itemsize)
-        del page0
-
-    print("Opening tile files...")
-    handles = []
+    print("Stitching tiles (memory-mapped BigTIFF output)...")
+    stitched = TIFF.memmap(
+        out_path,
+        shape=(mosaic_y, mosaic_x, z_px),
+        dtype=dtype,
+        bigtiff=True,
+    )
     try:
-        for path, *_unused in placements:
-            handles.append(TIFF.TiffFile(path))
-        if len(handles) != len(placements):
-            sys.exit("Internal handle/placement mismatch.")
-
-        # ---- stitch one full XY mosaic plane per depth slice ----------------
-        for z in range(z_px):
-            plane = np.zeros((mosaic_y, mosaic_x), dtype=dtype)
-            for handle, (_path, y1, y2, x1, x2) in zip(handles, placements):
-                page = np.asarray(handle.pages[z].asarray(), dtype=dtype)
-                if page.shape != (fh_px, fw_px):
-                    cy = min(page.shape[0], y2 - y1)
-                    cx = min(page.shape[1], x2 - x1)
-                    plane[y1:y1 + cy, x1:x1 + cx] = page[:cy, :cx]
-                else:
-                    plane[y1:y2, x1:x2] = page
-                del page
-
-            TIFF.imwrite(out_path, plane, append=(z > 0), bigtiff=True)
-            if (z + 1) % 5 == 0 or z + 1 == z_px:
-                print("  stitched depth slice {0}/{1}".format(z + 1, z_px))
-            del plane
+        for idx, (path, y1, y2, x1, x2) in enumerate(placements):
+            volume = read_tile_volume(path)
+            if volume.ndim < 3:
+                volume = volume[np.newaxis, ...]
+            if volume.shape != (fh_px, fw_px, z_px):
+                print(
+                    "Skipping tile {0}: shape {1}, expected {(fh_px, fw_px, z_px)}.".format(
+                        os.path.basename(path), tuple(volume.shape)
+                    )
+                )
+                continue
+            stitched[y1:y2, x1:x2, :] = volume
+            del volume
+            if (idx + 1) % 5 == 0 or idx + 1 == len(placements):
+                print("  placed tile {0}/{1}".format(idx + 1, len(placements)))
+        stitched.flush()
     finally:
-        for handle in handles:
-            handle.close()
+        try:
+            stitched.flush()
+        except Exception:
+            pass
+        try:
+            del stitched
+        except Exception:
+            pass
 
     print("Done. Stitched mosaic written to:")
     print("  {0}".format(out_path))

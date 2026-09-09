@@ -386,6 +386,12 @@ def process_next_idle_dynamic_folder(weaver, deadline):
 
 
 def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
+    """Stitch offline Dyn/Mean per-tile volumes into memory-mapped BigTIFFs.
+
+    The Dyn and Mean stitched outputs are created directly on disk with
+    ``tifffile.memmap`` (same RAM-cheap strategy as the static stitcher); only
+    one tile's Dyn + Mean volumes are held in memory at a time.
+    """
     if not OFFLINE_DYNAMIC_PROCESSING_ENABLED:
         return False
     sample_locations = weaver.sample_fov_locations(sample_id)
@@ -394,8 +400,9 @@ def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
     # Stitched mosaic is saved at ORIGINAL resolution (no in-plane downsampling).
     downsample = 1
 
-    tile_dynamic_volumes = {}
-    tile_mean_volumes = {}
+    # Locate every Dyn/Mean tile file first so we never create partial outputs
+    # when a tile is missing.
+    tile_paths = {}
     for tile_id in range(1, tile_count + 1):
         dyn_path = None
         mean_path = None
@@ -409,21 +416,36 @@ def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
                 break
         if dyn_path is None or mean_path is None:
             return False
-        tile_dynamic_volumes[tile_id] = read_volume_stack(dyn_path)
-        tile_mean_volumes[tile_id] = read_volume_stack(mean_path)
-        if downsample > 1:
-            tile_dynamic_volumes[tile_id] = block_mean_xy(
-                tile_dynamic_volumes[tile_id], downsample
-            )
-            tile_mean_volumes[tile_id] = block_mean_xy(
-                tile_mean_volumes[tile_id], downsample
-            )
+        tile_paths[tile_id] = (dyn_path, mean_path)
 
-    first_tile = tile_dynamic_volumes[1]
-    fh_px, fw_px, z_px = first_tile.shape
+    # Volume geometry from the first tile (Dyn and Mean must agree).
+    first_dyn_path, first_mean_path = tile_paths[1]
+    first_dyn = read_volume_stack(first_dyn_path)
+    if first_dyn.ndim < 3:
+        first_dyn = first_dyn[np.newaxis, ...]
+    if downsample > 1:
+        first_dyn = block_mean_xy(first_dyn, downsample)
+    first_mean = read_volume_stack(first_mean_path)
+    if first_mean.ndim < 3:
+        first_mean = first_mean[np.newaxis, ...]
+    if downsample > 1:
+        first_mean = block_mean_xy(first_mean, downsample)
+    if first_dyn.shape != first_mean.shape:
+        print(
+            "Dynamic stitch: first Dyn/Mean tile shapes differ "
+            f"({first_dyn.shape} vs {first_mean.shape}); aborting."
+        )
+        return False
+    fh_px, fw_px, z_px = first_dyn.shape
+    dyn_dtype = first_dyn.dtype
+    mean_dtype = first_mean.dtype
+    del first_dyn, first_mean
+
     fw_mm = float(weaver.ui.XLength.value())
     first_y_length = sample_locations[0].y_length_mm
-    fh_mm = float(first_y_length if first_y_length is not None else weaver.ui.YLength.value())
+    fh_mm = float(
+        first_y_length if first_y_length is not None else weaver.ui.YLength.value()
+    )
 
     xs = [loc.x for loc in sample_locations]
     ys = [loc.y for loc in sample_locations]
@@ -433,38 +455,77 @@ def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
     num_rows = int(round((max_y - min_y) / fh_mm)) + 1
 
     stitched_shape = (num_rows * fh_px, num_cols * fw_px, z_px)
-    stitched_dyn = np.zeros(stitched_shape, dtype=np.float32)
-    stitched_mean = np.zeros(stitched_shape, dtype=np.float32)
-
-    for tile_id, loc in enumerate(sample_locations, start=1):
-        if tile_id not in tile_dynamic_volumes or tile_id not in tile_mean_volumes:
-            continue
-        col_idx = int(round((loc.x - min_x) / fw_mm))
-        row_idx = int(round((loc.y - min_y) / fh_mm))
-        # Match the live mosaic stitch order: reverse both axes (right-to-left,
-        # top-to-bottom) without rotating the tile pixels.
-        col_idx = num_cols - 1 - col_idx
-        row_idx = num_rows - 1 - row_idx
-        y1 = row_idx * fh_px
-        y2 = y1 + fh_px
-        x1 = col_idx * fw_px
-        x2 = x1 + fw_px
-        stitched_dyn[y1:y2, x1:x2, :] = tile_dynamic_volumes[tile_id]
-        stitched_mean[y1:y2, x1:x2, :] = tile_mean_volumes[tile_id]
-
-    TIFF.imwrite(
-        stitched_dynamic_output_path(folder_path, stitched_dyn.shape),
-        stitched_dyn,
-        append=False,
+    dyn_out = stitched_dynamic_output_path(folder_path, stitched_shape)
+    mean_out = stitched_mean_output_path(folder_path, stitched_shape)
+    print(
+        f"Dynamic mosaic stitch: {len(tile_paths)} tile(s) -> "
+        f"Dyn/Mean shape={stitched_shape[0]}x{stitched_shape[1]}x{stitched_shape[2]}."
     )
-    TIFF.imwrite(
-        stitched_mean_output_path(folder_path, stitched_mean.shape),
-        stitched_mean,
-        append=False,
+
+    stitched_dyn = TIFF.memmap(
+        dyn_out, shape=stitched_shape, dtype=dyn_dtype, bigtiff=True
     )
+    stitched_mean = TIFF.memmap(
+        mean_out, shape=stitched_shape, dtype=mean_dtype, bigtiff=True
+    )
+    try:
+        for tile_id, loc in enumerate(sample_locations, start=1):
+            if tile_id not in tile_paths:
+                continue
+            dyn_path, mean_path = tile_paths[tile_id]
+
+            dyn_volume = read_volume_stack(dyn_path)
+            if dyn_volume.ndim < 3:
+                dyn_volume = dyn_volume[np.newaxis, ...]
+            if downsample > 1:
+                dyn_volume = block_mean_xy(dyn_volume, downsample)
+
+            mean_volume = read_volume_stack(mean_path)
+            if mean_volume.ndim < 3:
+                mean_volume = mean_volume[np.newaxis, ...]
+            if downsample > 1:
+                mean_volume = block_mean_xy(mean_volume, downsample)
+
+            if dyn_volume.shape != (fh_px, fw_px, z_px) or mean_volume.shape != (
+                fh_px,
+                fw_px,
+                z_px,
+            ):
+                print(
+                    f"Dynamic stitch: skipping tile-{tile_id} "
+                    f"(Dyn {dyn_volume.shape}, Mean {mean_volume.shape})."
+                )
+                del dyn_volume, mean_volume
+                continue
+
+            col_idx = int(round((loc.x - min_x) / fw_mm))
+            row_idx = int(round((loc.y - min_y) / fh_mm))
+            # Match the live mosaic stitch order: reverse both axes (right-to-left,
+            # top-to-bottom) without rotating the tile pixels.
+            col_idx = num_cols - 1 - col_idx
+            row_idx = num_rows - 1 - row_idx
+            y1 = row_idx * fh_px
+            y2 = y1 + fh_px
+            x1 = col_idx * fw_px
+            x2 = x1 + fw_px
+            stitched_dyn[y1:y2, x1:x2, :] = dyn_volume
+            stitched_mean[y1:y2, x1:x2, :] = mean_volume
+            del dyn_volume, mean_volume
+            if tile_id % 5 == 0 or tile_id == len(sample_locations):
+                print(f"  placed tile {tile_id}/{len(sample_locations)}")
+        stitched_dyn.flush()
+        stitched_mean.flush()
+    finally:
+        for mapped in (stitched_dyn, stitched_mean):
+            try:
+                mapped.flush()
+            except Exception:
+                pass
+            try:
+                del mapped
+            except Exception:
+                pass
     return True
-
-
 def write_stitched_static_outputs(
     weaver, sample_id, folder_path, tile_count, manifest_records=None
 ):
@@ -479,6 +540,10 @@ def write_stitched_static_outputs(
     ``manifest_records`` is given, in which case each record's
     ``stage_x_mm``/``stage_y_mm`` and ``tile_filename`` (from
     ``tile_positions.json``) are used as the source of truth.
+
+    The output file is created as a memory-mapped BigTIFF so the whole mosaic
+    volume is never held in RAM; peak memory is roughly one tile volume plus a
+    single Y-X page of the output.
     """
     if not OFFLINE_DYNAMIC_PROCESSING_ENABLED:
         return False
@@ -528,61 +593,89 @@ def write_stitched_static_outputs(
                 return os.path.join(folder_path, filename)
         return None
 
-    first_path = entries[0][3] if entries[0][3] is not None else _tile_path(1)
-    if first_path is None:
+    # Resolve every tile's file and skip missing ones (like the in-memory
+    # version did for non-manifest runs).
+    resolved = []
+    for tile_id, (x, y, _y_len, path) in enumerate(entries, start=1):
+        if path is None:
+            path = _tile_path(tile_id)
+        if path is None or not os.path.isfile(path):
+            continue
+        resolved.append((float(x), float(y), path))
+    if not resolved:
         return False
-    first_volume = read_volume_stack(first_path)
+
+    # Tile volume geometry (first available tile). read_volume_stack returns
+    # the full [Y, X, Z] tile; only one tile is kept in memory at a time.
+    first_volume = read_volume_stack(resolved[0][2])
     if first_volume.ndim < 3:
         first_volume = first_volume[np.newaxis, ...]
     if downsample > 1:
         first_volume = block_mean_xy(first_volume, downsample)
     fh_px, fw_px, z_px = first_volume.shape
+    first_dtype = first_volume.dtype
+    del first_volume
 
-    xs = [entry[0] for entry in entries]
-    ys = [entry[1] for entry in entries]
+    xs = [entry[0] for entry in resolved]
+    ys = [entry[1] for entry in resolved]
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
     num_cols = int(round((max_x - min_x) / fw_mm)) + 1
     num_rows = int(round((max_y - min_y) / fh_mm)) + 1
 
-    stitched = np.zeros(
-        (num_rows * fh_px, num_cols * fw_px, z_px),
-        dtype=np.float32,
+    stitched_shape = (num_rows * fh_px, num_cols * fw_px, z_px)
+    out_path = stitched_static_output_path(folder_path, stitched_shape)
+    print(
+        f"Static mosaic stitch: {len(resolved)} tile(s) -> "
+        f"shape={stitched_shape[0]}x{stitched_shape[1]}x{stitched_shape[2]} "
+        f"({stitched_shape[0]*stitched_shape[1]*stitched_shape[2]*np.dtype(first_dtype).itemsize/1e9:.2f} GB)."
     )
 
-    for tile_id, (x, y, _y_len, path) in enumerate(entries, start=1):
-        if tile_id == 1:
-            volume = first_volume
-        else:
-            if path is None:
-                path = _tile_path(tile_id)
-            if path is None:
-                continue
+    # Create the empty mosaic directly on disk as a memory-mapped BigTIFF.
+    stitched = TIFF.memmap(
+        out_path,
+        shape=stitched_shape,
+        dtype=first_dtype,
+        bigtiff=True,
+    )
+    try:
+        for idx, (x, y, path) in enumerate(resolved):
             volume = read_volume_stack(path)
             if volume.ndim < 3:
                 volume = volume[np.newaxis, ...]
             if downsample > 1:
                 volume = block_mean_xy(volume, downsample)
-        col_idx = int(round((x - min_x) / fw_mm))
-        row_idx = int(round((y - min_y) / fh_mm))
-        # Match the live mosaic stitch order: reverse both axes (right-to-left,
-        # top-to-bottom) without rotating the tile pixels.
-        col_idx = num_cols - 1 - col_idx
-        row_idx = num_rows - 1 - row_idx
-        y1 = row_idx * fh_px
-        y2 = y1 + fh_px
-        x1 = col_idx * fw_px
-        x2 = x1 + fw_px
-        stitched[y1:y2, x1:x2, :] = volume
-
-    TIFF.imwrite(
-        stitched_static_output_path(folder_path, stitched.shape),
-        stitched,
-        append=False,
-    )
+            if volume.shape != (fh_px, fw_px, z_px):
+                print(
+                    f"Static mosaic stitch: skipping tile {os.path.basename(path)} "
+                    f"(shape {volume.shape}, expected {(fh_px, fw_px, z_px)})."
+                )
+                continue
+            col_idx = int(round((x - min_x) / fw_mm))
+            row_idx = int(round((y - min_y) / fh_mm))
+            # Match the live mosaic stitch order: reverse both axes
+            # (right-to-left, top-to-bottom) without rotating the tile pixels.
+            col_idx = num_cols - 1 - col_idx
+            row_idx = num_rows - 1 - row_idx
+            y1 = row_idx * fh_px
+            y2 = y1 + fh_px
+            x1 = col_idx * fw_px
+            x2 = x1 + fw_px
+            stitched[y1:y2, x1:x2, :] = volume
+            del volume
+            if (idx + 1) % 5 == 0 or idx + 1 == len(resolved):
+                print(f"  placed tile {idx + 1}/{len(resolved)}")
+        stitched.flush()
+    finally:
+        try:
+            stitched.flush()
+        except Exception:
+            pass
+        try:
+            del stitched
+        except Exception:
+            pass
     return True
-
-
 def process_pending_dynamic_folders(weaver, label="post-scan dynamic stitching", deadline=None):
     """Run the offline tile stitching once for every pending sample/time folder.
 

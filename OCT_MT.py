@@ -48,6 +48,7 @@ from SampleLocator import (
     capture_usb_frame_averaged,
     default_usb_mosaic_calibration,
 )
+from usb_training_dataset import export_sample_locator_dataset
 from Display_rendering import (
     render_aodo_waveform_ready,
     render_aline_ready,
@@ -1125,6 +1126,16 @@ class GUI(MainWindow):
             self.ui.sampleSelector.clear()
             self.ui.sampleSelector.addItem("No Samples Found")
             return
+
+        # Successful locator run: export USB frames + drawn ROIs for AI training.
+        try:
+            export_sample_locator_dataset(
+                all_tile_records,
+                all_roi_records,
+                calibration=self._current_usb_calibration(),
+            )
+        except Exception as error:
+            print(f"Could not export USB training data: {error}")
 
         FOV_locations = all_fov_locations
         sample_centers = all_sample_centers
