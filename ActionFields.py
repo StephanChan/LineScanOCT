@@ -68,10 +68,18 @@ class DActionField:
 
 
 class DbackActionField:
-    def __init__(self, memory_slot, error=None):
+    def __init__(self, memory_slot, error=None, warning=None, frames_received=None):
         super().__init__()
         self.memory_slot = memory_slot
         self.error = error
+        # Non-fatal acquisition note (e.g. a partially filled tile kept after a
+        # camera timeout). The Weaver logs it and still processes/saves the tile,
+        # unlike `error`, which aborts the acquisition.
+        self.warning = warning
+        # Number of B-lines actually written into this slot when the acquisition
+        # stopped early (None = unknown / complete tile). The Weaver fills the
+        # remaining trailing rows with the background spectrum before processing.
+        self.frames_received = frames_received
 
 
 class EXITField:

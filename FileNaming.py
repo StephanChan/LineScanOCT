@@ -47,6 +47,19 @@ def tile_dynamic_rgb_volume_filename(tile_num, shape):
     return f"tile-{tile_num}-DynRGB-Y{ypix}-X{xpix}-Z{zpix}.tif"
 
 
+def tile_dynamic_hsv_volume_filenames(tile_num, shape):
+    """``(H, S, V)`` file names of the dynamic colour volume of one tile.
+
+    The dynamic colour product is stored as three float16 volumes (hue, saturation,
+    value) instead of a rendered uint8 RGB, so the shading gain of the V channel can
+    still be applied after the fact and the RGB is rendered once, after stitching.
+    The names match ``shading_correction.dynamic_channel_names``.
+    """
+    ypix, xpix, zpix = _shape3(shape)
+    base = f"tile-{tile_num}-Dyn{{0}}-Y{ypix}-X{xpix}-Z{zpix}.tif"
+    return base.format("H"), base.format("S"), base.format("V")
+
+
 def tile_mean_volume_filename(tile_num, shape):
     ypix, xpix, zpix = _shape3(shape)
     return f"tile-{tile_num}-Mean-Y{ypix}-X{xpix}-Z{zpix}.tif"
@@ -244,6 +257,18 @@ class FileNaming:
             return os.path.join(base_dir, tile_dynamic_volume_filename(self.tile_num, shape))
         if kind == "tile_dyn_rgb":
             return os.path.join(base_dir, tile_dynamic_rgb_volume_filename(self.tile_num, shape))
+        if kind == "tile_dyn_h":
+            return os.path.join(
+                base_dir, tile_dynamic_hsv_volume_filenames(self.tile_num, shape)[0]
+            )
+        if kind == "tile_dyn_s":
+            return os.path.join(
+                base_dir, tile_dynamic_hsv_volume_filenames(self.tile_num, shape)[1]
+            )
+        if kind == "tile_dyn_v":
+            return os.path.join(
+                base_dir, tile_dynamic_hsv_volume_filenames(self.tile_num, shape)[2]
+            )
         if kind == "tile_mean":
             return os.path.join(base_dir, tile_mean_volume_filename(self.tile_num, shape))
 

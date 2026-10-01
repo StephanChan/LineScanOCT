@@ -10,17 +10,25 @@ import tifffile as TIFF
 
 # Spyder/default run settings. Edit these values, then press Run.
 DEFAULT_INPUT_PATH = (
-    r"E:\IOCTData\vibration_test260824\100Cscans\TranditionCscan\Cscan-1-Bline-20-Yrpt100-X1104-Z182.tif"
+    r"E:\IOCTData\BJRcellcluster\20XNomiror\paperDynamicNoise\ref arm\Bline-3-Yrpt100-X1016-Z295.tif"
 )
 DEFAULT_OUTPUT_DIR = None  # None saves results beside the input stack.
 DEFAULT_NOISE_INPUT_PATH =(
-    r"E:\IOCTData\HighResData\50Hz_2s\noise\Wout_sub_background\AllOn\070726\Bline-9-Yrpt200-X1104-Z109.tif"
+    r"E:\IOCTData\BJRcellcluster\20XNomiror\paperDynamicNoise\ref arm\noise\Bline-6-Yrpt100-X1016-Z295.tif"
 )  # Set a noise-only saved AMP+PHASE TIFF here.
 DEFAULT_FRAME_RATE_HZ = 40.0
 DEFAULT_CENTER_WAVELENGTH_NM = 840.0
 DEFAULT_REFRACTIVE_INDEX = 1.0
 DEFAULT_ANALYSIS_START_DEPTH = 15
 DEFAULT_NOISE_ANALYSIS_START_DEPTH = 50
+# --- sigma_q noise-ROI selection ---
+# When True, a popup window lets the user draw the noise region as a rectangle
+# on the noise-stack mean-amplitude image; sigma_q is then estimated from the
+# complex samples inside that ROI instead of the hard-coded depth range above.
+# Set DEFAULT_PRESET_NOISE_ROI to skip the window, or set this False to fall back
+# to the depth-range behavior (DEFAULT_NOISE_ANALYSIS_START_DEPTH..end).
+DEFAULT_ENABLE_NOISE_ROI_SELECTION = True
+DEFAULT_PRESET_NOISE_ROI = None  # Optional (x0, x1, z0, z1) pixel tuple.
 # Number of leading frames to discard from the SIGNAL stack before the
 # phase-noise calculation (e.g. settling/warm-up frames). The noise stack is
 # always used in full. Set to 0 to keep every signal frame.
@@ -979,6 +987,76 @@ def select_one_rect_roi(display_image, title, roi_label="ROI", color="green"):
     return tuple(int(round(float(v))) for v in state["roi"])
 
 
+def noise_roi_display_image(noise_complex):
+    """Log-scaled mean-amplitude image [x, z] used for noise-ROI selection."""
+    mean_amplitude = np.mean(np.abs(noise_complex), axis=0, dtype=np.float32)
+    return np.log1p(mean_amplitude)
+
+
+def plot_noise_roi_selection(display_image, roi, output_path, show_figures=False):
+    """Save a QC figure of the noise-stack image with the selected ROI."""
+    fig, ax = plt.subplots(figsize=(10.0, 6.5))
+    ax.imshow(np.asarray(display_image).T, aspect="auto", origin="lower", cmap="gray")
+    x0, x1, z0, z1 = [float(v) for v in roi]
+    ax.add_patch(
+        plt.Rectangle(
+            (x0, z0),
+            max(1.0, x1 - x0),
+            max(1.0, z1 - z0),
+            fill=False,
+            edgecolor="red",
+            linewidth=2.5,
+        )
+    )
+    ax.set_title("Noise ROI used for sigma_q", fontsize=12)
+    ax.set_xlabel("X pixel")
+    ax.set_ylabel("Depth pixel")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=DEFAULT_SAVE_DPI)
+    print(f"Saved figure: {output_path}")
+    if show_figures:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+def resolve_noise_roi(noise_complex, output_base=None, show_figures=False):
+    """Return (roi, display_image, source) for the sigma_q noise region.
+
+    Order of precedence:
+      1. DEFAULT_PRESET_NOISE_ROI (no popup),
+      2. interactive popup when DEFAULT_ENABLE_NOISE_ROI_SELECTION is True,
+      3. ``roi = None`` so the caller can fall back to the depth-range method.
+    """
+    display_image = noise_roi_display_image(noise_complex)
+    if DEFAULT_PRESET_NOISE_ROI is not None:
+        roi = tuple(int(round(float(v))) for v in DEFAULT_PRESET_NOISE_ROI)
+        if output_base:
+            plot_noise_roi_selection(
+                display_image,
+                roi,
+                f"{output_base}_noise_roi_selection.png",
+                show_figures=show_figures,
+            )
+        return roi, display_image, "preset"
+    if DEFAULT_ENABLE_NOISE_ROI_SELECTION:
+        roi = select_one_rect_roi(
+            display_image,
+            "Draw NOISE ROI on the noise-stack mean amplitude (red)",
+            roi_label="NOISE",
+            color="red",
+        )
+        if output_base:
+            plot_noise_roi_selection(
+                display_image,
+                roi,
+                f"{output_base}_noise_roi_selection.png",
+                show_figures=show_figures,
+            )
+        return roi, display_image, "interactive"
+    return None, display_image, "depth_range"
+
+
 def compute_roi_cnr_metrics(
     signal_complex_std_map,
     signal_amplitude_std_map,
@@ -1450,27 +1528,61 @@ def main():
         noise_complex = reconstruct_complex_from_amp_phase_stack(noise_saved_stack)
         del noise_saved_stack
 
-        noise_analysis_stop_depth = full_depth_stop(
-            noise_complex.shape[2],
-            analysis_start_depth=DEFAULT_NOISE_ANALYSIS_START_DEPTH,
+        noise_roi, _noise_roi_display, noise_roi_source = resolve_noise_roi(
+            noise_complex,
+            output_base=output_base,
+            show_figures=DEFAULT_SHOW_FIGURES,
         )
-        noise_start_depth = int(np.clip(DEFAULT_NOISE_ANALYSIS_START_DEPTH, 0, max(0, noise_complex.shape[2] - 1)))
-        if noise_analysis_stop_depth <= noise_start_depth:
-            raise ValueError(
-                "Noise analysis region is empty. "
-                f"DEFAULT_NOISE_ANALYSIS_START_DEPTH={DEFAULT_NOISE_ANALYSIS_START_DEPTH} "
-                f"is too deep for noise stack depth {noise_complex.shape[2]}."
+        if noise_roi is not None:
+            noise_mask = rect_roi_mask(noise_roi, noise_complex.shape[1:])
+            noise_samples = noise_complex[:, noise_mask]
+            if noise_samples.shape[1] == 0:
+                raise ValueError(
+                    f"Selected noise ROI {tuple(noise_roi)} contains no pixels."
+                )
+            print(
+                "Noise ROI (x0, x1, z0, z1): "
+                f"{tuple(int(v) for v in noise_roi)} ({noise_roi_source}, "
+                f"{noise_samples.shape[1]} pixel(s))."
             )
-        noise_distribution = summarize_noise_distribution(
-            noise_complex[:, :, noise_start_depth:noise_analysis_stop_depth]
-        )
-        external_sigma_q = estimate_sigma_q_from_complex_samples(
-            noise_complex[:, :, noise_start_depth:noise_analysis_stop_depth].reshape(noise_complex.shape[0], -1)
-        )
-        print(
-            "Measured external sigma_q from noise stack XZ range "
-            f"({noise_start_depth} <= depth < {noise_analysis_stop_depth}): {external_sigma_q:.6g}"
-        )
+            noise_distribution = summarize_noise_distribution(noise_samples)
+            external_sigma_q = estimate_sigma_q_from_complex_samples(noise_samples)
+            print(
+                "Measured external sigma_q from selected noise ROI "
+                f"({noise_roi_source}): {external_sigma_q:.6g}"
+            )
+        else:
+            # Fallback: hard-coded depth-range method (kept for headless runs).
+            noise_analysis_stop_depth = full_depth_stop(
+                noise_complex.shape[2],
+                analysis_start_depth=DEFAULT_NOISE_ANALYSIS_START_DEPTH,
+            )
+            noise_start_depth = int(
+                np.clip(
+                    DEFAULT_NOISE_ANALYSIS_START_DEPTH,
+                    0,
+                    max(0, noise_complex.shape[2] - 1),
+                )
+            )
+            if noise_analysis_stop_depth <= noise_start_depth:
+                raise ValueError(
+                    "Noise analysis region is empty. "
+                    f"DEFAULT_NOISE_ANALYSIS_START_DEPTH={DEFAULT_NOISE_ANALYSIS_START_DEPTH} "
+                    f"is too deep for noise stack depth {noise_complex.shape[2]}."
+                )
+            noise_distribution = summarize_noise_distribution(
+                noise_complex[:, :, noise_start_depth:noise_analysis_stop_depth]
+            )
+            external_sigma_q = estimate_sigma_q_from_complex_samples(
+                noise_complex[:, :, noise_start_depth:noise_analysis_stop_depth].reshape(
+                    noise_complex.shape[0], -1
+                )
+            )
+            print(
+                "Measured external sigma_q from noise stack XZ range "
+                f"({noise_start_depth} <= depth < {noise_analysis_stop_depth}): "
+                f"{external_sigma_q:.6g}"
+            )
     else:
         raise ValueError(
             "A separate noise TIFF stack is required for SNR_limited_phase_analysis. "

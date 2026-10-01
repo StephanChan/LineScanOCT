@@ -8,7 +8,9 @@ from ScanModels import FOVLocation
 
 
 ROI_OCCUPANCY_TARGET = 0.80
-FOV_OVERLAP = 0.01
+# Raised from 0.01 to 0.05 so adjacent tiles share a usable overlap strip
+# (radiometric harmonization / seam metrics need more than ~1% of the FOV).
+FOV_OVERLAP = 0.10
 MAX_Y_FOV_MM = 0.25
 CENTER_MODE = "bounds"  # "bounds" or "centroid"
 DEBUG_SCAN_PLANNER = False
@@ -17,6 +19,7 @@ DEBUG_SCAN_PLANNER = False
 @dataclass
 class MosaicScanPlan:
     fov_locations: list
+    x_length_mm: float
     y_length_mm: float
     y_pixels: int
     center_x: float
@@ -176,6 +179,8 @@ def plan_mosaic_scan(
                         sample_id=sample_id,
                         x=round(safe_x, 3),
                         y=round(safe_y, 3),
+                        x_length_mm=float(x_fov_mm),
+                        y_length_mm=float(y_fov_mm),
                     )
                 )
 
@@ -186,6 +191,8 @@ def plan_mosaic_scan(
                 sample_id=sample_id,
                 x=round(_clamp(center_x, x_min, x_max), 3),
                 y=round(_clamp(center_y, y_min, y_max), 3),
+                x_length_mm=float(x_fov_mm),
+                y_length_mm=float(y_fov_mm),
             )
         ]
         if DEBUG_SCAN_PLANNER:
@@ -197,6 +204,7 @@ def plan_mosaic_scan(
         )
     return MosaicScanPlan(
         fov_locations=new_locations,
+        x_length_mm=x_fov_mm,
         y_length_mm=y_fov_mm,
         y_pixels=y_pixels,
         center_x=center_x,

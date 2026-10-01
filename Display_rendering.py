@@ -724,6 +724,22 @@ def set_xy_projection(
         clear_xyplane_dyn(ui)
 
 
+def fov_scan_size_mm(ui, fov):
+    """Return the ``(x_length_mm, y_length_mm)`` of one generated FOV.
+
+    Every generated FOV carries the size it was planned with: the Y size changes
+    with the ROI, and the X size is the one the locator used.  Drawing (and
+    cropping) with those instead of the current spin-box values keeps the green
+    boxes aligned with the FOVs that the mosaic is actually built from.
+    """
+    x_length = getattr(fov, "x_length_mm", None)
+    y_length = getattr(fov, "y_length_mm", None)
+    return (
+        float(x_length) if x_length is not None else float(ui.XLength.value()),
+        float(y_length) if y_length is not None else float(ui.YLength.value()),
+    )
+
+
 def display_sample_overlay(ui, overlay_images, sample_id, fov_locations_getter):
     source = overlay_images.get(sample_id)
     if source is None:
@@ -763,9 +779,9 @@ def render_usb_region_overlay(ui, source, fov_locations_getter):
     max_y = float(np.max(poly_np[:, 1]))
     for fov in fov_locations_getter(int(source["sample_id"])):
         cx_px, cy_px = stage_to_image_from_calibration(calibration, fov.x, fov.y)
-        loc_y_fov = fov.y_length_mm if fov.y_length_mm is not None else ui.YLength.value()
+        loc_x_fov, loc_y_fov = fov_scan_size_mm(ui, fov)
         fov_half_x, fov_half_y = affine_fov_half_size_pixels(
-            calibration, ui.XLength.value(), loc_y_fov
+            calibration, loc_x_fov, loc_y_fov
         )
         min_x = min(min_x, float(cx_px) - fov_half_x)
         max_x = max(max_x, float(cx_px) + fov_half_x)
@@ -819,10 +835,10 @@ def render_usb_region_overlay(ui, source, fov_locations_getter):
     painter.setPen(QPen(QColor(0, 255, 0), 2))
     for fov in fov_locations_getter(int(source["sample_id"])):
         cx_px, cy_px = stage_to_image(fov.x, fov.y)
-        loc_y_fov = fov.y_length_mm if fov.y_length_mm is not None else ui.YLength.value()
+        loc_x_fov, loc_y_fov = fov_scan_size_mm(ui, fov)
         fov_y_px, fov_x_px = affine_fov_half_size_pixels(
             calibration,
-            ui.XLength.value(),
+            loc_x_fov,
             loc_y_fov,
         )
         fov_x_px *= 2.0

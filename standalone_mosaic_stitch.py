@@ -7,11 +7,12 @@ equals Y pixels. ``read_volume_stack`` reconstructs each tile as
 ``[Y, X, Z]``.
 
 This script builds the same layout the app's in-memory/offline stitcher
-produces (tile grid from tile_positions.json, both axes reversed, no tile
-rotation) WITHOUT allocating the whole mosaic volume in RAM. It creates the
-output directly on disk as a memory-mapped BigTIFF of shape
-``[Y_total, X_total, Z]`` and copies one tile volume into it at a time, so peak
-RAM is roughly one tile volume (~160 MB), independent of mosaic size.
+produces (through the shared ``mosaic_geometry`` module: physical stage offsets,
+mirrored axes, overlap strips cross-faded, no tile rotation) WITHOUT allocating
+the whole mosaic volume in RAM. It creates the output directly on disk as a
+memory-mapped BigTIFF of shape ``[Y_total, X_total, Z]`` and copies one tile
+volume into it at a time, so peak RAM is roughly one tile volume (~160 MB),
+independent of mosaic size.
 
 Usage:
     python standalone_mosaic_stitch.py "E:\\IOCTData\\BJRcellcluster\\20XNomiror\\sampleID-1\\Time-2"
@@ -26,9 +27,11 @@ import sys
 import numpy as np
 import tifffile as TIFF
 
+from mosaic_geometry import blend_paste, build_layout, new_weight_map, pixel_size_mm
+
 
 def load_manifest(folder):
-    """Return tile records from tile_positions.json or exit with an error."""
+    """Return the parsed tile_positions.json manifest (exit with an error)."""
     path = os.path.join(folder, "tile_positions.json")
     if not os.path.isfile(path):
         sys.exit("tile_positions.json not found in: " + str(folder))
@@ -40,7 +43,7 @@ def load_manifest(folder):
     records = manifest.get("tiles")
     if not isinstance(records, list) or not records:
         sys.exit("tile_positions.json contains no tile records.")
-    return records
+    return manifest
 
 
 def stitched_output_path(folder, y_px, x_px, z_px):
@@ -80,7 +83,8 @@ def main():
 
     folder = os.path.abspath(args.folder)
     out_folder = os.path.abspath(args.output_folder) if args.output_folder else folder
-    records = load_manifest(folder)
+    manifest = load_manifest(folder)
+    records = manifest["tiles"]
 
     # ---- field-of-view geometry from the manifest -------------------------
     fw_mm = float(records[0].get("x_length_mm") or 0.0)
@@ -109,40 +113,42 @@ def main():
             sys.exit("Tile record missing stage_x_mm/stage_y_mm: " + str(record))
         entries.append((x, y, path))
 
-    xs = [entry[0] for entry in entries]
-    ys = [entry[1] for entry in entries]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
+    # ---- one shared placement rule (mosaic_geometry) ----------------------
+    # Tiles go to their physical stage offset and the canvas is the physical
+    # extent of the scan, so the FOV overlap never folds two tiles into one cell
+    # (the old round((pos - min) / fov) did exactly that at 10% overlap).
+    # The pixel size comes from the scan step (x_step_um / y_step_um); the FOV
+    # size divided by the pixel count is only the fallback.
+    x_step_um = manifest.get("x_step_um")
+    y_step_um = manifest.get("y_step_um")
+    mm_per_px_x = pixel_size_mm(x_step_um, fw_mm, fw_px)
+    mm_per_px_y = pixel_size_mm(y_step_um, fh_mm, fh_px)
+    layout = build_layout(
+        [(entry[0], entry[1]) for entry in entries],
+        fw_px,
+        fh_px,
+        mm_per_px_x,
+        mm_per_px_y,
+    )
+    problems = layout.problems()
+    if problems:
+        sys.exit("Mosaic layout is inconsistent: " + "; ".join(problems))
+    placements = [(entry[2], paste) for entry, paste in zip(entries, layout.placements)]
 
-    # Same grid-size computation as the in-app offline stitcher:
-    num_cols = int(round((max_x - min_x) / fw_mm)) + 1
-    num_rows = int(round((max_y - min_y) / fh_mm)) + 1
-
-    # ---- per-tile target grid cell (replicates the app's reversed axes) ---
-    placements = []
-    for (x, y, path) in entries:
-        col_idx = int(round((x - min_x) / fw_mm))
-        row_idx = int(round((y - min_y) / fh_mm))
-        # Match live mosaic stitch order: reverse both axes without rotating
-        # tile pixels (right-to-left, top-to-bottom).
-        col_idx = num_cols - 1 - col_idx
-        row_idx = num_rows - 1 - row_idx
-        y1 = row_idx * fh_px
-        y2 = y1 + fh_px
-        x1 = col_idx * fw_px
-        x2 = x1 + fw_px
-        if not (0 <= y1 < y2 <= num_rows * fh_px and 0 <= x1 < x2 <= num_cols * fw_px):
-            sys.exit("Tile " + os.path.basename(path) + " out of mosaic grid bounds.")
-        placements.append((path, y1, y2, x1, x2))
-
-    mosaic_y = num_rows * fh_px
-    mosaic_x = num_cols * fw_px
+    mosaic_y = layout.height_px
+    mosaic_x = layout.width_px
     out_path = stitched_output_path(out_folder, mosaic_y, mosaic_x, z_px)
 
     print(
         "Input        : {0}\n".format(folder)
         + "Tiles        : {0}\n".format(len(entries))
-        + "Grid         : {0} cols x {1} rows\n".format(num_cols, num_rows)
+        + "Grid         : {0} cols x {1} rows\n".format(layout.cols, layout.rows)
+        + "Geometry     : {0}\n".format(layout.describe())
+        + "Pixel size   : {0:.4f}/{1:.4f} um/px ({2})\n".format(
+            mm_per_px_x * 1000.0,
+            mm_per_px_y * 1000.0,
+            "scan step" if (x_step_um and y_step_um) else "FOV size / pixels",
+        )
         + "Tile size    : {0} (Y) x {1} (X) x {2} (Z)\n".format(fh_px, fw_px, z_px)
         + "Mosaic size  : {0} (Y) x {1} (X) x {2} (Z)\n".format(mosaic_y, mosaic_x, z_px)
         + "Output       : {0}".format(out_path)
@@ -173,6 +179,7 @@ def main():
 
     plane_bytes = mosaic_x * z_px * int(dtype.itemsize)
     total_bytes = plane_bytes * mosaic_y
+    os.makedirs(out_folder, exist_ok=True)
     free_bytes = shutil.disk_usage(out_folder).free
     print(
         "Estimated output size : {0:.2f} GB\n".format(total_bytes / 1e9)
@@ -201,8 +208,10 @@ def main():
         dtype=dtype,
         bigtiff=True,
     )
+    # Normalised cross-fade weight map (raised cosine ramps, see blend_paste).
+    weights = new_weight_map((mosaic_y, mosaic_x))
     try:
-        for idx, (path, y1, y2, x1, x2) in enumerate(placements):
+        for idx, (path, paste) in enumerate(placements):
             volume = read_tile_volume(path)
             if volume.ndim < 3:
                 volume = volume[np.newaxis, ...]
@@ -213,7 +222,7 @@ def main():
                     )
                 )
                 continue
-            stitched[y1:y2, x1:x2, :] = volume
+            blend_paste(stitched, volume, paste, weights=weights)
             del volume
             if (idx + 1) % 5 == 0 or idx + 1 == len(placements):
                 print("  placed tile {0}/{1}".format(idx + 1, len(placements)))

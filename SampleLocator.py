@@ -574,6 +574,7 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
                         y=loc.y,
                         z=self.current_zpos,
                         y_length_mm=scan_plan.y_length_mm,
+                        x_length_mm=scan_plan.x_length_mm,
                     )
                 )
             self.final_polygons.append(list(poly_pts))
@@ -647,10 +648,11 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
         return self.stage_to_image_for_tile(stage_x, stage_y, self.current_tile())
 
     def fov_half_size_pixels(self, loc):
+        loc_x_fov = loc.x_length_mm if loc.x_length_mm is not None else self.fov_w_mm
         loc_y_fov = loc.y_length_mm if loc.y_length_mm is not None else self.fov_h_mm
         if not calibration_uses_affine(self.calibration):
             raise ValueError(f"USB locator requires affine calibration: {self.calibration}")
-        return affine_fov_half_size_pixels(self.calibration, self.fov_w_mm, loc_y_fov)
+        return affine_fov_half_size_pixels(self.calibration, loc_x_fov, loc_y_fov)
 
     def fov_locations_for_current_view(self):
         current_tile_number = self.current_tile_index + 1

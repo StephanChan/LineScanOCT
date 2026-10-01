@@ -72,7 +72,7 @@ SAMPLE_LOCATOR_Z_MM = 1.0
 
 # Axial (depth) pixel size in micrometres, used for the XZ-plane display aspect
 # ratio (µm per depth pixel).
-AXIAL_PIXEL_SIZE_UM = 4.6 # in air, 3.5um in water
+AXIAL_PIXEL_SIZE_UM = 3.5 # 4.6 in air, 3.5um in water
 
 FINITE_ACQ_MODES = (
     AcqTypes.FINITE_ALINE,
@@ -97,6 +97,17 @@ MOSAIC_DISPLAY_MODES = (
     AcqTypes.WELL_SCAN,
     AcqTypes.TIMED_PLATE_SCAN,
 )
+
+# How often (in acquired Y lines) the live mosaic *volumes* are refreshed while a
+# FOV is still being scanned. XYplaneInt / XYplaneDyn (and the mosaic XZ panes)
+# are rendered from the stitched 3-D volumes, so with a refresh only at the end of
+# a FOV those views froze on the previous tile (or stayed black) for the whole
+# acquisition. Refreshing every N lines keeps them live; the full-volume
+# block-mean downsample costs ~0.5 s, so this is a deliberate trade-off between
+# view latency and DnS time (N=16 -> ~16 refreshes per 247-line tile, ~8 s).
+# Read by DnSThread.Process_Mosaic (see DnSThread._mosaic_volume_refresh_interval).
+MOSAIC_VOLUME_REFRESH_LINES = 16
+
 # Shared raw-data ring buffer. More than two slots allows acquisition and processing to overlap safely.
 global memoryCount
 memoryCount = 6
@@ -523,6 +534,33 @@ class GUI(MainWindow):
             editor = widget.lineEdit()
             if editor is not None:
                 editor.setEnabled(prior_states.get(editor, True))
+
+    # ------------------------------------------------------------------ shading
+    def set_shading_correction(self, enabled=True):
+        """Turn the live flat/dark shading correction on/off for the next run.
+
+        The switch is run level (config.ini ``ShadingCorrection``): it is read when a
+        mosaic/plate scan starts.  Tiles already written are never re-corrected.
+        """
+        self.ui.shading_correction = bool(enabled)
+        message = "阴影校正: {0}".format("已开启" if enabled else "已关闭")
+        print(message)
+        self.log.append(message)
+        return self.ui.shading_correction
+
+    def shading_correction_status(self):
+        """One-line status of the live shading correction (UI / log helper)."""
+        weaver = getattr(self, "Weaver_thread", None)
+        if weaver is None or not hasattr(weaver, "shading_correction_status"):
+            return "阴影校正: 未初始化"
+        return weaver.shading_correction_status()
+
+    def clear_shading_field(self):
+        """Drop the fitted field: the next sample of the run becomes the reference."""
+        weaver = getattr(self, "Weaver_thread", None)
+        if weaver is None or not hasattr(weaver, "clear_shading_field"):
+            return
+        weaver.clear_shading_field()
 
     def set_acquisition_controls_locked(self, locked: bool):
         if locked:

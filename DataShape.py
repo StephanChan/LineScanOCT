@@ -92,35 +92,6 @@ def data_shape(ui, data=None, raw=False, acq_mode=None, gpu_avg_count=1):
     )
 
 
-def fast_volume_group_indices(y_pixels, micro_steps, bline_avg):
-    """
-    Source-frame index map for FastVolumeCscan acquisition order.
-
-    Frames are captured in (block, repetition, step) order:
-      - block b covers Y positions [b*MicroSteps, b*MicroSteps + steps_b), where
-        steps_b = min(MicroSteps, remaining) so a partial last block is allowed;
-      - inside each block, repetition r sweeps the block's steps, one camera
-        frame per step (short pixel time).
-
-    Returns an int64 array of shape [y_pixels, bline_avg] where element [y, r]
-    is the linear frame index of Y position y at repetition r.
-    """
-    y_pixels = int(y_pixels)
-    micro_steps = int(micro_steps)
-    bline_avg = int(bline_avg)
-    src = np.zeros((y_pixels, bline_avg), dtype=np.int64)
-    linear = 0
-    y0 = 0
-    while y0 < y_pixels:
-        steps = min(micro_steps, y_pixels - y0)
-        for r in range(bline_avg):
-            for s in range(steps):
-                src[y0 + s, r] = linear + r * steps + s
-        linear += steps * bline_avg
-        y0 += steps
-    return src
-
-
 def fast_volume_ring_count(micro_steps):
     """
     Number of per-Y shared-memory slots needed for safe FastVolumeCscan dynamic
@@ -169,27 +140,3 @@ def fast_volume_frame_map(y_pixels, micro_steps, bline_avg):
         y0 += steps
     return dest_y, dest_r
 
-
-def fast_volume_regroup(frames, y_pixels, micro_steps, bline_avg):
-    """
-    Regroup FastVolumeCscan frames [total_frames, X, Z] captured in
-    (block, repetition, step) order into per-Y time series and average the
-    repetitions.
-
-    Returns [y_pixels, X, Z] after taking the mean over the bline_avg axis.
-    """
-    frames = np.asarray(frames)
-    y_pixels = int(y_pixels)
-    micro_steps = int(micro_steps)
-    bline_avg = int(bline_avg)
-    expected = y_pixels * bline_avg
-    if frames.shape[0] != expected:
-        raise ValueError(
-            "FastVolumeCscan regroup expected "
-            f"{expected} frames, got {frames.shape[0]}."
-        )
-    src = fast_volume_group_indices(y_pixels, micro_steps, bline_avg)
-    grouped = frames[src.reshape(-1)].reshape(
-        (y_pixels, bline_avg) + tuple(frames.shape[1:])
-    )
-    return grouped.mean(axis=1)

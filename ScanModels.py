@@ -28,6 +28,7 @@ class FOVLocation:
     y: float
     z: float = 0.0
     y_length_mm: float | None = None
+    x_length_mm: float | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -41,6 +42,9 @@ class FOVLocation:
             z=float(data.get("z", 0.0)),
             y_length_mm=(
                 None if data.get("y_length_mm") is None else float(data.get("y_length_mm"))
+            ),
+            x_length_mm=(
+                None if data.get("x_length_mm") is None else float(data.get("x_length_mm"))
             ),
         )
 

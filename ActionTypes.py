@@ -56,3 +56,4 @@ class DnSActions:
     SAVE_MOSAIC = "Save_mosaic"
     MOSAIC = "Mosaic"
     DISPLAY_MOSAIC = "display_mosaic"
+    SHADING_FIT = "shading_fit"

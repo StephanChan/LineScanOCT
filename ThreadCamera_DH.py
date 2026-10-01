@@ -68,7 +68,30 @@ DAHENG_SPECTRAL_DIMENSION = "horizontal"
 # Increase this cautiously: block completion is still emitted in frame order below.
 DAHENG_CONSUMER_WORKERS = 4
 DAHENG_BUFFER_TIMEOUT_MS = 100
-DAHENG_MAX_CONSECUTIVE_TIMEOUTS = 10
+DAHENG_MAX_CONSECUTIVE_TIMEOUTS = 20
+
+
+def expected_block_count(blines_per_acq, blines_per_block):
+    """Number of memory slots (tiles) a finite acquisition fills.
+
+    Returns None for continuous acquisitions, which have no fixed tile count.
+    """
+    if blines_per_acq == CONTINUOUS:
+        return None
+    blines_per_block = max(1, int(blines_per_block))
+    return max(1, (int(blines_per_acq) + blines_per_block - 1) // blines_per_block)
+
+
+def pending_partial_block_ids(completed_blocks, completed_block_ids):
+    """Ascending block ids that hold received frames but were never emitted.
+
+    ``completed_blocks`` counts frames of blocks that are still incomplete and
+    ``completed_block_ids`` holds fully filled blocks that are blocked behind an
+    earlier incomplete one. After an aborted acquisition both still hold usable
+    image data, so they are flushed instead of dropping the tile.
+    """
+    return sorted(set(completed_blocks) | set(completed_block_ids))
+
 
 
 def daheng_spectral_axis():
@@ -502,6 +525,7 @@ class Camera(QThread):
         for worker in workers:
             worker.start()
         acquisition_error_message = None
+        timeout_aborted = False
         try:
             print(
                 "Daheng camera acquisition ready: "
@@ -538,6 +562,7 @@ class Camera(QThread):
                             f"{consecutive_timeouts} consecutive buffer timeouts; "
                             f"received {BlinesCount}/{self.BlinesPerAcq} frame(s)."
                         )
+                        timeout_aborted = True
                         break
                     continue
                 consecutive_timeouts = 0
@@ -559,7 +584,37 @@ class Camera(QThread):
                 grab_q.put(grab_stop)
         for worker in workers:
             worker.join()
-        if acquisition_error_message is not None:
+        if timeout_aborted:
+            # Keep the partially received tile(s): flush every memory slot that
+            # holds frames so the Weaver still runs the FFT/display/save path for
+            # this acquisition. Frames that never arrived keep their zero-filled
+            # values in the preallocated memory slot.
+            warning_message = (
+                "Daheng camera acquisition timed out after "
+                f"{consecutive_timeouts} consecutive buffer timeouts; received "
+                f"{BlinesCount}/{self.BlinesPerAcq} frame(s). Keeping this tile "
+                "(missing frames are zero-filled)."
+            )
+            print(warning_message)
+            self.flush_partial_tiles(
+                completed_blocks,
+                completed_block_ids,
+                next_block_to_emit,
+                start_memory_slot,
+                ring_count,
+                warning_message,
+                NBlines,
+                profile=profile,
+                profile_lock=profile_lock,
+            )
+        expected_blocks = expected_block_count(self.BlinesPerAcq, NBlines)
+        if (
+            acquisition_error_message is not None
+            and (expected_blocks is None or next_block_to_emit[0] < expected_blocks)
+        ):
+            # Some slots were never received at all (no frames, or a per-Y dynamic
+            # scan that lost whole slots), so still report the error to stop the
+            # Weaver waiting, after the flushed partial tiles above are processed.
             self.DatabackQueue.put(DbackActionField(None, error=acquisition_error_message))
         self.MemoryLoc = (start_memory_slot + next_block_to_emit[0]) % ring_count
         total = time.perf_counter() - total_t0
@@ -589,6 +644,48 @@ class Camera(QThread):
             )
         if consumer_error:
             raise RuntimeError("Acquire consumer failed:\n" + consumer_error[0])
+
+    def flush_partial_tiles(
+        self,
+        completed_blocks,
+        completed_block_ids,
+        next_block_to_emit,
+        start_memory_slot,
+        ring_count,
+        warning_message,
+        blines_per_block,
+        profile=None,
+        profile_lock=None,
+    ):
+        """Emit memory slots holding received frames after an aborted acquisition.
+
+        Called when a finite acquisition stops early (e.g. consecutive camera
+        buffer timeouts). The slots are handed to the Weaver with a non-fatal
+        ``warning`` so the tile is still processed and saved, instead of being
+        dropped; frames that never arrived keep their zero-filled values. The
+        number of rows actually written is reported so the Weaver can fill the
+        trailing rows with the background spectrum.
+        """
+        flushed_slots = []
+        for block_id in pending_partial_block_ids(completed_blocks, completed_block_ids):
+            memory_slot = (start_memory_slot + block_id) % ring_count
+            frames_received = int(completed_blocks.get(block_id, blines_per_block))
+            self.DatabackQueue.put(
+                DbackActionField(
+                    memory_slot,
+                    warning=warning_message,
+                    frames_received=frames_received,
+                )
+            )
+            if profile is not None and profile_lock is not None:
+                with profile_lock:
+                    profile["max_databack_queue"] = max(
+                        profile["max_databack_queue"],
+                        self.DatabackQueue.qsize(),
+                    )
+            next_block_to_emit[0] = max(next_block_to_emit[0], block_id + 1)
+            flushed_slots.append(memory_slot)
+        return flushed_slots
 
     def write_bline_to_memory(self, bline, memory_slot, frame_index):
         dest = self.Memory[memory_slot][frame_index]

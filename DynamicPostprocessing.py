@@ -6,6 +6,24 @@ import time
 import numpy as np
 import tifffile as TIFF
 
+from mosaic_geometry import blend_paste, layout_for_ui, new_weight_map
+import shading_correction
+
+
+def _mosaic_layout(weaver, positions, fw_px, fh_px, fw_mm, fh_mm, downsample=1,
+                   missing=()):
+    """Shared mosaic layout for the offline stitchers (see mosaic_geometry)."""
+    return layout_for_ui(
+        weaver.ui,
+        positions,
+        fw_px,
+        fh_px,
+        fw_mm,
+        fh_mm,
+        downsample=downsample,
+        missing=missing,
+    )
+
 
 OFFLINE_DYNAMIC_PROCESSING_ENABLED = True
 
@@ -19,6 +37,12 @@ TILE_DYN_RE = re.compile(
 TILE_MEAN_RE = re.compile(
     r"^tile-(?P<tile>\d+)-Mean-Y(?P<y>\d+)-X(?P<x>\d+)-Z(?P<z>\d+)\.tif$"
 )
+# Dynamic colour tiles are stored as three per-channel float16 volumes (H, S, V)
+# instead of a rendered uint8 RGB (see shading_correction / FileNaming).
+TILE_DYN_CHANNEL_RE = re.compile(
+    r"^tile-(?P<tile>\d+)-Dyn(?P<channel>[HSV])-Y(?P<y>\d+)-X(?P<x>\d+)-Z(?P<z>\d+)\.tif$"
+)
+DYNAMIC_CHANNELS = ("H", "S", "V")
 STITCHED_DYN_RE = re.compile(
     r"^stitched-Dyn-Y(?P<y>\d+)-X(?P<x>\d+)-Z(?P<z>\d+)\.tif$"
 )
@@ -216,6 +240,82 @@ def stitched_static_output_path(folder_path, volume_shape):
     ypix, xpix, zpix = volume_shape
     filename = f"stitched-Y{ypix}-X{xpix}-Z{zpix}.tif"
     return os.path.join(folder_path, filename)
+
+
+def stitched_channel_output_path(folder_path, channel, volume_shape):
+    ypix, xpix, zpix = volume_shape
+    filename = f"stitched-Dyn{channel}-Y{ypix}-X{xpix}-Z{zpix}.tif"
+    return os.path.join(folder_path, filename)
+
+
+def stitched_rgb_output_path(folder_path, volume_shape):
+    ypix, xpix, zpix = volume_shape
+    filename = f"stitched-DynRGB-Y{ypix}-X{xpix}-Z{zpix}.tif"
+    return os.path.join(folder_path, filename)
+
+
+def collect_tile_dynamic_channels(folder_path, tile_count):
+    """``{tile_id: {"H": path, "S": path, "V": path}}`` for the colour tiles.
+
+    Returns ``{}`` when the folder predates the H/S/V layout (or is incomplete), so
+    the colour mosaic is simply skipped instead of failing the whole stitching.
+    """
+    found = {}
+    if not os.path.isdir(folder_path):
+        return found
+    for filename in os.listdir(folder_path):
+        match = TILE_DYN_CHANNEL_RE.match(filename)
+        if match is None:
+            continue
+        tile_id = int(match.group("tile"))
+        if tile_id < 1 or tile_id > int(tile_count):
+            continue
+        found.setdefault(tile_id, {})[match.group("channel")] = os.path.join(
+            folder_path, filename
+        )
+    complete = {}
+    for tile_id, channel_paths in found.items():
+        if all(channel in channel_paths for channel in DYNAMIC_CHANNELS):
+            complete[tile_id] = channel_paths
+    return complete
+
+
+def render_stitched_dynamic_rgb(folder_path, stitched_shape, channel_paths,
+                                block_rows=32, ranges=None):
+    """Render one uint8 RGB mosaic from the stitched H/S/V volumes.
+
+    The colour is rendered once, after stitching, from the already corrected H/S/V
+    mosaics: reading them back in Y blocks keeps the RAM cost flat, and both the
+    three float16 channel mosaics and the rendered uint8 RGB stay on disk.
+
+    ``ranges`` are the normalisation windows of the stored physical channels
+    (``dynamic_hsv_ranges`` in ``tile_positions.json``); without them the fallback
+    constants are used, which may not match what the operator saw while scanning.
+    """
+    height, width, depth = stitched_shape
+    rgb_out = stitched_rgb_output_path(folder_path, stitched_shape)
+    rgb = TIFF.memmap(
+        rgb_out, shape=(height, width, depth, 3), dtype=np.uint8, bigtiff=True,
+        photometric="rgb",
+    )
+    try:
+        for start in range(0, height, block_rows):
+            stop = min(height, start + block_rows)
+            hsv = np.empty((stop - start, width, depth, 3), dtype=np.float32)
+            for index, channel in enumerate(DYNAMIC_CHANNELS):
+                block = TIFF.imread(
+                    channel_paths[channel], key=range(start, stop)
+                )
+                hsv[..., index] = np.asarray(block, dtype=np.float32)
+            rgb[start:stop] = shading_correction.hsv_to_rgb(hsv, ranges=ranges)
+        rgb.flush()
+    finally:
+        try:
+            del rgb
+        except Exception:
+            pass
+    print("Dynamic mosaic colour: rendered " + os.path.basename(rgb_out))
+    return rgb_out
 
 
 def stitched_outputs_exist(folder_path):
@@ -418,6 +518,15 @@ def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
             return False
         tile_paths[tile_id] = (dyn_path, mean_path)
 
+    # Optional colour product: H / S / V per tile (new layout only).
+    channel_paths = collect_tile_dynamic_channels(folder_path, tile_count)
+    if channel_paths and len(channel_paths) != len(tile_paths):
+        print(
+            "Dynamic mosaic colour: incomplete H/S/V tiles "
+            f"({len(channel_paths)}/{len(tile_paths)}); the colour mosaic is skipped."
+        )
+        channel_paths = {}
+
     # Volume geometry from the first tile (Dyn and Mean must agree).
     first_dyn_path, first_mean_path = tile_paths[1]
     first_dyn = read_volume_stack(first_dyn_path)
@@ -447,20 +556,37 @@ def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
         first_y_length if first_y_length is not None else weaver.ui.YLength.value()
     )
 
-    xs = [loc.x for loc in sample_locations]
-    ys = [loc.y for loc in sample_locations]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-    num_cols = int(round((max_x - min_x) / fw_mm)) + 1
-    num_rows = int(round((max_y - min_y) / fh_mm)) + 1
+    # One shared placement rule (mosaic_geometry): every tile goes to its physical
+    # stage offset, the canvas is the physical extent of the scan and overlapping
+    # strips are cross-faded.  The old round((pos - min) / fov) grid assumed zero
+    # overlap and silently folded tiles together once the FOVs overlapped.
+    missing_tiles = [
+        tile_id - 1
+        for tile_id in range(1, len(sample_locations) + 1)
+        if tile_id not in tile_paths
+    ]
+    layout = _mosaic_layout(
+        weaver,
+        [(loc.x, loc.y) for loc in sample_locations],
+        fw_px,
+        fh_px,
+        fw_mm,
+        fh_mm,
+        downsample=downsample,
+        missing=missing_tiles,
+    )
+    layout_problems = layout.problems()
+    if layout_problems:
+        print("Dynamic stitch: mosaic layout: " + "; ".join(layout_problems))
 
-    stitched_shape = (num_rows * fh_px, num_cols * fw_px, z_px)
+    stitched_shape = (layout.height_px, layout.width_px, z_px)
     dyn_out = stitched_dynamic_output_path(folder_path, stitched_shape)
     mean_out = stitched_mean_output_path(folder_path, stitched_shape)
     print(
         f"Dynamic mosaic stitch: {len(tile_paths)} tile(s) -> "
         f"Dyn/Mean shape={stitched_shape[0]}x{stitched_shape[1]}x{stitched_shape[2]}."
     )
+    print("Dynamic mosaic geometry: " + layout.describe())
 
     stitched_dyn = TIFF.memmap(
         dyn_out, shape=stitched_shape, dtype=dyn_dtype, bigtiff=True
@@ -468,6 +594,23 @@ def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
     stitched_mean = TIFF.memmap(
         mean_out, shape=stitched_shape, dtype=mean_dtype, bigtiff=True
     )
+    # Colour mosaics: three float16 channel volumes, cross-faded like Dyn/Mean.
+    stitched_channels = {}
+    if channel_paths:
+        for channel in DYNAMIC_CHANNELS:
+            channel_out = stitched_channel_output_path(folder_path, channel, stitched_shape)
+            stitched_channels[channel] = TIFF.memmap(
+                channel_out, shape=stitched_shape, dtype=np.float16, bigtiff=True
+            )
+    # One normalised cross-fade weight map per stitched product (they are all
+    # blended in the same tile order, but each product needs its own map: sharing
+    # one would advance it more than once per tile).
+    weight_maps = {
+        "dyn": new_weight_map(stitched_shape[:2]),
+        "mean": new_weight_map(stitched_shape[:2]),
+    }
+    for channel in stitched_channels:
+        weight_maps[channel] = new_weight_map(stitched_shape[:2])
     try:
         for tile_id, loc in enumerate(sample_locations, start=1):
             if tile_id not in tile_paths:
@@ -498,25 +641,32 @@ def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
                 del dyn_volume, mean_volume
                 continue
 
-            col_idx = int(round((loc.x - min_x) / fw_mm))
-            row_idx = int(round((loc.y - min_y) / fh_mm))
-            # Match the live mosaic stitch order: reverse both axes (right-to-left,
-            # top-to-bottom) without rotating the tile pixels.
-            col_idx = num_cols - 1 - col_idx
-            row_idx = num_rows - 1 - row_idx
-            y1 = row_idx * fh_px
-            y2 = y1 + fh_px
-            x1 = col_idx * fw_px
-            x2 = x1 + fw_px
-            stitched_dyn[y1:y2, x1:x2, :] = dyn_volume
-            stitched_mean[y1:y2, x1:x2, :] = mean_volume
+            paste = layout.placements[tile_id - 1]
+            blend_paste(stitched_dyn, dyn_volume, paste, weights=weight_maps["dyn"])
+            blend_paste(stitched_mean, mean_volume, paste, weights=weight_maps["mean"])
             del dyn_volume, mean_volume
+            if stitched_channels and tile_id in channel_paths:
+                for channel, mapped in stitched_channels.items():
+                    volume = read_volume_stack(channel_paths[tile_id][channel])
+                    if volume.ndim < 3:
+                        volume = volume[np.newaxis, ...]
+                    if volume.shape == (fh_px, fw_px, z_px):
+                        blend_paste(mapped, np.asarray(volume, np.float32), paste,
+                                    weights=weight_maps[channel])
+                    else:
+                        print(
+                            f"Dynamic mosaic colour: skipping {channel} of tile-{tile_id} "
+                            f"({volume.shape})."
+                        )
+                    del volume
             if tile_id % 5 == 0 or tile_id == len(sample_locations):
                 print(f"  placed tile {tile_id}/{len(sample_locations)}")
         stitched_dyn.flush()
         stitched_mean.flush()
+        for mapped in stitched_channels.values():
+            mapped.flush()
     finally:
-        for mapped in (stitched_dyn, stitched_mean):
+        for mapped in [stitched_dyn, stitched_mean] + list(stitched_channels.values()):
             try:
                 mapped.flush()
             except Exception:
@@ -525,6 +675,27 @@ def write_stitched_idle_outputs(weaver, sample_id, folder_path, tile_count):
                 del mapped
             except Exception:
                 pass
+    if stitched_channels:
+        # Render the colour once, after stitching, from the corrected channels,
+        # using the normalisation windows the scan was displayed with.
+        try:
+            ranges = None
+            manifest_path = os.path.join(folder_path, "tile_positions.json")
+            if os.path.isfile(manifest_path):
+                with open(manifest_path, "r", encoding="utf-8") as handle:
+                    ranges = json.load(handle).get("dynamic_hsv_ranges")
+            print(
+                "Dynamic mosaic colour: ranges "
+                + (str(ranges) if ranges else "(fallback constants)")
+            )
+            render_stitched_dynamic_rgb(
+                folder_path, stitched_shape,
+                {channel: stitched_channel_output_path(folder_path, channel, stitched_shape)
+                 for channel in DYNAMIC_CHANNELS},
+                ranges=ranges,
+            )
+        except Exception as error:
+            print("Dynamic mosaic colour: RGB rendering failed: {0}".format(error))
     return True
 def write_stitched_static_outputs(
     weaver, sample_id, folder_path, tile_count, manifest_records=None
@@ -616,20 +787,29 @@ def write_stitched_static_outputs(
     first_dtype = first_volume.dtype
     del first_volume
 
-    xs = [entry[0] for entry in resolved]
-    ys = [entry[1] for entry in resolved]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-    num_cols = int(round((max_x - min_x) / fw_mm)) + 1
-    num_rows = int(round((max_y - min_y) / fh_mm)) + 1
+    # One shared placement rule (mosaic_geometry): physical offsets + physical
+    # canvas + cross-faded overlap strips (see write_stitched_idle_outputs).
+    layout = _mosaic_layout(
+        weaver,
+        [(entry[0], entry[1]) for entry in resolved],
+        fw_px,
+        fh_px,
+        fw_mm,
+        fh_mm,
+        downsample=downsample,
+    )
+    layout_problems = layout.problems()
+    if layout_problems:
+        print("Static stitch: mosaic layout: " + "; ".join(layout_problems))
 
-    stitched_shape = (num_rows * fh_px, num_cols * fw_px, z_px)
+    stitched_shape = (layout.height_px, layout.width_px, z_px)
     out_path = stitched_static_output_path(folder_path, stitched_shape)
     print(
         f"Static mosaic stitch: {len(resolved)} tile(s) -> "
         f"shape={stitched_shape[0]}x{stitched_shape[1]}x{stitched_shape[2]} "
         f"({stitched_shape[0]*stitched_shape[1]*stitched_shape[2]*np.dtype(first_dtype).itemsize/1e9:.2f} GB)."
     )
+    print("Static mosaic geometry: " + layout.describe())
 
     # Create the empty mosaic directly on disk as a memory-mapped BigTIFF.
     stitched = TIFF.memmap(
@@ -638,6 +818,8 @@ def write_stitched_static_outputs(
         dtype=first_dtype,
         bigtiff=True,
     )
+    # Normalised cross-fade weight map of the static mosaic (see blend_paste).
+    static_weights = new_weight_map(stitched_shape[:2])
     try:
         for idx, (x, y, path) in enumerate(resolved):
             volume = read_volume_stack(path)
@@ -651,17 +833,8 @@ def write_stitched_static_outputs(
                     f"(shape {volume.shape}, expected {(fh_px, fw_px, z_px)})."
                 )
                 continue
-            col_idx = int(round((x - min_x) / fw_mm))
-            row_idx = int(round((y - min_y) / fh_mm))
-            # Match the live mosaic stitch order: reverse both axes
-            # (right-to-left, top-to-bottom) without rotating the tile pixels.
-            col_idx = num_cols - 1 - col_idx
-            row_idx = num_rows - 1 - row_idx
-            y1 = row_idx * fh_px
-            y2 = y1 + fh_px
-            x1 = col_idx * fw_px
-            x2 = x1 + fw_px
-            stitched[y1:y2, x1:x2, :] = volume
+            paste = layout.placements[idx]
+            blend_paste(stitched, volume, paste, weights=static_weights)
             del volume
             if (idx + 1) % 5 == 0 or idx + 1 == len(resolved):
                 print(f"  placed tile {idx + 1}/{len(resolved)}")

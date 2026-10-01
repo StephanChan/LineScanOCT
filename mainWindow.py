@@ -17,6 +17,7 @@ from ActionFields import *
 from Generaic_functions import *
 from HardwareSpecs import camera_step_size_um, get_camera_spec, get_objective_spec
 from CameraUi import effective_camera_sample_count
+import shading_correction
 import traceback
 from ImageViewer import PanZoomImageView
 # try:
@@ -233,6 +234,16 @@ class MainWindow(QMainWindow):
                     widget.setChecked(str(value).lower() == 'true')
                 except:
                     print(ii, ' setting missing, using default...')
+        # Non-widget, run level setting: the live flat/dark shading correction of
+        # mosaic/plate runs (see shading_correction).  On unless config.ini says
+        # otherwise; toggled at runtime through OCT_MT.set_shading_correction().
+        try:
+            value = settings.value("ShadingCorrection")
+        except Exception:
+            value = None
+        if value is None or str(value) == "":
+            value = True
+        self.ui.shading_correction = str(value).lower() in ("1", "true", "yes", "on")
 
 
     def Calculate_CameraWidth_settings(self):
@@ -350,6 +361,12 @@ class MainWindow(QMainWindow):
             elif isinstance(widget, QW.QScrollBar):
                 settings.setValue(ii, widget.value())
                 # print(ii,self.ui.__getattribute__(ii).value())
+        # Non-widget run level setting (see LoadSettings / shading_correction).
+        settings.setValue(
+            "ShadingCorrection",
+            bool(getattr(self.ui, "shading_correction",
+                         shading_correction.SHADING_CORRECTION_ENABLED_DEFAULT)),
+        )
 
     def connectActions(self):
         self.ui.Objective.currentTextChanged.connect(self.Calculate_CameraWidth_settings)

@@ -23,6 +23,9 @@ from PyQt5.QtCore import Qt
 # from scipy.signal import hilbert
 import datetime
 import cv2
+from mosaic_geometry import blend_paste, build_layout, pixel_size_mm
+import threading
+import shading_correction
 from mosaic_scan_planner import (
     CENTER_MODE,
     FOV_OVERLAP,
@@ -94,10 +97,19 @@ SAVE_SAMPLE_TIME_MODES = (
 
 AUTO_BACKGROUND_PER_FOV_ENABLED = False
 SKIP_PLATE_PRESCAN_FULL_SAMPLE_SCAN = True
+# When a finite acquisition stops early (missed triggers / camera timeouts) the
+# trailing B-lines of the kept tile have no data. Fill them with the background
+# spectrum that is subtracted before the FFT, so those rows come out as clean
+# zeros instead of "minus background" streaks. Only applies when a background is
+# loaded (background subtraction enabled); otherwise the rows stay zero.
+FILL_MISSING_BLINES_WITH_BACKGROUND = True
 
-# Temporary: route PlateScan / WellScan / TimedPlateScan FOV acquisitions through
-# the FastVolumeCscan path (micro-sweep scan pattern). Set False to revert to the
-# standard FiniteCscan-based mosaic acquisition.
+# Route PlateScan / WellScan / TimedPlateScan FOV acquisitions through the
+# FastVolumeCscan path (micro-sweep pattern) ONLY when the acquisition is dynamic
+# and BlineAVG > 1 (per-Y repetitions are actually needed). Non-dynamic scans and
+# BlineAVG == 1 use the standard FiniteCscan-based C-scan path, so per-Y
+# averaging and the whole-volume Y notch filter behave exactly as in FiniteCscan.
+# Set False to disable the FastVolume routing entirely.
 PLATE_SCAN_USES_FAST_VOLUME = True
 
 class WeaverThread(QThread):
@@ -291,9 +303,10 @@ class WeaverThread(QThread):
         return self.ui.ACQMode.currentText()
 
     def fast_volume_acquisition(self, acq_mode):
-        """True when the given acquisition mode actually uses the FastVolumeCscan
-        scan path (either selected directly or routed through the plate-scan
-        modes by PLATE_SCAN_USES_FAST_VOLUME)."""
+        """True when the given acquisition mode is *capable* of using the
+        FastVolumeCscan scan path (either selected directly or routed through the
+        plate-scan modes by PLATE_SCAN_USES_FAST_VOLUME). Use
+        fast_volume_active() for the real routing decision."""
         if acq_mode == AcqTypes.FAST_VOLUME_CSCAN:
             return True
         return (
@@ -304,6 +317,26 @@ class WeaverThread(QThread):
                 AcqTypes.TIMED_PLATE_SCAN,
             )
         )
+
+    def fast_volume_active(self, acq_mode):
+        """True when this acquisition really uses the FastVolumeCscan path.
+
+        FastVolumeCscan is only used for dynamic acquisitions that need per-Y
+        repetitions (BlineAVG > 1). Non-dynamic scans and BlineAVG == 1 fall back
+        to the regular C-scan path so per-Y averaging and the whole-volume Y
+        notch filter behave exactly like FiniteCscan.
+        """
+        if not self.fast_volume_acquisition(acq_mode):
+            return False
+        return self.current_dynamic_enabled() and self.current_bline_avg() > 1
+
+    def fast_volume_notice(self, message):
+        """Emit a FastVolume routing notice once per distinct message."""
+        if getattr(self, "_fast_volume_notice_key", None) == message:
+            return
+        self._fast_volume_notice_key = message
+        print(message)
+        self.emit_status(message)
 
     def current_fft_device(self):
         return self.ui.FFTDevice.currentText()
@@ -338,12 +371,168 @@ class WeaverThread(QThread):
     def current_depth_range(self):
         return int(self.ui.DepthRange.value())
 
+    def shading_correction_enabled(self):
+        """Run level switch for the live shading correction (default on)."""
+        return bool(getattr(self.ui, "shading_correction",
+                            shading_correction.SHADING_CORRECTION_ENABLED_DEFAULT))
+
+    def current_dynamic_hue_range_hz(self):
+        """Hue (mean frequency) window the dynamic colour view is scaled with.
+
+        Mirrors ``Display_rendering.dynamic_hue_frequency_range_hz`` and
+        ``ThreadDnS.current_save_hue_frequency_range_hz``: the contrast sliders
+        ``XZmin`` / ``XZmax`` times 15/1000 Hz per unit.  ``None`` (no sliders, or a
+        degenerate window) keeps the default range.
+        """
+        try:
+            low = float(self.ui.XZmin.value())
+            high = float(self.ui.XZmax.value())
+        except Exception:
+            return None
+        if high <= low:
+            return None
+        unit = shading_correction.DYNAMIC_HUE_HZ_PER_CONTRAST_UNIT
+        return (low * unit, high * unit)
+
+    def shading_correction_status(self):
+        """One-line status for the UI / log: nothing fitted / ready / correcting."""
+        if not self.shading_correction_enabled():
+            return "阴影校正: 已关闭"
+        field = shading_correction.get_session_field()
+        pending = getattr(self, "shading_rewrite_state", None)
+        if pending and pending.get("running"):
+            return "阴影校正: 补正中 {0}/{1}".format(
+                pending.get("done", 0), pending.get("total", 0))
+        if field is None:
+            return "阴影校正: 未就绪 (首个样本将用于拟合)"
+        return "阴影校正: 已就绪 ({0})".format(field.describe())
+
+    def clear_shading_field(self):
+        """Forget the fitted field so the next sample is fitted again."""
+        shading_correction.clear_session_field()
+        message = "Shading correction: fitted field cleared; the next sample re-fits it."
+        print(message)
+        self.emit_status(message)
+
+    def request_shading_fit(self):
+        """Ask the DnS thread to fit (or report) the field of this sample."""
+        holder = {}
+        try:
+            self.DnSQueue.put(DnSActionField(DnSActions.SHADING_FIT, context=holder))
+            self.wait_for_processing_barrier(
+                label="the shading correction fit", stop_if_run_unchecked=False
+            )
+        except Exception as error:
+            print("Shading correction: the fit request failed: {0}".format(error))
+            return holder
+        return holder
+
+    def _manifest_tile_records(self, folder):
+        """The tile records of a sample folder (empty list when unknown)."""
+        path = os.path.join(folder, "tile_positions.json")
+        if not folder or not os.path.isfile(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                manifest = json.load(handle)
+        except (OSError, ValueError) as error:
+            print("Shading correction: unreadable manifest {0}: {1}".format(path, error))
+            return []
+        return list(manifest.get("tiles") or [])
+
+    def _mark_manifest_corrected(self, folder, field, extra=None):
+        """Record that a sample folder holds shading corrected data."""
+        path = os.path.join(folder, "tile_positions.json") if folder else None
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                manifest = json.load(handle)
+            manifest["background_corrected"] = True
+            manifest["background_corrected_at"] = datetime.datetime.now().isoformat(
+                timespec="seconds"
+            )
+            manifest["bgcorr_fields"] = shading_correction.SHADING_FIELDS_FILE
+            manifest["bgcorr_signature"] = dict(field.signature)
+            if extra:
+                manifest["bgcorr"] = extra
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(manifest, handle, indent=2)
+        except (OSError, ValueError) as error:
+            print("Shading correction: could not update {0}: {1}".format(path, error))
+
+    def _shading_rewrite_reference_sample(self, folder, field, signature=None):
+        """Correct the reference sample on disk, in the background, once per run.
+
+        The reference sample could not be corrected while it was acquired (the field
+        did not exist yet), so it is read back and overwritten here - in parallel to
+        the acquisition of the next sample, so the run does not stall.
+        """
+        records = self._manifest_tile_records(folder)
+        if not records:
+            print("Shading correction: no tile records in {0}; nothing to redo.".format(folder))
+            self._mark_manifest_corrected(folder, field)
+            return
+        state = {"running": True, "done": 0, "total": len(records), "folder": folder}
+        self.shading_rewrite_state = state
+        z_logical = self.current_depth_range()
+
+        def worker():
+            self.emit_status(
+                "Shading correction: correcting the reference sample "
+                "({0} tiles) in the background...".format(len(records))
+            )
+            try:
+                summary = shading_correction.correct_sample_folder(
+                    folder, records, field, z_logical=z_logical, verbose=True
+                )
+                state["done"] = int(summary.get("tiles", 0))
+                self._mark_manifest_corrected(folder, field, extra=summary)
+                message = (
+                    "Shading correction: reference sample corrected "
+                    "({0} tiles, {1} files, {2} skipped).".format(
+                        summary.get("tiles"), summary.get("files"), summary.get("skipped")
+                    )
+                )
+            except Exception as error:
+                message = "Shading correction: the reference sample failed: {0}".format(error)
+            finally:
+                state["running"] = False
+            print(message)
+            self.emit_status(message)
+
+        threading.Thread(target=worker, name="shading-rewrite", daemon=True).start()
+
+    def finish_shading_correction(self, acq_mode):
+        """Fit the field from this sample when it is the reference, then correct it."""
+        if not self.shading_correction_enabled():
+            return
+        holder = self.request_shading_fit()
+        field = holder.get("field")
+        if field is None:
+            return
+        try:
+            folder = self.file_naming.save_dir(acq_mode) if self.file_naming else None
+        except Exception:
+            folder = None
+        if folder and os.path.isdir(folder):
+            try:
+                shading_correction.save_field_files(
+                    folder, field, extra={"acq_mode": acq_mode}
+                )
+            except Exception as error:
+                print("Shading correction: could not store the field: {0}".format(error))
+        if holder.get("was_reference"):
+            if folder and os.path.isdir(folder):
+                self._shading_rewrite_reference_sample(folder, field)
+        else:
+            self._mark_manifest_corrected(folder, field)
+        self.emit_status(self.shading_correction_status())
+
     def current_realtime_dynamic_enabled(self):
         return self.current_dynamic_enabled() and self.ui.RealtimeDynCheckBox.isChecked()
 
     def current_pre_avg_factor(self):
-        if self.fast_volume_acquisition(self.current_acq_mode()) and not self.current_dynamic_enabled():
-            return 1
         fft_device = self.current_fft_device()
         if fft_device not in ['GPU', 'CPU']:
             return 1
@@ -481,6 +670,19 @@ class WeaverThread(QThread):
                         acq_mode,
                         [y_pixels, x_pixels, z_pixels],
                     )
+                    # The dynamic colour volume is stored as H / S / V float16
+                    # volumes instead of a rendered RGB: the shading gain of V can
+                    # then still be applied and the RGB is rendered once, after
+                    # stitching (see shading_correction).
+                    dynamic_h_filename = self.file_naming.get_filename(
+                        "tile_dyn_h", acq_mode, [y_pixels, x_pixels, z_pixels]
+                    )
+                    dynamic_s_filename = self.file_naming.get_filename(
+                        "tile_dyn_s", acq_mode, [y_pixels, x_pixels, z_pixels]
+                    )
+                    dynamic_v_filename = self.file_naming.get_filename(
+                        "tile_dyn_v", acq_mode, [y_pixels, x_pixels, z_pixels]
+                    )
                     mean_filename = self.file_naming.get_filename(
                         "tile_mean",
                         acq_mode,
@@ -489,6 +691,9 @@ class WeaverThread(QThread):
                     bundle = {
                         "dynamic_filename": dynamic_filename,
                         "dynamic_rgb_filename": dynamic_rgb_filename,
+                        "dynamic_h_filename": dynamic_h_filename,
+                        "dynamic_s_filename": dynamic_s_filename,
+                        "dynamic_v_filename": dynamic_v_filename,
                         "mean_filename": mean_filename,
                         "log_filename": dynamic_filename,
                     }
@@ -534,24 +739,52 @@ class WeaverThread(QThread):
         locations = list(self.CurrentSampleLocations)
         min_x = min(location.x for location in locations)
         min_y = min(location.y for location in locations)
+        # One shared placement rule: the manifest grid is computed by the very
+        # same mosaic_geometry layout the stitcher uses, so grid_row/grid_col can
+        # never disagree with the stitched image.  The old round((pos-min)/fov)
+        # folded rows together as soon as the FOVs overlapped at all.
+        first_x_length_mm = (
+            x_length_mm
+            if locations[0].x_length_mm is None
+            else float(locations[0].x_length_mm)
+        )
+        first_y_length_mm = (
+            y_length_mm
+            if locations[0].y_length_mm is None
+            else float(locations[0].y_length_mm)
+        )
+        layout = build_layout(
+            [(float(location.x), float(location.y)) for location in locations],
+            x_pixels,
+            y_pixels,
+            pixel_size_mm(x_step_um, first_x_length_mm, x_pixels),
+            pixel_size_mm(y_step_um, first_y_length_mm, y_pixels),
+        )
+        layout_problems = layout.problems()
+        if layout_problems:
+            print("WARNING: mosaic layout problems: " + "; ".join(layout_problems))
         tile_records = []
         for tile_index, location in enumerate(locations, start=1):
+            tile_x_length_mm = (
+                x_length_mm
+                if location.x_length_mm is None
+                else float(location.x_length_mm)
+            )
             tile_y_length_mm = (
                 y_length_mm
                 if location.y_length_mm is None
                 else float(location.y_length_mm)
             )
-            col_idx = int(round((float(location.x) - min_x) / x_length_mm))
-            row_idx = int(round((float(location.y) - min_y) / tile_y_length_mm))
+            paste = layout.placements[tile_index - 1]
             record = {
                 "tile_index": int(tile_index),
                 "sample_id": int(location.sample_id),
                 "stage_x_mm": float(location.x),
                 "stage_y_mm": float(location.y),
                 "stage_z_mm": float(location.z),
-                "grid_col": int(col_idx),
-                "grid_row": int(row_idx),
-                "x_length_mm": x_length_mm,
+                "grid_col": int(paste.col),
+                "grid_row": int(paste.row),
+                "x_length_mm": tile_x_length_mm,
                 "y_length_mm": tile_y_length_mm,
                 "x_pixels": int(x_pixels),
                 "y_pixels": int(y_pixels),
@@ -562,7 +795,11 @@ class WeaverThread(QThread):
                     {
                         "mean_filename": f"tile-{tile_index}-Mean-Y{y_pixels}-X{x_pixels}-Z{z_pixels}.tif",
                         "dynamic_std_filename": f"tile-{tile_index}-Dyn-Y{y_pixels}-X{x_pixels}-Z{z_pixels}.tif",
-                        "dynamic_rgb_filename": f"tile-{tile_index}-DynRGB-Y{y_pixels}-X{x_pixels}-Z{z_pixels}.tif",
+                        # colour product: H / S / V volumes, RGB is rendered once
+                        # after stitching (see shading_correction / FileNaming)
+                        "dynamic_h_filename": f"tile-{tile_index}-DynH-Y{y_pixels}-X{x_pixels}-Z{z_pixels}.tif",
+                        "dynamic_s_filename": f"tile-{tile_index}-DynS-Y{y_pixels}-X{x_pixels}-Z{z_pixels}.tif",
+                        "dynamic_v_filename": f"tile-{tile_index}-DynV-Y{y_pixels}-X{x_pixels}-Z{z_pixels}.tif",
                     }
                 )
             elif not self.current_dynamic_enabled():
@@ -578,14 +815,32 @@ class WeaverThread(QThread):
             "tile_order": "tile_index matches acquisition order and saved tile filename number",
             "x_step_um": x_step_um,
             "y_step_um": y_step_um,
-            "mosaic_origin_stage_x_mm": float(min_x),
-            "mosaic_origin_stage_y_mm": float(min_y),
+            "mosaic_origin_stage_x_mm": float(layout.origin_x_mm),
+            "mosaic_origin_stage_y_mm": float(layout.origin_y_mm),
+            "grid_source": "stage_position",
+            "grid_cols": int(layout.cols),
+            "grid_rows": int(layout.rows),
+            "mosaic_size_px": [int(layout.height_px), int(layout.width_px)],
+            "fov_overlap_px": [int(layout.overlap_x_px), int(layout.overlap_y_px)],
             "tiles": tile_records,
+            # Set to true once the sample folder holds shading corrected data (the
+            # reference sample of a run is corrected right after it completes, every
+            # later sample is corrected while it is written).
+            "background_corrected": False,
+            "shading_correction": bool(self.shading_correction_enabled()),
+            # Normalisation windows of the stored dynamic colour volume: H is a
+            # frequency in Hz, S a bandwidth in Hz, V the dynamic value, so the RGB
+            # can only be rendered offline with the same windows the scan was shown
+            # with (see shading_correction.hsv_to_rgb / render_stitched_dynamic_rgb).
+            "dynamic_hsv_ranges": shading_correction.dynamic_hsv_ranges(
+                hue_hz=self.current_dynamic_hue_range_hz(),
+            ),
         }
         filename = os.path.join(save_dir, "tile_positions.json")
         with open(filename, "w", encoding="utf-8") as file:
             json.dump(manifest, file, indent=2)
         print(f"Mosaic tile position list saved: {filename}")
+        print(f"Mosaic geometry: {layout.describe()}")
 
     def wait_for_processing_barrier(self, label="", poll_interval=0.2, stop_if_run_unchecked=True):
         label = label or "the next sample"
@@ -623,10 +878,7 @@ class WeaverThread(QThread):
         # reused ~2*MicroSteps positions later, which gives the GPU roughly one
         # full micro-block to drain the slot before it is overwritten.
         memory_count = self.memoryCount
-        if (
-            self.fast_volume_acquisition(configured_acq_mode)
-            and configured_dynamic
-        ):
+        if self.fast_volume_active(configured_acq_mode):
             micro_steps = max(1, int(self.ui.MicroSteps.value()))
             memory_count = fast_volume_ring_count(micro_steps)
             while len(self.Memory) < memory_count:
@@ -682,13 +934,35 @@ class WeaverThread(QThread):
         self.drain_continuous_backlog(reason=f"before {DnS_action}")
         fft_device = self.current_fft_device()
         # FastVolume routing flags, computed once and passed explicitly to every
-        # downstream component (no re-reading the ACQMode combo).
-        fast_volume = self.fast_volume_acquisition(acq_mode)
+        # downstream component (no re-reading the ACQMode combo). FastVolume is
+        # only used for dynamic acquisitions with BlineAVG > 1.
+        fast_volume = self.fast_volume_active(acq_mode)
         per_y_dynamic = fast_volume and self.current_dynamic_enabled()
-        # For FastVolume acquisitions pass the explicit effective mode so the
-        # camera/AODO generate the FastVolume waveform; otherwise pass None so
-        # they fall back to the ACQMode combo exactly as before.
-        effective_mode = AcqTypes.FAST_VOLUME_CSCAN if fast_volume else None
+        if acq_mode == AcqTypes.FAST_VOLUME_CSCAN and not fast_volume:
+            self.fast_volume_notice(
+                "FastVolumeCscan needs dynamic mode with BlineAVG > 1; using the "
+                "regular C-scan path for this acquisition."
+            )
+        elif (
+            self.current_dynamic_enabled()
+            and self.current_bline_avg() <= 1
+            and acq_mode in (AcqTypes.FAST_VOLUME_CSCAN,) + MOSAIC_DISPLAY_MODES
+        ):
+            self.fast_volume_notice(
+                "Dynamic per-Y acquisition needs BlineAVG > 1; using the regular "
+                "C-scan path for this acquisition."
+            )
+        # Only the FastVolume path passes an explicit effective mode: the
+        # camera/AODO then generate the micro-sweep waveform. An explicitly
+        # selected FastVolumeCscan that is not active falls back to the regular
+        # FiniteCscan waveform; every other mode passes None so the camera/AODO
+        # fall back to the ACQMode combo exactly as before.
+        if fast_volume:
+            effective_mode = AcqTypes.FAST_VOLUME_CSCAN
+        elif acq_mode == AcqTypes.FAST_VOLUME_CSCAN:
+            effective_mode = AcqTypes.FINITE_CSCAN
+        else:
+            effective_mode = None
         t0=time.time()
         # print(self.DbackQueue.qsize())
         an_action = DActionField('ConfigureBoard', acq_mode=effective_mode, per_y_dynamic=per_y_dynamic)
@@ -707,6 +981,7 @@ class WeaverThread(QThread):
         an_action = DActionField('Acquire', acq_mode=effective_mode, per_y_dynamic=per_y_dynamic)
         self.DQueue.put(an_action)
         self.DbackQueue.get()
+        time.sleep(0.2)
         t3=time.time()
 
         # print('current dbackqueue size:', self.DbackQueue.qsize())
@@ -737,9 +1012,22 @@ class WeaverThread(QThread):
                         print(message)
                         acquisition_failed = True
                         break
+                    warning = getattr(an_action, "warning", None)
+                    if warning:
+                        # Non-fatal acquisition problem (e.g. a partially filled
+                        # tile kept after camera timeouts): report it but still
+                        # process and save this tile.
+                        print(warning)
+                        self.emit_status(warning)
                     # print('camera queue size:', self.DatabackQueue.qsize())
                     # print('time to fetch data: '+str(round(time.time()-start,3))+'sec')
                     memory_slot = an_action.memory_slot
+                    # A tile kept after an aborted acquisition may be missing its
+                    # trailing B-lines; fill them with the background spectrum
+                    # before the FFT so they do not turn into subtracted streaks.
+                    self.fill_missing_blines(
+                        memory_slot, getattr(an_action, "frames_received", None)
+                    )
                     filename_bundle = self.build_filename_bundle(DnS_action, acq_mode, memory_slot, raw=(fft_device in ['None']))
                     # print(memory_slot)
                     ############################################### display and save data
@@ -1290,6 +1578,16 @@ class WeaverThread(QThread):
                 except Exception as error:
                     print(f"Could not display sample overlay for sampleID-{sample_id}: {error}")
 
+                # Use the FOV that was generated for this sample (X and Y) for
+                # the live scan as well, so the OCT view the operator aligns is
+                # the same FOV as the green boxes drawn on MosaicLabel.
+                try:
+                    self.apply_scan_geometry_from_locations(
+                        self.sample_fov_locations(sample_id)
+                    )
+                except Exception as error:
+                    print(f"Could not apply the generated FOV of sampleID-{sample_id}: {error}")
+
                 self.move_stage_axis("X", center.x)
                 self.move_stage_axis("Y", center.y)
                 if inherited_z is None:
@@ -1450,7 +1748,7 @@ class WeaverThread(QThread):
         if not self.wait_for_processing_barrier(label=f"starting {acq_mode}"):
             return f"{acq_mode} stopped by user."
         self.drain_continuous_backlog(reason=f"before {acq_mode}")
-        self.apply_y_geometry_from_locations()
+        self.apply_scan_geometry_from_locations()
         # move to position of this FOV
         first_fov_location = self.CurrentSampleLocations[0]
         self.move_stage_axis('X', first_fov_location.x)
@@ -1508,6 +1806,9 @@ class WeaverThread(QThread):
         self.wait_for_processing_barrier(label=f"finishing {acq_mode}", stop_if_run_unchecked=False)
         if message == "Sample FOV scan completed.":
             self.save_mosaic_tile_positions(acq_mode)
+            # Fit the field from the first sample of the run and, when this sample
+            # was the reference, correct it on disk in the background.
+            self.finish_shading_correction(acq_mode)
         return(message)
 
     def update_timer_readout(self, deadline):
@@ -1589,19 +1890,100 @@ class WeaverThread(QThread):
         y_step_um = max(float(self.ui.YStepSize.value()), 1e-6)
         return max(1, int(np.round(float(y_length_mm) * 1000.0 / y_step_um)))
 
+    def apply_x_geometry_for_scan(self, x_length_mm):
+        self.ui.XLength.setValue(float(x_length_mm))
+
     def apply_y_geometry_for_scan(self, y_length_mm, y_pixels=None):
         computed_y_pixels = self.y_pixels_from_length(y_length_mm)
         self.ui.YLength.setValue(float(y_length_mm))
         self.ui.Ypixels.setValue(int(computed_y_pixels))
 
-    def apply_y_geometry_from_locations(self):
-        if not self.CurrentSampleLocations:
+    def apply_scan_geometry_from_locations(self, locations=None):
+        """Set the scan X / Y geometry from the generated FOVs of one sample.
+
+        Every generated FOV carries the size it was planned with, so the live scan
+        and the mosaic geometry derived from ``ui.XLength`` / ``ui.YLength`` match
+        the FOV boxes drawn on MosaicLabel instead of the global spin-box values.
+        """
+        locations = list(locations if locations is not None else self.CurrentSampleLocations)
+        if not locations:
             return
-        first_fov_location = self.CurrentSampleLocations[0]
-        y_length = first_fov_location.y_length_mm
-        if y_length is None:
-            return
-        self.apply_y_geometry_for_scan(float(y_length))
+        x_length = next(
+            (float(loc.x_length_mm) for loc in locations if loc.x_length_mm is not None),
+            None,
+        )
+        y_length = next(
+            (float(loc.y_length_mm) for loc in locations if loc.y_length_mm is not None),
+            None,
+        )
+        if x_length is not None:
+            self.apply_x_geometry_for_scan(float(x_length))
+        if y_length is not None:
+            self.apply_y_geometry_for_scan(float(y_length))
+
+    def background_reference_for_slot(self, memory_slot):
+        """Background spectrum [X, samples] used for pre-FFT subtraction, or None.
+
+        Read from the GPU thread, which loads it from the background file and is
+        the single source of truth for whether background subtraction is active.
+        """
+        gpu_thread = getattr(self, "gpu_thread", None)
+        if gpu_thread is None or not getattr(gpu_thread, "bg_sub", False):
+            return None
+        background = getattr(gpu_thread, "background", None)
+        if background is None or getattr(background, "size", 0) == 0:
+            return None
+        slot_shape = tuple(self.Memory[memory_slot].shape)
+        if tuple(background.shape) != slot_shape[1:]:
+            return None
+        return background
+
+    def fill_missing_blines(self, memory_slot, frames_received):
+        """Fill the trailing B-lines of a partially received tile with background.
+
+        Frames are written in order, so when a finite acquisition stops early the
+        missing B-lines are exactly the trailing rows of the slot. Writing the
+        background spectrum into them makes the pre-FFT background subtraction
+        turn them into clean zeros instead of "-background" streaks (and keeps
+        the saved raw spectra background-like instead of dead rows).
+
+        Returns the number of rows filled.
+        """
+        slot = self.Memory[memory_slot]
+        total_rows = int(slot.shape[0])
+        received = total_rows
+        if frames_received is not None:
+            received = max(0, min(int(frames_received), total_rows))
+        missing = total_rows - received
+        if missing <= 0:
+            return 0
+        if not FILL_MISSING_BLINES_WITH_BACKGROUND:
+            message = (
+                f"{missing} missing B-line(s) kept as zeros "
+                "(FILL_MISSING_BLINES_WITH_BACKGROUND is disabled)."
+            )
+            print(message)
+            self.emit_status(message)
+            return 0
+        background = self.background_reference_for_slot(memory_slot)
+        if background is None:
+            message = (
+                f"{missing} missing B-line(s) kept as zeros: no usable background "
+                "is loaded."
+            )
+            print(message)
+            self.emit_status(message)
+            return 0
+        max_value = 255 if slot.dtype == np.uint8 else 65535
+        fill = np.clip(np.rint(background), 0, max_value).astype(slot.dtype, copy=False)
+        slot[received:] = fill
+        message = (
+            f"Filled {missing} missing B-line(s) (rows {received}-{total_rows - 1}) "
+            "with the background spectrum."
+        )
+        print(message)
+        self.emit_status(message)
+        return missing
 
     def get_background(self):
         an_action = AODOActionField('rotate_servo_out')

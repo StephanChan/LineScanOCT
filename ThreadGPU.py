@@ -6,6 +6,7 @@ Created on Tue Dec 12 16:50:25 2023
 """
 from PyQt5.QtCore import  QThread
 from scipy.ndimage import gaussian_filter, uniform_filter1d
+import scipy.fft
 import cupy
 import numpy as np
 from ActionFields import DnSActionField
@@ -13,7 +14,6 @@ import os
 import time
 import traceback
 from ActionTypes import AcqTypes, DnSActions, EXIT_ACTION, GPUActions
-from DataShape import fast_volume_regroup
 from CameraUi import effective_camera_sample_count
 from HardwareSpecs import DISCARD_INITIAL_FRAMES_PER_Y, get_camera_spec
 from scipy.ndimage import zoom, uniform_filter
@@ -45,6 +45,10 @@ GPU_OVERLAP_TRANSFER = True
 # before interpolation/dispersion/FFT. Must be an odd integer; values above 513
 # are clamped because of the current CUDA kernel halo loading pattern.
 GPU_SPECTRAL_BASELINE_WINDOW_SIZE = 35
+# NOTE: the baseline subtraction below is currently DISABLED at its call sites
+# (search "Spectral baseline removal: DISABLED on request" in this file); the
+# kernel and this window size are kept so it can be switched back on with one
+# uncomment.
 
 # Set True to print GPU processing timing for each FFT request. Timing forces
 # CUDA synchronization around each profiled step, so use it for diagnostics and
@@ -103,15 +107,27 @@ HOLO_PRINT_FILTER_INFO = True
 # DC-centered Y notch applied on the FULL post-FFT [Y, X, Z] complex C-scan
 # volume (FFT along axis 0). Controlled by the UI "Y notch filter" checkbox
 # (HoloYFilterCheckBox); this constant is only the offline/fallback default.
-# Skipped for FastVolumeCscan and any dynamic (incl. per-Y realtime) paths.
+# The filter runs on every whole-volume, non-dynamic C-scan acquisition. The
+# FastVolumeCscan path is only used for dynamic acquisitions (which are always
+# skipped), so a non-dynamic FastVolumeCscan selection is acquired as a regular
+# C-scan and is filtered here too.
 HOLO_Y_FILTER_ENABLED = False
 HOLO_Y_FILTER_MODES = (
     AcqTypes.FINITE_CSCAN,
     AcqTypes.CONTINUOUS_CSCAN,
+    AcqTypes.FAST_VOLUME_CSCAN,
+    AcqTypes.PLATE_PRESCAN,
     AcqTypes.WELL_SCAN,
     AcqTypes.PLATE_SCAN,
     AcqTypes.TIMED_PLATE_SCAN,
 )
+
+# Print a dedicated one-line timing breakdown every time the volume Y notch runs
+# (device staging / weights / FFT along Y / multiply / inverse FFT / download /
+# magnitude conversion). Host timers only, so it does not force CUDA
+# synchronization and stays independent of GPU_PROFILE_TIMING_ENABLED.
+# Leave False during normal acquisition; set True when investigating Y-notch cost.
+HOLO_Y_FILTER_PROFILE_TIMING = False
 
 # Static/background normalization --------------------------------------------
 # Shared small denominator protection for background X normalization and dynamic
@@ -163,10 +179,12 @@ class GPUThread(QThread):
         self.holo_filter_cache = {}
         self.holo_filter_cpu_cache = {}
         self.holo_y_filter_enabled = HOLO_Y_FILTER_ENABLED
+        self.holo_y_filter_profile_timing = HOLO_Y_FILTER_PROFILE_TIMING
         self.holo_y_filter_info_printed = False
         self.holo_y_filter_cache = {}
         self.holo_y_filter_cpu_cache = {}
         self._holo_y_run = False
+        self._last_holo_y_timing = None
         self.dynamic_normalization_eps = NORMALIZATION_EPS
         self.dynamic_temporal_lowpass_enabled = DYNAMIC_TEMPORAL_LOWPASS_ENABLED
         self.dynamic_uniform_filter_size = DYNAMIC_TEMPORAL_LOWPASS_WINDOW_SIZE
@@ -304,6 +322,7 @@ class GPUThread(QThread):
         while self.item.action != EXIT_ACTION:
             t1=time.time()
             self.active_tasks += 1
+            self._last_holo_y_timing = None
             try:
                 if self.item.action == GPUActions.GPU:
                     self.cudaFFT(self.item.DnS_action, self.item.acq_mode, self.item.memory_slot, self.item.context)
@@ -346,7 +365,14 @@ class GPUThread(QThread):
             finally:
                 self.active_tasks = max(0, self.active_tasks - 1)
             if time.time()-t1>1:
-                print('GPU thread took ', round(time.time()-t1,2), ' seconds for action: ', self.item.action)
+                message = (
+                    f"GPU thread took {round(time.time()-t1,2)} seconds for action: "
+                    f"{self.item.action}"
+                )
+                y_note = self.last_holo_y_timing_summary()
+                if y_note:
+                    message += f" ({y_note})"
+                print(message)
             self.item = self.queue.get()
             # print('GPU queue size:', self.queue.qsize())
         self.emit_status(self.exit_message)
@@ -443,9 +469,6 @@ class GPUThread(QThread):
         if n_crop == 0:
             return a[::factor]
         return a[:n_crop].reshape(n_crop // factor, factor).mean(axis=1)
-
-    def current_micro_steps(self):
-        return max(1, int(self.ui.MicroSteps.value()))
 
     def current_acq_mode(self):
         return self.ui.ACQMode.currentText()
@@ -567,15 +590,14 @@ class GPUThread(QThread):
     def should_run_holo_y_filter(self, acq_mode):
         """True when the full-volume Y notch should be applied.
 
-        Only whole-volume, non-dynamic C-scan acquisitions in the listed modes:
-        FastVolumeCscan and any dynamic path (incl. per-Y realtime) are skipped.
+        Only whole-volume, non-dynamic C-scan acquisitions in the listed modes.
+        Any dynamic path (including per-Y realtime and the dynamic-only
+        FastVolumeCscan path) is skipped, because there axis 0 is a per-Y time
+        series, not the spatial Y axis.
         """
         if not self.current_holo_y_filter_enabled():
             return False
         if acq_mode not in HOLO_Y_FILTER_MODES:
-            return False
-        item = getattr(self, "item", None)
-        if item is not None and getattr(item, "fast_volume", False):
             return False
         if self.current_dynamic_enabled():
             return False
@@ -629,19 +651,42 @@ class GPUThread(QThread):
         self.holo_y_filter_cpu_cache = {cache_key: weights}
         return weights
 
-    def apply_holo_y_filter_gpu(self, volume_gpu):
+    def apply_holo_y_filter_gpu(self, volume_gpu, timing=None):
         y_pixels = int(volume_gpu.shape[0])
+        block_start = self.profile_step_start()
+        weights_start = self.profile_step_start()
         weights_gpu = self.holo_y_filter_weights_gpu(y_pixels)
+        self.profile_step_end(timing, "holo_y_weights", weights_start)
+        fft_start = self.profile_step_start()
         filtered_ky_gpu = cupy.fft.fft(volume_gpu, axis=0)
+        self.profile_step_end(timing, "holo_y_fft_axis0", fft_start)
+        multiply_start = self.profile_step_start()
         filtered_ky_gpu *= weights_gpu[:, cupy.newaxis, cupy.newaxis]
-        return cupy.fft.ifft(filtered_ky_gpu, axis=0)
+        self.profile_step_end(timing, "holo_y_multiply", multiply_start)
+        ifft_start = self.profile_step_start()
+        result_gpu = cupy.fft.ifft(filtered_ky_gpu, axis=0)
+        self.profile_step_end(timing, "holo_y_ifft_axis0", ifft_start)
+        self.profile_step_end(timing, "holo_y_filter_gpu", block_start)
+        return result_gpu
 
-    def apply_holo_y_filter_cpu(self, volume):
+    def apply_holo_y_filter_cpu(self, volume, timing=None):
         y_pixels = int(volume.shape[0])
+        weights_start = self.profile_step_start()
         weights = self.holo_y_filter_weights_cpu(y_pixels)
-        filtered_ky = np.fft.fft(volume, axis=0)
+        self.profile_step_end(timing, "holo_y_weights", weights_start)
+        # scipy.fft is used instead of numpy.fft because it keeps the single
+        # (complex64) precision and can run the transform over multiple threads;
+        # numpy.fft promotes complex64 to complex128 and is single-threaded.
+        fft_start = self.profile_step_start()
+        filtered_ky = scipy.fft.fft(volume, axis=0, workers=-1)
+        self.profile_step_end(timing, "holo_y_fft_axis0", fft_start)
+        multiply_start = self.profile_step_start()
         filtered_ky *= weights[:, np.newaxis, np.newaxis]
-        return np.fft.ifft(filtered_ky, axis=0)
+        self.profile_step_end(timing, "holo_y_multiply", multiply_start)
+        ifft_start = self.profile_step_start()
+        filtered = scipy.fft.ifft(filtered_ky, axis=0, workers=-1)
+        self.profile_step_end(timing, "holo_y_ifft_axis0", ifft_start)
+        return filtered
 
     def select_fft_depth_result(self, fft_data, pixel_start, pixel_range, xp, keep_complex=False):
         depth_data = fft_data[:, pixel_start:pixel_start + pixel_range]
@@ -753,6 +798,69 @@ class GPUThread(QThread):
         else:
             cupy.cuda.Stream.null.synchronize()
 
+    def profile_step_start(self):
+        """Host-side timer for steps that need no CUDA synchronization.
+
+        Enabled by the general GPU timing switch or by the Y-notch timing switch
+        so the Y filter can be profiled without turning on full GPU profiling.
+        """
+        if not (self.gpu_profile_timing_enabled or self.holo_y_filter_profile_timing):
+            return None
+        return time.perf_counter()
+
+    def profile_step_end(self, timing, label, start):
+        if start is None or timing is None:
+            return
+        timing[label] = timing.get(label, 0.0) + (time.perf_counter() - start)
+
+    def holo_y_timing_labels(self):
+        """Labels that make up the Y-notch timing breakdown, in execution order."""
+        return (
+            "holo_y_cast_complex",
+            "holo_y_stage_gpu",
+            "holo_y_weights",
+            "holo_y_fft_axis0",
+            "holo_y_multiply",
+            "holo_y_ifft_axis0",
+            "holo_y_d2h",
+            "holo_y_to_magnitude",
+        )
+
+    def print_holo_y_timing(self, timing, volume):
+        """One-line Y-notch timing breakdown for the just-processed volume."""
+        if not self.holo_y_filter_profile_timing or timing is None:
+            return
+        labels = self.holo_y_timing_labels()
+        parts = [
+            f"{label}={timing[label] * 1000.0:.2f} ms"
+            for label in labels
+            if label in timing
+        ]
+        if not parts:
+            return
+        # Keep the labels around so the slow-action message can report how much
+        # of the action was spent in the Y notch.
+        self._last_holo_y_timing = dict(timing)
+        label_values = "".join(
+            f", {label}={timing.get(label, 0.0) * 1000.0:.2f} ms"
+            for label in ("holo_y_filter_gpu", "holo_y_block")
+        )
+        shape = tuple(int(v) for v in volume.shape)
+        message = (
+            f"Y notch filter timing [shape={shape}, dtype={volume.dtype}]: "
+            + ", ".join(parts)
+            + label_values
+        )
+        print(message)
+
+    def last_holo_y_timing_summary(self):
+        """Total Y-notch time of the last processed action, or None if skipped."""
+        timing = getattr(self, "_last_holo_y_timing", None)
+        if not timing:
+            return None
+        total = sum(timing.get(label, 0.0) for label in self.holo_y_timing_labels())
+        return f"Y notch ~{total * 1000.0:.0f} ms"
+
     def format_gpu_timing_summary(self, timing):
         ordered_labels = [
             "prepare_request",
@@ -769,6 +877,17 @@ class GPUThread(QThread):
             "fft",
             "select_depth_result",
             "reshape_depth",
+            "holo_y_cast_complex",
+            "holo_y_stage_gpu",
+            "holo_y_reshape",
+            "holo_y_weights",
+            "holo_y_fft_axis0",
+            "holo_y_multiply",
+            "holo_y_ifft_axis0",
+            "holo_y_d2h",
+            "holo_y_to_magnitude",
+            "holo_y_filter_gpu",
+            "holo_y_block",
             "post_fft_scaling",
             "background_x_normalization",
             "copy_chunk_to_dynamic_gpu",
@@ -837,14 +956,19 @@ class GPUThread(QThread):
             background_reference_gpu = self.block_mean_axis0(background_reference_gpu, aline_avg)
         # Allocate output with effective frame count. In AMP+PHASE mode, keep the
         # complex FFT result through the device-to-host transfer. When the Y notch
-        # is active we also keep the complex field so the filter is linear.
+        # is active the complex volume stays on the device (holo_y_gpu_buffer), is
+        # filtered there with cuFFT, and only the final magnitude/complex result is
+        # copied back, so no host round trip is needed for the notch.
         run_y_filter = self.should_run_holo_y_filter(acq_mode)
         self._holo_y_run = run_y_filter
-        if self.current_fft_result_mode() == "AMP+PHASE" or run_y_filter:
+        if self.current_fft_result_mode() == "AMP+PHASE":
             output_dtype = np.complex64
         else:
             output_dtype = np.float32
         self.data_CPU = np.empty((effective_frames, x_pixels_out, Pixel_range), dtype=output_dtype)
+        holo_y_gpu_buffer = None
+        if run_y_filter:
+            holo_y_gpu_buffer = cupy.empty(self.data_CPU.shape, dtype=cupy.complex64)
         dynamic_gpu_stack = None
         if self.should_run_realtime_dynamic():
             stack_start = self.gpu_timing_start()
@@ -868,18 +992,31 @@ class GPUThread(QThread):
                 timing,
                 dynamic_gpu_stack,
                 x_pixels_out=x_pixels_out,
+                holo_y_gpu_buffer=holo_y_gpu_buffer,
             )
         finally:
             self._holo_y_run = False
         del background_reference_gpu
 
         if run_y_filter:
-            # Full-volume Y notch on the complex field (axis 0 = Y), then convert
-            # to magnitude for AMP mode.
-            self.data_CPU = np.asarray(self.data_CPU, dtype=np.complex64)
-            self.data_CPU = self.apply_holo_y_filter_cpu(self.data_CPU)
+            # Full-volume Y notch on the complex field (axis 0 = Y). The volume is
+            # already on the device at this point, so it is filtered with cuFFT
+            # in place and only the final result is copied back once. The previous
+            # host-side numpy filter cost ~2 s per volume.
+            block_start = self.profile_step_start()
+            volume_gpu = self.apply_holo_y_filter_gpu(holo_y_gpu_buffer, timing=timing)
+            magnitude_start = self.profile_step_start()
             if self.current_fft_result_mode() != "AMP+PHASE":
-                self.data_CPU = np.absolute(self.data_CPU).astype(np.float32)
+                result_gpu = cupy.absolute(volume_gpu)
+            else:
+                result_gpu = volume_gpu
+            self.profile_step_end(timing, "holo_y_to_magnitude", magnitude_start)
+            d2h_start = self.profile_step_start()
+            cupy.asnumpy(result_gpu, out=self.data_CPU, blocking=True)
+            self.profile_step_end(timing, "holo_y_d2h", d2h_start)
+            self.profile_step_end(timing, "holo_y_block", block_start)
+            del volume_gpu, result_gpu, holo_y_gpu_buffer
+            self.print_holo_y_timing(timing, self.data_CPU)
         # print('data_CPU shape', self.data_CPU.shape)
         # print('data_CPU:', self.data_CPU[0,0,0:15])
         if self.should_run_realtime_dynamic():
@@ -909,15 +1046,6 @@ class GPUThread(QThread):
                 log_filename,
                 frame_offset=0,
                 y_slice_index=y_slice_index,
-            )
-        # FastVolumeCscan (static): regroup (block, repetition, step) frames
-        # into per-Y averages before display/save.
-        if getattr(self.item, "fast_volume", False) and not getattr(self.item, "per_y_dynamic", False):
-            self.data_CPU = fast_volume_regroup(
-                self.data_CPU,
-                self.current_y_pixels(),
-                self.current_micro_steps(),
-                self.current_bline_avg(),
             )
         # display and save data, data type is float32
         an_action = DnSActionField(
@@ -949,6 +1077,9 @@ class GPUThread(QThread):
         )
 
     def fft_cpu(self, DnS_action, acq_mode, memory_slot, context):
+        # Timing container for the Y-notch profiling; the CPU path has no other
+        # profiled steps of its own.
+        timing = {}
         samples = self.current_nsamples()
         pixel_start = self.current_depth_start()
         pixel_range = self.current_depth_range()
@@ -987,13 +1118,17 @@ class GPUThread(QThread):
         if background_reference_cpu is not None and aline_avg > 1:
             background_reference_cpu = self.block_mean_axis0(background_reference_cpu, aline_avg)
         self.apply_saved_background_subtraction_cpu(self.data_CPU, background_reference_cpu)
-        baseline = uniform_filter1d(
-            self.data_CPU,
-            size=self.current_spectral_baseline_window_size(),
-            axis=2,
-        )
-        self.data_CPU -= baseline
-        del baseline
+        # --- Spectral baseline removal: DISABLED on request -------------------
+        # Uniform moving-average low-pass along the spectral axis (axis=2) and the
+        # subtraction of that baseline are commented out; uncomment the block to
+        # restore it (same operation as the GPU kernel below).
+        # baseline = uniform_filter1d(
+        #     self.data_CPU,
+        #     size=self.current_spectral_baseline_window_size(),
+        #     axis=2,
+        # )
+        # self.data_CPU -= baseline
+        # del baseline
 
         alines = processed_shape[0] * processed_shape[1]
         self.data_CPU = self.data_CPU.reshape([alines, samples])
@@ -1013,16 +1148,25 @@ class GPUThread(QThread):
         if run_y_filter:
             # Keep the complex depth-trimmed field so the Y notch is a linear
             # filter on the complex volume.
+            block_start = self.profile_step_start()
             self.data_CPU = self.select_fft_depth_result(
                 self.data_CPU, pixel_start, pixel_range, np, keep_complex=True
             )
+            cast_start = self.profile_step_start()
             self.data_CPU = np.asarray(self.data_CPU, dtype=np.complex64)
+            self.profile_step_end(timing, "holo_y_cast_complex", cast_start)
+            reshape_start = self.profile_step_start()
             self.data_CPU = self.data_CPU.reshape(
                 processed_shape[0], processed_shape[1], pixel_range
             )
-            self.data_CPU = self.apply_holo_y_filter_cpu(self.data_CPU)
+            self.profile_step_end(timing, "holo_y_reshape", reshape_start)
+            self.data_CPU = self.apply_holo_y_filter_cpu(self.data_CPU, timing=timing)
+            magnitude_start = self.profile_step_start()
             if self.current_fft_result_mode() != "AMP+PHASE":
                 self.data_CPU = np.absolute(self.data_CPU).astype(np.float32)
+            self.profile_step_end(timing, "holo_y_to_magnitude", magnitude_start)
+            self.profile_step_end(timing, "holo_y_block", block_start)
+            self.print_holo_y_timing(timing, self.data_CPU)
         else:
             self.data_CPU = self.select_fft_depth_result(self.data_CPU, pixel_start, pixel_range, np)
             if self.current_fft_result_mode() == "AMP+PHASE":
@@ -1058,16 +1202,6 @@ class GPUThread(QThread):
                 log_filename,
                 frame_offset=0,
                 y_slice_index=y_slice_index,
-            )
-
-        # FastVolumeCscan (static): regroup (block, repetition, step) frames
-        # into per-Y averages before display/save.
-        if getattr(self.item, "fast_volume", False) and not getattr(self.item, "per_y_dynamic", False):
-            self.data_CPU = fast_volume_regroup(
-                self.data_CPU,
-                self.current_y_pixels(),
-                self.current_micro_steps(),
-                self.current_bline_avg(),
             )
 
         an_action = DnSActionField(
@@ -1355,6 +1489,7 @@ class GPUThread(QThread):
         timing=None,
         dynamic_gpu_stack=None,
         x_pixels_out=None,
+        holo_y_gpu_buffer=None,
     ):
         if timing is None:
             timing = {}
@@ -1402,6 +1537,7 @@ class GPUThread(QThread):
                 timing,
                 dynamic_gpu_stack,
                 x_pixels_out=x_pixels_out,
+                holo_y_gpu_buffer=holo_y_gpu_buffer,
             )
             timing["_chunks"] = timing.get("_chunks", 0) + 1
 
@@ -1439,6 +1575,7 @@ class GPUThread(QThread):
         timing=None,
         dynamic_gpu_stack=None,
         x_pixels_out=None,
+        holo_y_gpu_buffer=None,
     ):
         if timing is None:
             timing = {}
@@ -1463,9 +1600,17 @@ class GPUThread(QThread):
                 dynamic_gpu_stack[frame_offset:output_end, :, :] = data_gpu
                 self.gpu_timing_end(timing, "copy_chunk_to_dynamic_gpu", dynamic_copy_start, stream)
 
-            copy_start = self.gpu_timing_start(stream)
-            self.copy_gpu_to_host_async(data_gpu, host_out, stream)
-            self.gpu_timing_end(timing, "copy_gpu_to_host", copy_start, stream)
+            if holo_y_gpu_buffer is not None:
+                # Y notch active: keep the complex chunk on the device instead of
+                # copying it to the host and uploading it again for the filter.
+                stage_start = self.gpu_timing_start(stream)
+                output_end = frame_offset + data_gpu.shape[0]
+                holo_y_gpu_buffer[frame_offset:output_end, :, :] = data_gpu
+                self.gpu_timing_end(timing, "holo_y_stage_gpu", stage_start, stream)
+            else:
+                copy_start = self.gpu_timing_start(stream)
+                self.copy_gpu_to_host_async(data_gpu, host_out, stream)
+                self.gpu_timing_end(timing, "copy_gpu_to_host", copy_start, stream)
 
         return {
             'stream': stream,
@@ -1533,9 +1678,14 @@ class GPUThread(QThread):
         )
         self.gpu_timing_end(timing, "saved_background_subtraction", step_start, stream)
 
-        step_start = self.gpu_timing_start(stream)
-        y_gpu = self.apply_highpass_filter(y_gpu, slot=slot)
-        self.gpu_timing_end(timing, "spectral_highpass", step_start, stream)
+        # --- Spectral baseline removal: DISABLED on request -------------------
+        # This step smoothed the raw spectrum along each A-line (uniform
+        # moving-average, GPU_SPECTRAL_BASELINE_WINDOW_SIZE samples) and then
+        # subtracted that smoothed baseline ("high-pass" in the timing label).
+        # It is commented out now; uncomment these three lines to restore it.
+        # step_start = self.gpu_timing_start(stream)
+        # y_gpu = self.apply_highpass_filter(y_gpu, slot=slot)
+        # self.gpu_timing_end(timing, "spectral_highpass", step_start, stream)
         keep_alive.append(y_gpu)
 
         step_start = self.gpu_timing_start(stream)
@@ -1656,6 +1806,12 @@ class GPUThread(QThread):
         return self.float_gpu_stream_buffers[slot]
 
     def apply_highpass_filter(self, data_gpu, slot=None):
+        """UNUSED for now: uniform-baseline subtraction of the raw spectrum.
+
+        The call site in the FFT pipeline is commented out (see the "Spectral
+        baseline removal: DISABLED on request" note in the chunked pipeline), so
+        this kernel currently never runs; it is kept for easy re-enabling.
+        """
         out_gpu = self.gpu_highpass_buffer(data_gpu.shape, slot=slot)
         threads = 256
         lines = int(data_gpu.shape[0] * data_gpu.shape[1])
@@ -2222,8 +2378,6 @@ class GPUThread(QThread):
         return self.frequency_hsv_metrics_from_power_gpu(power_gpu, frequencies_hz_gpu, timing=timing)
 
     def pre_avg_factor(self):
-        if getattr(self.item, "fast_volume", False) and not getattr(self.item, "per_y_dynamic", False):
-            return 1
         if self.current_dynamic_enabled():
             return max(1, int(self.gpu_pre_avg_factor))
         return self.current_bline_avg()
