@@ -984,9 +984,11 @@ class DnSThread(QThread):
         xpixels = shape.x_pixels
         ypixels = self.current_y_pixels()
         dynamic_bline_idx = int(self.item.dynamic_bline_idx or 0)
-        # Shading correction: correct the acquired line before it is used/stored.
-        data = self._shading_correct_chunk(data, dynamic_bline_idx, z_logical=zpixels)
-        display_data = self.display_data(data)
+        if dynamic_bline_idx == 0:
+            # New tile: the whole-tile shading pass has not run for it yet.
+            self.shading_tile_corrected = False
+        # Shading correction is applied to the whole tile volume at the end of the
+        # FOV (see _shading_correct_tile_volumes), not line by line.
 
         if display_data.shape[0] > 1:
             bline = np.mean(display_data, 0)
@@ -997,12 +999,8 @@ class DnSThread(QThread):
         hsv_slice = self.dynamic_hsv_data(dynamic)
         freq_slice = self.dynamic_frequency_data(dynamic)
         bandwidth_slice = self.dynamic_bandwidth_data(dynamic)
-        # Dynamic products carry the flat gain only (no additive dark term).
-        dyn_slice = self._shading_gain_line(dyn_slice, dynamic_bline_idx, zpixels)
         if np.size(hsv_slice) > 0:
             hsv_slice = np.asarray(hsv_slice, dtype=np.float32)
-            # only the V channel of the stored HSV is a shading affected quantity
-            hsv_slice = self._shading_gain_line(hsv_slice, dynamic_bline_idx, zpixels)
             rgb_slice = self.dynamic_hsv_to_rgb(hsv_slice)
         else:
             rgb_slice = []
@@ -1079,6 +1077,8 @@ class DnSThread(QThread):
         )
         print('Ypixel: ', dynamic_bline_idx + 1, ' / ', ypixels)
         if dynamic_bline_idx + 1 == ypixels:
+            # Whole-tile shading correction, once, before display and save.
+            self._shading_correct_tile_volumes(zpixels)
             # Filter the structure volume before the per-FOV volumes are saved.
             self._apply_y_notch_to_structure()
             if self.current_save_enabled():
@@ -1087,6 +1087,76 @@ class DnSThread(QThread):
             
    
     # --------------------------------------------------------------- shading
+    def _shading_line_cache_entry(self, index, z_count):
+        """``(flat, dark)`` of one line as ``(X, Z)``, computed once per line.
+
+        The per-line path is only used where the data must be corrected before it is
+        written (the non-realtime dynamic stack): caching the interpolated row means
+        the 50 repeat frames of a line share one interpolation instead of rebuilding
+        the whole ``[Z, Y, X]`` field for every frame.
+        """
+        cache = getattr(self, "shading_line_cache", None)
+        if cache is None:
+            cache = {}
+            self.shading_line_cache = cache
+        key = (int(index), int(z_count))
+        entry = cache.get(key)
+        if entry is None:
+            flat, dark = self.shading_field.line_fields(int(index), 0, int(z_count))
+            entry = (np.maximum(flat, 1e-3), dark)
+            cache[key] = entry
+        return entry
+
+    def _shading_correct_tile_volumes(self, z_pixels=None):
+        """Correct the whole tile once, before it is displayed and written.
+
+        Whole-tile pass (the per-line version interpolated the field for every Y line
+        and every repeat frame): the structure volume gets ``(I - dark)/flat``, the
+        dynamic std volume and the V channel of the colour volume get the flat gain
+        only (H and S are shape quantities and stay untouched), and the depth maps
+        that feed the live mosaic are refreshed from the corrected volumes.
+        """
+        field = self.shading_field
+        if field is None or getattr(self, "shading_tile_corrected", False):
+            return False
+        corrected = False
+        structure = self.MeanVolume if isinstance(self.MeanVolume, np.ndarray) else self.XYVolume
+        if isinstance(structure, np.ndarray) and structure.ndim == 3 and np.size(structure):
+            field.apply_structure_volume(structure, inplace=True)
+            corrected = True
+        dynamic = getattr(self, "DynamicVolume", None)
+        if isinstance(dynamic, np.ndarray) and dynamic.ndim == 3 and np.size(dynamic):
+            field.apply_gain_volume(np.asarray(dynamic, np.float32), inplace=True)
+        hsv = getattr(self, "DynamicHSVVolume", None)
+        if isinstance(hsv, np.ndarray) and hsv.ndim == 4 and np.size(hsv):
+            field.apply_gain_channel(np.asarray(hsv[..., 2], np.float32), inplace=True)
+        if not corrected:
+            return False
+        self._refresh_mosaic_maps_from_volumes(z_pixels)
+        self.shading_tile_corrected = True
+        return True
+
+    def _refresh_mosaic_maps_from_volumes(self, z_pixels=None):
+        """Rebuild the depth maps of the live mosaic from the corrected volumes."""
+        structure = self.MeanVolume if isinstance(self.MeanVolume, np.ndarray) else None
+        if not isinstance(structure, np.ndarray) or structure.ndim != 3 or not np.size(structure):
+            return
+        z_count = int(structure.shape[2])
+        z_idx = self.current_z_depth_index(z_pixels or z_count)
+        z_idx = int(np.clip(z_idx, 0, z_count - 1))
+        if isinstance(getattr(self, "AIP", None), np.ndarray) and self.AIP.shape[:2] == structure.shape[:2]:
+            self.AIP[:] = structure[:, :, z_idx]
+        dynamic = getattr(self, "DynamicVolume", None)
+        if (isinstance(dynamic, np.ndarray) and dynamic.ndim == 3
+                and isinstance(getattr(self, "Dyn", None), np.ndarray)
+                and self.Dyn.shape[:2] == dynamic.shape[:2]):
+            self.Dyn[:] = dynamic[:, :, min(z_idx, dynamic.shape[2] - 1)]
+            hsv = getattr(self, "DynamicHSVVolume", None)
+            if (isinstance(hsv, np.ndarray) and hsv.ndim == 4
+                    and isinstance(getattr(self, "DynHSV", None), np.ndarray)
+                    and self.DynHSV.shape[:2] == hsv.shape[:2]):
+                self.DynHSV[:] = hsv[:, :, min(z_idx, hsv.shape[2] - 1), :]
+
     def shading_enabled(self):
         """The run-level "shading correction" switch (default on)."""
         return bool(getattr(self.ui, "shading_correction",
@@ -1112,6 +1182,9 @@ class DnSThread(QThread):
         self.shading_field = None
         self.shading_accumulator = None
         self.shading_signature = {}
+        # Per-line field cache and the "this tile is already corrected" flag.
+        self.shading_line_cache = {}
+        self.shading_tile_corrected = False
         if not self.shading_enabled():
             print("Shading correction: disabled for this run.")
             return
@@ -1158,6 +1231,8 @@ class DnSThread(QThread):
 
         ``index`` is the Y line of the tile (None corrects a whole volume at once).
         With no field active (the reference sample) the data is returned untouched.
+        The whole frame stack of a line is corrected in one vectorised step; the
+        field rows are cached per line (:meth:`_shading_line_cache_entry`).
         """
         field = self.shading_field
         if field is None or not isinstance(data, np.ndarray) or not np.size(data):
@@ -1166,17 +1241,22 @@ class DnSThread(QThread):
             amplitude, phase = split_amplitude_phase(data, z_logical)
             corrected = field.apply_structure_volume(np.asarray(amplitude, np.float32))
             return combine_amplitude_phase(corrected, phase) if phase is not None else corrected
-        if data.ndim == 3:
-            # per line: a frame stack of one Y row (complex or amp+phase interleaved)
-            depth = int(z_logical) if z_logical else int(data.shape[-1])
-            out = np.empty(data.shape,
-                           np.complex64 if data.dtype.kind == "c" else np.float32)
-            for frame in range(data.shape[0]):
-                out[frame] = field.apply_structure_line(
-                    data[frame], int(index), 0, depth, z_logical=z_logical
-                )
+        if data.ndim != 3:
+            return data
+        depth = int(z_logical) if z_logical else int(data.shape[-1])
+        flat, dark = self._shading_line_cache_entry(int(index), depth)
+        interleaved = bool(z_logical) and data.shape[-1] == 2 * int(z_logical)
+        if interleaved:
+            # amplitude + phase interleaved: correct the amplitude half only
+            out = np.array(data, np.float32, copy=True)
+            out[..., :depth] = (out[..., :depth] - dark) / flat
             return out
-        return data
+        if data.dtype.kind == "c":
+            amplitude = np.abs(data)
+            unit_phase = np.divide(data, amplitude, out=np.zeros_like(data),
+                                   where=amplitude > 1e-12)
+            return ((amplitude - dark) / flat) * unit_phase
+        return (np.asarray(data, np.float32) - dark) / flat
 
     def _shading_gain_line(self, line, index, z_count):
         """Apply the flat gain to one line of a dynamic product (``[X, Z]``)."""
@@ -1184,8 +1264,7 @@ class DnSThread(QThread):
         data = np.asarray(line)
         if field is None or data.ndim < 2 or not np.size(data):
             return line
-        flat, _dark = field.line_fields(int(index), 0, int(z_count))
-        flat = np.maximum(flat, 1e-3)
+        flat, _dark = self._shading_line_cache_entry(int(index), int(z_count))
         if data.ndim == 3:
             out = np.array(data, np.float32, copy=True)
             out[..., 2] = out[..., 2] / flat          # HSV: only the V channel
@@ -1641,9 +1720,12 @@ class DnSThread(QThread):
         Xpixels = shape.x_pixels
         Ypixels = int(self.mosaic_y_pixels or self.current_y_pixels())
         dynamic_bline_idx = int(self.item.dynamic_bline_idx or 0)
-        # Shading correction: correct the acquired line before it is used/stored.
-        data = self._shading_correct_chunk(data, dynamic_bline_idx, z_logical=Zpixels)
-        display_data = self.display_data(data)
+        if dynamic_bline_idx == 0:
+            # New tile: the whole-tile shading pass has not run for it yet.
+            self.shading_tile_corrected = False
+        # Shading correction is applied to the whole tile volume at the end of the
+        # FOV (see _shading_correct_tile_volumes), not line by line: the per-line
+        # version interpolated the field for every Y line and every repeat frame.
 
         if display_data.shape[0] > 1:
             Bline = np.mean(display_data, 0)
@@ -1654,12 +1736,8 @@ class DnSThread(QThread):
         HSVSlice = self.dynamic_hsv_data(dynamic)
         FreqSlice = self.dynamic_frequency_data(dynamic)
         BandwidthSlice = self.dynamic_bandwidth_data(dynamic)
-        # Dynamic products carry the flat gain only (no additive dark term).
-        DynSlice = self._shading_gain_line(DynSlice, dynamic_bline_idx, Zpixels)
         if np.size(HSVSlice) > 0:
             HSVSlice = np.asarray(HSVSlice, dtype=np.float32)
-            # only the V channel of the stored HSV is shading affected
-            HSVSlice = self._shading_gain_line(HSVSlice, dynamic_bline_idx, Zpixels)
             RGBSlice = self.dynamic_hsv_to_rgb(HSVSlice)
         else:
             RGBSlice = []
@@ -1740,6 +1818,8 @@ class DnSThread(QThread):
 
         tile_complete = dynamic_bline_idx + 1 == Ypixels
         if tile_complete:
+            # Whole-tile shading correction, once, before display and save.
+            self._shading_correct_tile_volumes(Zpixels)
             # Filter the structure volume before the per-FOV volumes are saved.
             self._apply_y_notch_to_structure()
             if self.current_save_enabled():

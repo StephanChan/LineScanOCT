@@ -195,10 +195,36 @@ class ShadingField:
         return (1.0 / np.maximum(field_flat[0], 1e-3)).astype(np.float32)
 
     def line_fields(self, y_row, z_start, z_count):
-        """``(flat, dark)`` of one Y line as ``(X, Z)`` (per-line correction)."""
-        flat, dark = self.depth_fields(z_start, z_count)
-        y_row = int(np.clip(y_row, 0, flat.shape[1] - 1))
-        return flat[:, y_row, :].T, dark[:, y_row, :].T
+        """``(flat, dark)`` of one Y line as ``(X, Z)`` (per-line correction).
+
+        Only that row is interpolated (``expand_field_planes`` would build the whole
+        ``[Z, Y, X]`` block, which is what made a per-line correction expensive);
+        the interpolation itself is identical, so a line-wise correction equals the
+        whole-volume one.
+        """
+        y_row = int(y_row)
+        z_count = int(max(1, z_count))
+        if not self.per_depth:
+            flat = np.repeat(self.flat[y_row][None, :], z_count, axis=0)
+            dark = np.repeat(self.dark[y_row][None, :], z_count, axis=0)
+            return flat.T, dark.T
+        planes = np.asarray(self.z_planes, dtype=np.float64).ravel() + int(z_start)
+        flat_planes = self.flat[:, y_row, :]
+        dark_planes = self.dark[:, y_row, :]
+        flat = np.empty((z_count, flat_planes.shape[-1]), dtype=np.float32)
+        dark = np.empty_like(flat)
+        for z in range(z_count):
+            index = int(np.clip(np.searchsorted(planes, z, side="right") - 1,
+                                0, planes.size - 1))
+            if index >= planes.size - 1:
+                flat[z] = flat_planes[-1]
+                dark[z] = dark_planes[-1]
+                continue
+            span = planes[index + 1] - planes[index]
+            weight = 0.0 if span <= 0 else float((z - planes[index]) / span)
+            flat[z] = (1.0 - weight) * flat_planes[index] + weight * flat_planes[index + 1]
+            dark[z] = (1.0 - weight) * dark_planes[index] + weight * dark_planes[index + 1]
+        return flat.T, dark.T
 
     # -- application --------------------------------------------------------
     def apply_structure_line(self, line, y_row, z_start, z_count, z_logical=None):
@@ -220,9 +246,9 @@ class ShadingField:
             return out
         return (data - dark_map) / flat_map
 
-    def apply_structure_volume(self, volume, z_start=0, clip=False):
-        """Correct a whole ``[Y, X, Z]`` amplitude volume."""
-        out = np.array(volume, dtype=np.float32, copy=True)
+    def apply_structure_volume(self, volume, z_start=0, clip=False, inplace=False):
+        """Correct a whole ``[Y, X, Z]`` amplitude volume (``(I - dark)/flat``)."""
+        out = np.asarray(volume, np.float32) if inplace else np.array(volume, np.float32, copy=True)
         z_count = int(out.shape[2])
         flat, dark = self.depth_fields(z_start, z_count)
         for z in range(z_count):
@@ -231,9 +257,9 @@ class ShadingField:
             np.maximum(out, 0.0, out=out)
         return out
 
-    def apply_gain_volume(self, volume, z_start=0, clip=False):
+    def apply_gain_volume(self, volume, z_start=0, clip=False, inplace=False):
         """Scale a whole volume by the flat gain only (dynamic products)."""
-        out = np.array(volume, dtype=np.float32, copy=True)
+        out = np.asarray(volume, np.float32) if inplace else np.array(volume, np.float32, copy=True)
         z_count = int(out.shape[2])
         flat, _dark = self.depth_fields(z_start, z_count)
         for z in range(z_count):
@@ -241,6 +267,10 @@ class ShadingField:
         if clip:
             np.maximum(out, 0.0, out=out)
         return out
+
+    def apply_gain_channel(self, channel, z_start=0, clip=False, inplace=False):
+        """Scale one ``[Y, X, Z]`` dynamic channel (the V of the colour volume)."""
+        return self.apply_gain_volume(channel, z_start=z_start, clip=clip, inplace=inplace)
 
     def apply_gain_map(self, image, z_depth):
         """Scale a ``[Y, X]`` (or ``[Y, X, C]``) dynamic map by the flat gain."""
