@@ -1430,15 +1430,17 @@ class DnSThread(QThread):
         )
         print(f"Note: tile {order} was not stitched; its neighbours will not fade over it.")
 
-    def _blend_mosaic_tile(self, buffer, source, paste, weight_key=None):
+    def _blend_mosaic_tile(self, buffer, source, paste, weight_key=None, advance=True):
         """Cross-fade one acquired tile into a full-resolution live mosaic buffer.
 
-        ``weight_key`` names the normalised weight map of that buffer (one per
-        mosaic plane, because every plane is blended in the same tile order): the
-        map keeps the fade normalised, so the part of a tile that has no neighbour
-        yet is not darkened by its own ramp.  Preview pastes of a partly acquired
-        tile pass ``None`` instead: they are repeated for the same box, and only the
-        final full paste of a tile may advance the weight map.
+        ``weight_key`` names the weight-sum map of that buffer (one per mosaic
+        plane, because every plane is blended in the same tile order): the map keeps
+        the blend a weighted average, so the sum of the tile weights of the
+        neighbouring tiles -- not only one of them -- decides the mix in an overlap,
+        and the part of a tile that has no neighbour yet is not darkened by its own
+        ramp.  ``advance=False`` reads that map without adding this tile to it, for
+        the repeated preview pastes of a tile that is still being acquired; only the
+        closing paste of the tile may advance it.
         """
         if (
             paste is None
@@ -1458,11 +1460,11 @@ class DnSThread(QThread):
             padded[:height, :width] = source[:height, :width]
             source = padded
         weights = self._mosaic_weight_map(weight_key, buffer.shape[:2])
-        blend_paste(buffer, source, paste, weights=weights)
+        blend_paste(buffer, source, paste, weights=weights, advance=advance)
         return True
 
     def _mosaic_weight_map(self, key, shape):
-        """Normalised fade weight map of one live mosaic plane (lazy, per key)."""
+        """Weight-sum map of one live mosaic plane (lazy, per key)."""
         if not key:
             return None
         maps = getattr(self, "mosaic_weight_maps", None)
@@ -1476,7 +1478,7 @@ class DnSThread(QThread):
             maps[key] = existing
         return existing
         
-    def _paste_stitched_volume(self, storage_attr, source, order, final=True):
+    def _paste_stitched_volume(self, storage_attr, source, order, final=True, rows=None):
         """Paste a per-FOV 3D volume into the stitched mosaic volume.
 
         The source (e.g. XYVolume / DynamicVolume / DynamicHSVVolume) is
@@ -1484,6 +1486,15 @@ class DnSThread(QThread):
         unchanged) using the UI "downsample scale", and cross-faded into the
         correspondingly downsampled stitched volume buffer using the downsampled
         layout (same physical placement as the full-resolution mosaic).
+
+        ``rows`` limits the paste to the Y rows acquired so far, for the live
+        preview of a tile that is still being scanned.  This is what keeps the
+        preview free of the dark band along the tile boundary: the rows that are
+        not acquired yet are still zeros in the accumulator, so pasting the whole
+        tile box would cross-fade those zeros into the neighbour's part of the
+        overlap on every refresh, fading the strip by ``(1-w)`` each time.  The
+        closing paste (``final=True``) always covers the whole box, and it is the
+        only one that adds the tile to the weight-sum maps of the volumes.
         """
         if (
             source is None
@@ -1495,21 +1506,39 @@ class DnSThread(QThread):
         ):
             return
         paste = self.mosaic_layout_ds.placements[order]
+        limit = None
+        if rows is not None:
+            limit = max(1, min(int(rows), int(source.shape[0])))
+            source = source[:limit]
         down = downsample_mosaic_volume(source, self.mosaic_downsample)
-        if tuple(down.shape[:2]) != (paste.h, paste.w):
-            padded = np.zeros((paste.h, paste.w) + tuple(down.shape[2:]), dtype=down.dtype)
-            height = min(paste.h, int(down.shape[0]))
-            width = min(paste.w, int(down.shape[1]))
-            padded[:height, :width] = down[:height, :width]
-            down = padded
+        if limit is None:
+            if tuple(down.shape[:2]) != (paste.h, paste.w):
+                padded = np.zeros((paste.h, paste.w) + tuple(down.shape[2:]), dtype=down.dtype)
+                height = min(paste.h, int(down.shape[0]))
+                width = min(paste.w, int(down.shape[1]))
+                padded[:height, :width] = down[:height, :width]
+                down = padded
+        else:
+            # Partial tile: shorten the paste box instead of filling the rows that
+            # are not acquired yet with zeros.
+            paste = self._row_limited_paste(paste, down.shape[0])
+            if down.shape[1] < paste.w:
+                # Only a rounding difference can shorten the tile width; pad it so
+                # the blend block shapes keep matching.
+                wider = np.zeros(
+                    (down.shape[0], paste.w) + tuple(down.shape[2:]), dtype=down.dtype
+                )
+                wider[:, : down.shape[1]] = down
+                down = wider
+            down = down[: paste.h, : paste.w]
         tensor = getattr(self, storage_attr, None)
         if not isinstance(tensor, np.ndarray) or tensor.shape[:2] != self.mosaic_volume_shape:
             tensor = np.zeros(
                 self.mosaic_volume_shape + tuple(down.shape[2:]), dtype=np.float32
             )
             setattr(self, storage_attr, tensor)
-        weights = self._mosaic_weight_map(storage_attr, self.mosaic_volume_shape) if final else None
-        blend_paste(tensor, down, paste, weights=weights)
+        weights = self._mosaic_weight_map(storage_attr, self.mosaic_volume_shape)
+        blend_paste(tensor, down, paste, weights=weights, advance=final)
 
     def Focusing(self, cscan):
          print(cscan.shape)
@@ -1525,13 +1554,16 @@ class DnSThread(QThread):
          message = 'Detected tile surface height: '+str(surfHeight)
          print(message)
  
-    def _blend_mosaic_maps(self, paste, aip_rows=None):
+    def _blend_mosaic_maps(self, paste, aip_rows=None, advance=True):
         """Blend the 2-D mosaic maps of the current tile (AIP + dynamic maps).
 
         ``aip_rows`` limits every source to the Y rows acquired so far, which is
         what the per-line live preview uses; with ``None`` the complete tile is
         pasted.  The 3-D stitched volumes are not touched here (they are the
-        expensive part: see ``_paste_stitched_volume``).
+        expensive part: see ``_paste_stitched_volume``).  ``advance=False`` (the
+        preview of a tile that is still being scanned) reads the weight-sum maps
+        without adding this tile to them, so the repeated preview pastes of the same
+        box stay consistent and only the closing paste of the tile counts.
         """
         def acquired(source):
             if aip_rows is None or not isinstance(source, np.ndarray) or source.ndim < 2:
@@ -1539,8 +1571,7 @@ class DnSThread(QThread):
             return source[: min(int(aip_rows), int(source.shape[0]))]
 
         wrote = self._blend_mosaic_tile(
-            self.SampleMosaic, acquired(self.AIP), paste,
-            None if aip_rows is not None else "xy",
+            self.SampleMosaic, acquired(self.AIP), paste, "xy", advance=advance,
         )
         if STITCH_MOSAIC_DYNAMIC_UI and (
             hasattr(self, "DynRGB")
@@ -1550,22 +1581,22 @@ class DnSThread(QThread):
         ):
             self._blend_mosaic_tile(
                 self.SampleMosaicRGB, acquired(self.DynRGB), paste,
-                None if aip_rows is not None else "rgb",
+                "rgb", advance=advance,
             )
         if STITCH_MOSAIC_DYNAMIC_UI and isinstance(self.SampleMosaicHSV, np.ndarray) and isinstance(self.DynHSV, np.ndarray) and np.size(self.DynHSV) > 0:
             self._blend_mosaic_tile(
                 self.SampleMosaicHSV, acquired(self.DynHSV), paste,
-                None if aip_rows is not None else "hsv",
+                "hsv", advance=advance,
             )
         if STITCH_MOSAIC_DYNAMIC_UI and isinstance(self.SampleMosaicDyn, np.ndarray) and isinstance(self.Dyn, np.ndarray) and np.size(self.Dyn) > 0:
             self._blend_mosaic_tile(
                 self.SampleMosaicDyn, acquired(self.Dyn), paste,
-                None if aip_rows is not None else "dyn",
+                "dyn", advance=advance,
             )
         if STITCH_MOSAIC_DYNAMIC_UI and isinstance(self.SampleMosaicFreq, np.ndarray) and isinstance(self.DynFreq, np.ndarray) and np.size(self.DynFreq) > 0:
             self._blend_mosaic_tile(
                 self.SampleMosaicFreq, acquired(self.DynFreq), paste,
-                None if aip_rows is not None else "freq",
+                "freq", advance=advance,
             )
         if STITCH_MOSAIC_DYNAMIC_UI and (
             isinstance(self.SampleMosaicBandwidth, np.ndarray)
@@ -1574,7 +1605,7 @@ class DnSThread(QThread):
         ):
             self._blend_mosaic_tile(
                 self.SampleMosaicBandwidth, acquired(self.DynBandwidth), paste,
-                None if aip_rows is not None else "bandwidth",
+                "bandwidth", advance=advance,
             )
         return wrote
 
@@ -1628,7 +1659,7 @@ class DnSThread(QThread):
         except Exception:
             return 16
 
-    def _paste_mosaic_volumes(self, order, final=True):
+    def _paste_mosaic_volumes(self, order, final=True, rows=None):
         """Paste the per-FOV stitched volumes (XY / dynamic / HSV) into the mosaic.
 
         The block-mean downsample of a whole per-FOV volume is the expensive part
@@ -1636,21 +1667,24 @@ class DnSThread(QThread):
         so in dynamic mode this runs every few acquired lines and once more when
         the FOV is complete.  The closing call recomputes the complete volume and
         overwrites the same box, so the final content does not depend on how often
-        this ran before.  Only that closing call (``final=True``) advances the
-        normalised cross-fade weight maps: the repeated preview pastes must not,
-        otherwise the same tile would be counted again and again.
+        this ran before.  ``rows`` limits the preview to the Y rows acquired so far
+        (see ``_paste_stitched_volume``), and only the closing call (``final=True``)
+        adds the tile to the weight-sum maps: a preview repeated for the same box
+        must not count the tile again, otherwise its own weight -- and with it its
+        share of the overlap -- would grow with every refresh.
         """
         if order is None:
             return
         if STITCH_MOSAIC_VOLUMES_IN_MEMORY and hasattr(self, "XYVolume") and isinstance(self.XYVolume, np.ndarray) and np.size(self.XYVolume) > 0:
-            self._paste_stitched_volume("SampleMosaicVolume", self.XYVolume, order, final=final)
+            self._paste_stitched_volume("SampleMosaicVolume", self.XYVolume, order, final=final, rows=rows)
         if STITCH_MOSAIC_VOLUMES_IN_MEMORY and (
             hasattr(self, "DynamicVolume")
             and isinstance(self.DynamicVolume, np.ndarray)
             and np.size(self.DynamicVolume) > 0
         ):
             self._paste_stitched_volume(
-                "SampleMosaicDynamicVolume", self.DynamicVolume, order, final=final
+                "SampleMosaicDynamicVolume", self.DynamicVolume, order, final=final,
+                rows=rows,
             )
         if STITCH_MOSAIC_VOLUMES_IN_MEMORY and (
             hasattr(self, "DynamicHSVVolume")
@@ -1658,7 +1692,8 @@ class DnSThread(QThread):
             and np.size(self.DynamicHSVVolume) > 0
         ):
             self._paste_stitched_volume(
-                "SampleMosaicHSVVolume", self.DynamicHSVVolume, order, final=final
+                "SampleMosaicHSVVolume", self.DynamicHSVVolume, order, final=final,
+                rows=rows,
             )
 
     def Process_Mosaic(self, data, raw=False, context=None, acq_mode=None, gpu_avg_count=1):
@@ -1696,10 +1731,10 @@ class DnSThread(QThread):
         filled_rows, tile_rows = self._mosaic_filled_rows()
         if filled_rows is not None and filled_rows < tile_rows:
             self._blend_mosaic_maps(
-                self._row_limited_paste(paste, filled_rows), filled_rows
+                self._row_limited_paste(paste, filled_rows), filled_rows, advance=False
             )
             if filled_rows % self._mosaic_volume_refresh_interval() == 0:
-                self._paste_mosaic_volumes(order, final=False)
+                self._paste_mosaic_volumes(order, final=False, rows=filled_rows)
             return
 
         wrote = self._blend_mosaic_maps(paste)

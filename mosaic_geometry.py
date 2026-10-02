@@ -61,7 +61,12 @@ def cos_ramp(length, fade_start=0, fade_end=0):
 
 
 def new_weight_map(shape):
-    """Accumulated fade weight of one mosaic plane, for :func:`blend_paste`."""
+    """Sum of the tile fade weights of one mosaic plane, for :func:`blend_paste`.
+
+    Read it as ``S(x, y) = sum(w_i)`` over the tiles written so far: the blend is
+    the weighted average ``sum(w_i * I_i) / sum(w_i)``, so the effective weight of
+    every tile (``w_i / sum(w_j)``) adds up to 1 whatever the overlap is.
+    """
     return np.zeros((int(shape[0]), int(shape[1])), dtype=np.float32)
 
 
@@ -139,8 +144,8 @@ class TilePaste:
         centred): they reach 0 and 1 with zero slope, so no Mach band is visible at
         the ends of a fade, which a linear ramp always leaves behind.  The two axes
         are multiplied, so a corner that is inside a fade on both axes gets the
-        product of the two ramps (see ``blend_paste`` for how that is normalised
-        when the caller passes a weight map).
+        product of the two ramps (``blend_paste`` normalises the sum of those
+        weights, so the ramps of neighbouring tiles do not have to add up to 1).
         """
         if not self.blends:
             return None
@@ -267,7 +272,10 @@ def build_layout(positions, fw_px, fh_px, mm_per_px_x, mm_per_px_y,
     never cropped (the overlap is blended, not trimmed).  ``missing`` lists the
     paste orders that will not be written (a tile that was not acquired): their
     neighbours must not fade against them, otherwise the blend would mix the
-    unwritten canvas fill into the strip.
+    unwritten canvas fill into the strip.  Every overlap is ramped on both of its
+    tiles, so the fade weights of the two tiles add up to 1 across the overlap band
+    (see :func:`blend_paste`); the tile pasted first keeps its full level because
+    its own weight sum there is still 0.
     """
     points = [(float(item[0]), float(item[1])) for item in positions]
     if not points:
@@ -331,11 +339,18 @@ def build_layout(positions, fw_px, fh_px, mm_per_px_x, mm_per_px_y,
             ("fade_left", 0, left_col), ("fade_right", 0, -left_col),
             ("fade_top", top_row, 0), ("fade_bottom", -top_row, 0),
         )
+        # An overlap is ramped on *both* of its tiles: the two ramps add up to 1
+        # across the band (same raised cosine over the same pixel range), so the
+        # weight sum of a pixel in the band is exactly 1 and the pair reduces to
+        # its plain w / 1-w cross-fade.  The tile written first has nothing under it
+        # yet -- its weight sum there is still 0 -- so its own ramp cannot darken
+        # it, and a neighbour that is never acquired (or is marked missing) simply
+        # leaves its band at full level.
         for paste in layout.placements:
             for attribute, delta_row, delta_col in sides:
                 neighbour = by_cell.get((paste.row + delta_row, paste.col + delta_col))
-                if neighbour is None or neighbour.order >= paste.order:
-                    continue    # nothing there, or it is written later anyway
+                if neighbour is None:
+                    continue    # nothing there: no ramp on that side
                 if attribute == "fade_left":
                     overlap = neighbour.x2 - paste.x1
                     limit = paste.w
@@ -354,7 +369,8 @@ def build_layout(positions, fw_px, fh_px, mm_per_px_x, mm_per_px_y,
     return layout
 
 
-def blend_paste(destination, source, paste, block_rows=BLEND_BLOCK_ROWS, weights=None):
+def blend_paste(destination, source, paste, block_rows=BLEND_BLOCK_ROWS, weights=None,
+                advance=True):
     """Write ``source`` into ``destination`` at ``paste``, blending the overlap.
 
     ``destination`` is ``[Y, X]`` or ``[Y, X, ...]`` (Z slices / RGB channels keep
@@ -364,16 +380,22 @@ def blend_paste(destination, source, paste, block_rows=BLEND_BLOCK_ROWS, weights
     the earlier one; the fade is computed in blocks of rows so even a
     full-resolution tile volume stays light in RAM.
 
-    ``weights`` (optional) is :func:`new_weight_map` for this mosaic: it tracks the
-    accumulated fade weight so the blend stays **normalised**.  Without it a pixel
-    that is only touched by the faded part of a tile (its neighbour was never
-    written, a tile is missing or was shorter than expected) keeps only ``w`` of its
-    brightness -- a visible dark strip along the overlap.  With it the step becomes
-    ``dest = dest*(1-g) + source*g``, ``g = w / (W_old + (1-W_old)*w)``, i.e. a
-    convex combination that restores the full level where ``W_old`` is still 0 and
-    reduces exactly to the plain ``(1-w)/w`` cross-fade once a pixel is covered.
-    Pass the *same* map (reset per mosaic) whenever a tile is pasted once; for
-    repeated preview pastes of the same tile pass ``None`` instead.
+    ``weights`` (optional) is :func:`new_weight_map` for this mosaic: the map holds
+    the sum of the fade weights written so far, so the blend stays a **weighted
+    average** ``dest = sum(w_i * I_i) / sum(w_i)``, updated incrementally as
+    ``dest = dest*(1-g) + source*g`` with ``g = w / (S_old + w)``.  The effective
+    weights ``w_i / sum(w_j)`` therefore always add up to 1, and where the ramps of
+    two neighbours add up to 1 (a plain two-tile overlap, ``S_old + w == 1``) the
+    result is exactly the ``w`` / ``1-w`` cross-fade of those two tiles.  Without
+    the map, a pixel that is only touched by the faded part of a single tile (its
+    neighbour was never written, a tile is missing or was aborted early) keeps only
+    ``w`` of its brightness -- a visible dark strip along the overlap; the map
+    avoids it because a pixel with nothing else in it is taken at full level
+    (``S_old == 0`` gives ``g == 1``).
+
+    A tile may be counted in ``weights`` only once, so a tile that is pasted again
+    and again while it is still being acquired passes ``advance=False``: the map is
+    then read but not updated, and only the closing paste of that tile advances it.
     """
     region = destination[paste.y1:paste.y2, paste.x1:paste.x2]
     height = int(region.shape[0])
@@ -386,7 +408,7 @@ def blend_paste(destination, source, paste, block_rows=BLEND_BLOCK_ROWS, weights
         source = source[:height, :width]
     if weight is None:
         region[...] = source
-        if weights is not None:
+        if weights is not None and advance:
             weights[paste.y1:paste.y2, paste.x1:paste.x2] = 1.0
         return
     block_rows = max(1, int(block_rows))
@@ -401,13 +423,12 @@ def blend_paste(destination, source, paste, block_rows=BLEND_BLOCK_ROWS, weights
         if weight_map is None:
             gain = fade
         else:
-            old = weight_map[start:stop]
-            accumulated = old + (1.0 - old) * fade
+            total = weight_map[start:stop] + fade
             gain = np.divide(
-                fade, accumulated, out=np.ones_like(accumulated),
-                where=accumulated > 1e-6,
+                fade, total, out=np.ones_like(total), where=total > 1e-6,
             )
-            weight_map[start:stop] = accumulated
+            if advance:
+                weight_map[start:stop] = total
         if region.ndim > 2:
             gain = gain.reshape(gain.shape + (1,) * (region.ndim - 2))
         block = region[start:stop].astype(np.float32)
