@@ -983,6 +983,24 @@ class GUI(MainWindow):
     def _mosaic_folder(self):
         return os.path.join(self.ui.DIR.toPlainText(), "Mosaic")
 
+    def _apply_plan_scan_geometry(self, fov_locations):
+        """Mirror a located/loaded plan's FOV sizes into the scan spin boxes.
+
+        ``ThreadWeaver.iterate_FOVs`` / ``PlatePreScan`` apply the same geometry
+        right before scanning.  Applying it here as well keeps ``ui.XLength`` /
+        ``ui.YLength`` / ``ui.Ypixels`` consistent with the plan the moment it
+        exists, so an operator started live C-scan (or the plate pre-scan Z
+        adjustment) can never build an empty galvo waveform from a stale Y
+        geometry inherited from config.ini.
+        """
+        weaver = getattr(self, "Weaver_thread", None)
+        if weaver is None:
+            return
+        try:
+            weaver.apply_scan_geometry_from_locations(fov_locations)
+        except Exception as error:
+            print(f"Could not apply the planned FOV geometry to the scan settings: {error}")
+
     def _load_sample_locations_from_current_folder(self):
         """Load a previously saved sample-location plan (DIR/Mosaic/scan_metadata.pkl)
         into memory and refresh the main sampleSelector.
@@ -1020,6 +1038,11 @@ class GUI(MainWindow):
             weaver.FOV_locations = fov_locations
             weaver.sample_centers = sample_centers
             weaver.overlay_images = overlay_images
+
+        # A plan loaded from disk carries the fixed Y FOV (0.5 mm), while
+        # config.ini may still hold a degenerate one (YLength=0 -> empty galvo
+        # waveform); mirror the plan into the scan spin boxes right away.
+        self._apply_plan_scan_geometry(fov_locations)
 
         populate_sample_selector(self.ui, sample_centers)
         message = (
@@ -1185,6 +1208,11 @@ class GUI(MainWindow):
         self.raw_img = raw_img
         self.pixel_polygons = pixel_polygons
         self.overlay_images = overlay_images
+        # Mirror the fresh plan into the scan spin boxes now: the operator can
+        # start a live C-scan (or Go -> PlatePreScan) before the first FOV loop
+        # applies the geometry, and a stale YLength=0 in config.ini would then
+        # build an empty galvo waveform.
+        self._apply_plan_scan_geometry(FOV_locations)
         # Persist the located plan so the same folder can be reloaded later by
         # SampleLocateButton without re-running the interactive locator.
         try:

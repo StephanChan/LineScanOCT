@@ -7,11 +7,22 @@ from shapely.ops import unary_union
 from ScanModels import FOVLocation
 
 
-ROI_OCCUPANCY_TARGET = 0.80
 # Raised from 0.01 to 0.05 so adjacent tiles share a usable overlap strip
 # (radiometric harmonization / seam metrics need more than ~1% of the FOV).
 FOV_OVERLAP = 0.10
-MAX_Y_FOV_MM = 0.25
+# Y FOV upper limit taken from the objective HardwareSpecs
+# (``ObjectiveSpec.max_y_fov_mm``, 0.5 mm for every objective).  The live USB
+# locator path passes that value in explicitly (``OCT_MT.py``); this module
+# default matters only for callers that omit it.
+MAX_Y_FOV_MM = 0.5
+# Pin the Y length of every tile to ``max_y_fov_mm`` instead of shrinking it to
+# the ROI height.  The Y length sets ``y_pixels``, which is part of the shading
+# field signature (``shading_correction.field_signature``), so a per-ROI Y
+# length changes the signature per sample and the dark/flat field fitted from
+# the reference sample can no longer be reused for the rest of the run.  With a
+# fixed Y length the signature stays constant for the whole run.
+# Set to False to get back the older adaptive (ROI-fitted) Y length.
+FIXED_Y_FOV = True
 CENTER_MODE = "bounds"  # "bounds" or "centroid"
 DEBUG_SCAN_PLANNER = False
 
@@ -26,7 +37,7 @@ class MosaicScanPlan:
     center_y: float
     roi_bounds: tuple
     roi_size: tuple
-    required_span: tuple
+    required_span: tuple  # ROI size the tile grid has to cover
     tile_count: tuple
     candidate_count: int
 
@@ -42,6 +53,31 @@ def _fixed_tile_count(required_span, tile_size, overlap):
         return 1
     step = tile_size * (1.0 - overlap)
     return int(math.ceil((required_span - tile_size) / step) + 1)
+
+
+def _fixed_y_geometry(roi_size_mm, y_step_um, max_y_fov_mm, overlap):
+    """Y geometry with the tile height pinned to the HardwareSpecs upper limit.
+
+    Every tile of every sample uses the same Y length (``max_y_fov_mm``
+    quantized to ``y_step_um``), so ``y_pixels`` is identical across the whole
+    run.  ``count`` grows only when the ROI is taller than one tile; the tile
+    height itself is never resized.
+
+    Returns ``(y_length_mm, y_pixels, count)``.
+    """
+    y_step_um = max(float(y_step_um), 1e-6)
+    max_y_pixels = int(math.floor(float(max_y_fov_mm) * 1000.0 / y_step_um))
+    if max_y_pixels < 1:
+        raise ValueError(
+            "YStepSize is too large for the HardwareSpecs Y FOV: "
+            f"max_y_fov_mm={max_y_fov_mm:.4f} mm cannot hold a single Y line of "
+            f"{y_step_um:.4f} um.  Reduce YStepSize below "
+            f"{max_y_fov_mm * 1000.0:.4f} um."
+        )
+    y_pixels = max_y_pixels
+    y_length_mm = y_pixels * y_step_um / 1000.0
+    count = _fixed_tile_count(roi_size_mm, y_length_mm, overlap)
+    return y_length_mm, y_pixels, count
 
 
 def _variable_y_geometry(required_span, y_step_um, max_y_fov_mm, overlap):
@@ -88,11 +124,19 @@ def plan_mosaic_scan(
     x_fov_mm,
     y_step_um,
     stage_bounds,
-    occupancy=ROI_OCCUPANCY_TARGET,
     overlap=FOV_OVERLAP,
     max_y_fov_mm=MAX_Y_FOV_MM,
     center_mode=CENTER_MODE,
+    fixed_y=None,
 ):
+    """Plan the FOV grid covering ``mm_polygons``.
+
+    Only the tile *count* follows the ROI: the X/Y tile sizes are never resized
+    to fit it.  ``fixed_y`` selects the Y geometry policy: ``True`` pins the
+    tile height to the HardwareSpecs limit ``max_y_fov_mm`` (see
+    ``FIXED_Y_FOV``), ``False`` shrinks it to the ROI height, and ``None``
+    follows the module default.
+    """
     polygons = [Polygon(poly) for poly in mm_polygons if len(poly) >= 3]
     if not polygons:
         raise ValueError("No valid ROI polygons for mosaic scan planning.")
@@ -111,11 +155,18 @@ def plan_mosaic_scan(
     else:
         raise ValueError(f"Unsupported center_mode: {center_mode}")
 
-    required_x = roi_size_x / occupancy if occupancy > 0 else roi_size_x
-    required_y = roi_size_y / occupancy if occupancy > 0 else roi_size_y
-
-    nx = _fixed_tile_count(required_x, x_fov_mm, overlap)
-    y_fov_mm, y_pixels, ny = _variable_y_geometry(required_y, y_step_um, max_y_fov_mm, overlap)
+    # The tile sizes are never shrunk to fit the ROI: the planner only decides
+    # how many fixed-size tiles are needed to cover it.
+    nx = _fixed_tile_count(roi_size_x, x_fov_mm, overlap)
+    pin_y_fov = FIXED_Y_FOV if fixed_y is None else bool(fixed_y)
+    if pin_y_fov:
+        y_fov_mm, y_pixels, ny = _fixed_y_geometry(
+            roi_size_y, y_step_um, max_y_fov_mm, overlap
+        )
+    else:
+        y_fov_mm, y_pixels, ny = _variable_y_geometry(
+            roi_size_y, y_step_um, max_y_fov_mm, overlap
+        )
 
     x_centers = _centered_centers(center_x, nx, x_fov_mm, overlap)
     y_centers = _centered_centers(center_y, ny, y_fov_mm, overlap)
@@ -130,13 +181,14 @@ def plan_mosaic_scan(
         )
         print(
             "Scan planner policy: "
-            f"occupancy={occupancy:.3f}, overlap={overlap:.3f}, "
-            f"x_fov={x_fov_mm:.3f}, max_y_fov={max_y_fov_mm:.3f}, y_step_um={y_step_um:.3f}, "
+            f"overlap={overlap:.3f}, "
+            f"x_fov={x_fov_mm:.3f}, max_y_fov={max_y_fov_mm:.3f}, "
+            f"fixed_y_fov={pin_y_fov}, y_step_um={y_step_um:.3f}, "
             f"stage_bounds=(x:{x_min:.3f}-{x_max:.3f}, y:{y_min:.3f}-{y_max:.3f})"
         )
         print(
             "Scan planner spans: "
-            f"required=({required_x:.3f}, {required_y:.3f}), "
+            f"roi=({roi_size_x:.3f}, {roi_size_y:.3f}), "
             f"tile_count=({nx}, {ny}), "
             f"coverage=({_coverage(x_fov_mm, nx, overlap):.3f}, {_coverage(y_fov_mm, ny, overlap):.3f}), "
             f"planned_y_fov={y_fov_mm:.3f}, y_pixels={y_pixels}"
@@ -211,7 +263,7 @@ def plan_mosaic_scan(
         center_y=center_y,
         roi_bounds=(min_x, min_y, max_x, max_y),
         roi_size=(roi_size_x, roi_size_y),
-        required_span=(required_x, required_y),
+        required_span=(roi_size_x, roi_size_y),
         tile_count=(nx, ny),
         candidate_count=candidate_count,
     )

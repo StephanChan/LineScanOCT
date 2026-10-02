@@ -183,8 +183,8 @@ This replaced the earlier split between mode strings and action strings.
 - `mosaic_scan_planner.py`
   - ROI-to-FOV planning
   - overlap policy
-  - occupancy policy
-  - Y-FOV resizing
+  - tile count follows the ROI coverage (tile sizes are never resized to it)
+  - Y-FOV pinned to the HardwareSpecs limit and kept constant for the whole run
   - candidate acceptance
 
 ### Structured Domain Models

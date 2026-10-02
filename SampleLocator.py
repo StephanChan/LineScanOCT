@@ -13,7 +13,6 @@ from SampleLocatorUI import Ui_Form
 from mosaic_scan_planner import (
     CENTER_MODE,
     FOV_OVERLAP,
-    ROI_OCCUPANCY_TARGET,
     plan_mosaic_scan,
 )
 from ScanModels import FOVLocation, SampleCenter
@@ -332,7 +331,7 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
         current_zpos=0,
         y_step_um=10.0,
         stage_bounds=(0, 200, 0, 120),
-        max_y_fov_mm=0.25,
+        max_y_fov_mm=0.5,  # HardwareSpecs ObjectiveSpec.max_y_fov_mm (fixed Y FOV)
         sample_id_start=1,
         allow_empty=False,
         initial_tile_index=0,
@@ -349,7 +348,6 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
         self.stage_bounds = stage_bounds
         self.fov_w_mm = fov_w_mm
         self.fov_h_mm = fov_h_mm
-        self.roi_occupancy = ROI_OCCUPANCY_TARGET
         self.fov_overlap = FOV_OVERLAP
         self.max_y_fov_mm = float(max_y_fov_mm)
         self.center_mode = CENTER_MODE
@@ -503,6 +501,20 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
         if not all_polygons:
             return False
 
+        if self.y_step_um > self.max_y_fov_mm * 1000.0:
+            print(
+                "Sample locator: YStepSize exceeds the HardwareSpecs Y FOV "
+                f"(y_step_um={self.y_step_um:.3f} um > "
+                f"max_y_fov_mm={self.max_y_fov_mm:.3f} mm); no FOV can be planned."
+            )
+            QMessageBox.warning(
+                self,
+                "YStepSize too large",
+                "YStepSize is larger than the maximum Y FOV of the objective. "
+                "Reduce YStepSize before planning the scan.",
+            )
+            return False
+
         active_tile_index = self.current_tile_index
         sample_entries = []
         for tile_index, poly_pts in all_polygons:
@@ -518,7 +530,6 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
                 x_fov_mm=self.fov_w_mm,
                 y_step_um=self.y_step_um,
                 stage_bounds=self.stage_bounds,
-                occupancy=self.roi_occupancy,
                 overlap=self.fov_overlap,
                 max_y_fov_mm=self.max_y_fov_mm,
                 center_mode=self.center_mode,
@@ -553,7 +564,6 @@ class MosaicUSBSampleScanner(_SampleLocatorDrawingBase):
                 x_fov_mm=self.fov_w_mm,
                 y_step_um=self.y_step_um,
                 stage_bounds=self.stage_bounds,
-                occupancy=self.roi_occupancy,
                 overlap=self.fov_overlap,
                 max_y_fov_mm=self.max_y_fov_mm,
                 center_mode=self.center_mode,

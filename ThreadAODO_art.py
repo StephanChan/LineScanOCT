@@ -55,7 +55,7 @@ except Exception as error:
     STAGE_SIM = True
     motors = None
 
-from Generaic_functions import GenAODO
+from Generaic_functions import GenAODO, resolve_y_steps
 from HardwareSpecs import (
     AODO_AO_VOLTAGE_MAX,
     AODO_AO_VOLTAGE_MIN,
@@ -308,11 +308,33 @@ class AODOThread(QThread):
         # "FastVolumeCscan" for plate-scan FOVs routed through FastVolume) and
         # fall back to the ACQMode combo for legacy callers.
         mode = getattr(self.item, 'acq_mode', None) or self.ui.ACQMode.currentText()
+        # A non-positive Y line count builds an empty galvo waveform and
+        # GenGalvoWave fails on waveform[0] with an IndexError that reaches the
+        # operator only as "Stage/galvo command failed. This action was skipped."
+        # (e.g. a config.ini holding YLength=0 / Ypixels=0 from an earlier run).
+        # Resolve it from the geometry and name the real problem when the
+        # geometry itself is unusable.
+        try:
+            y_steps = resolve_y_steps(
+                self.ui.Ypixels.value(),
+                self.ui.YLength.value(),
+                self.ui.YStepSize.value(),
+            )
+        except ValueError as error:
+            print(error)
+            self.emit_status(str(error))
+            raise
+        if y_steps != int(self.ui.Ypixels.value()):
+            print(
+                f"Ypixels was {self.ui.Ypixels.value()}; using {y_steps} Y line(s) "
+                f"derived from YLength={self.ui.YLength.value():.4f} mm / "
+                f"YStepSize={self.ui.YStepSize.value():.4f} um."
+            )
         self.DOwaveform,self.AOwaveform,status = GenAODO(mode=mode, \
                                                  obj = self.ui.Objective.currentText(),\
                                                  postclocks = self.ui.FlyBack.value(), \
                                                  YStepSize = self.ui.YStepSize.value(), \
-                                                 YSteps =  self.ui.Ypixels.value(), \
+                                                 YSteps = y_steps, \
                                                  BVG = self.ui.BlineAVG.value(),\
                                                  MicroSteps = self.ui.MicroSteps.value(),\
                                                  MicroFlyBack = self.ui.MicroFlyBack.value(),\

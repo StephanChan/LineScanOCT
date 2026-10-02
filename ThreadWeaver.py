@@ -29,7 +29,6 @@ import shading_correction
 from mosaic_scan_planner import (
     CENTER_MODE,
     FOV_OVERLAP,
-    ROI_OCCUPANCY_TARGET,
     plan_mosaic_scan,
 )
 from SampleLocator import open_usb_camera, orient_usb_frame_live
@@ -117,7 +116,6 @@ class WeaverThread(QThread):
         super().__init__()
         self.overlay_images = {}
         self.FOV_locations = {}
-        self.mosaic_roi_occupancy = ROI_OCCUPANCY_TARGET
         self.mosaic_fov_overlap = FOV_OVERLAP
         self.mosaic_center_mode = CENTER_MODE
         self.exit_message = 'Acquisition thread exited.'
@@ -1312,6 +1310,18 @@ class WeaverThread(QThread):
                     print(
                         f"  FOV {idx}: X={location.x:.4f}, Y={location.y:.4f}, Z={location.z:.4f}"
                     )
+                # Push this sample's planned FOV geometry into the live scan spin
+                # boxes before the Z adjustment: AdjustZstage runs a continuous
+                # C-scan, i.e. it builds the first galvo waveform of the run, and a
+                # stale Y geometry from config.ini (YLength=0 -> Ypixels=0) would
+                # make that waveform empty and abort the run.
+                try:
+                    self.apply_scan_geometry_from_locations(self.CurrentSampleLocations)
+                except Exception as error:
+                    print(
+                        "Could not apply the generated FOV geometry of "
+                        f"sampleID-{sample_center.sample_id}: {error}"
+                    )
                 self.display_sample_overlay(sample_center.sample_id)
 
                 # User stopped continuousBline, then we do Mosaic scan for this sample
@@ -1687,6 +1697,18 @@ class WeaverThread(QThread):
     def AdjustZstage(self, sample_id, start_from_current_z=False):
         ui = self.ui
         sample_center = self.sample_centers[sample_id-1]
+        # The continuous C-scan below is the first scan of this sample, so make
+        # sure its galvo waveform is built from the plan geometry instead of a
+        # possibly stale/empty ``ui.Ypixels`` (see PlatePreScan).
+        locations = list(getattr(self, "CurrentSampleLocations", None) or [])
+        if locations:
+            try:
+                self.apply_scan_geometry_from_locations(locations)
+            except Exception as error:
+                print(
+                    "Could not apply the generated FOV geometry before adjusting Z: "
+                    f"{error}"
+                )
         # move to center position of this sample
         self.move_stage_axis('X', sample_center.x)
         self.move_stage_axis('Y', sample_center.y)

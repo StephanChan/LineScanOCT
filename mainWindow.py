@@ -112,6 +112,13 @@ class MainWindow(QMainWindow):
         # TD-enface acquisition mode (raw spectra -> spectral-mean en-face).
         if self.ui.ACQMode.findText(AcqTypes.TD_ENFACE) < 0:
             self.ui.ACQMode.addItem(AcqTypes.TD_ENFACE)
+        # ``YLength`` holds a Y FOV of up to ``max_y_fov_mm`` (0.5 mm) and the
+        # planner hands it values down to a single ``YStepSize`` (1 um = 0.001 mm).
+        # With the Qt default of 2 decimals such a value is stored as 0.00, which
+        # makes ``Calculate_Galvo_settings`` produce Ypixels=0 and the galvo
+        # waveform empty.  Keep enough precision for one Y step to round trip.
+        # Must happen before LoadSettings so a 0.001 mm Y FOV is not quantized.
+        self.ui.YLength.setDecimals(4)
         self.LoadSettings("config.ini")
         self.setStageMinMax()
         self.Calculate_CameraWidth_settings()
@@ -245,6 +252,11 @@ class MainWindow(QMainWindow):
             value = True
         self.ui.shading_correction = str(value).lower() in ("1", "true", "yes", "on")
 
+        # The Y FOV geometry inherited from config.ini has to be usable before the
+        # first galvo waveform is generated, otherwise the whole run aborts (see
+        # _sanitize_y_geometry).
+        self._sanitize_y_geometry()
+
 
     def Calculate_CameraWidth_settings(self):
         # select camera brand
@@ -299,6 +311,34 @@ class MainWindow(QMainWindow):
         self.ui.GalvoBias.setMinimum(-1)
         # Calculate offsetH pixel numbers based on corrected user set offsetLength
         self.ui.GalvoBias.setValue(self.ui.Yoffsetlength.value()/angle2mmratio)
+
+    def _sanitize_y_geometry(self):
+        """Repair a degenerate Y FOV inherited from config.ini.
+
+        A ``YLength`` below a single ``YStepSize`` (the adaptive pre-fixed-Y-FOV
+        plans, quantized to 0 by the old 2-decimals spin box) leaves
+        ``Ypixels == 0``.  ``ThreadAODO_art.ConfigTask`` feeds that value straight
+        into ``GenGalvoWave``, which then indexes an empty waveform
+        (``IndexError: index 0 is out of bounds for axis 0 with size 0``) and the
+        acquisition is skipped, while the mosaic path silently clamps to one row
+        (``ThreadWeaver.current_y_pixels``).  Fall back to the HardwareSpecs Y FOV
+        limit of the selected objective, which is what the scan planner always
+        plans now.
+        """
+        ui = self.ui
+        y_step_um = float(ui.YStepSize.value())
+        min_y_length_mm = max(y_step_um, 0.0) / 1000.0
+        objective = get_objective_spec(ui.Objective.currentText())
+        fallback_mm = float(objective.max_y_fov_mm) if objective is not None else 0.5
+        if float(ui.YLength.value()) <= min_y_length_mm or int(ui.Ypixels.value()) < 1:
+            print(
+                "Y FOV geometry from config.ini is not usable "
+                f"(YLength={ui.YLength.value():.4f} mm, "
+                f"YStepSize={y_step_um:.4f} um, Ypixels={ui.Ypixels.value()}); "
+                f"resetting YLength to {fallback_mm:.4f} mm."
+            )
+            ui.YLength.setValue(min(fallback_mm, float(ui.YLength.maximum())))
+            self.Calculate_Galvo_settings()
 
     def Adjust_Bline_Height(self):
         try:

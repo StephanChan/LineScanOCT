@@ -159,6 +159,37 @@ def GenGalvoWave(StepSize = 1, Steps = 1000, AVG = 1, obj = '5X', postclocks = 5
     return waveform, status
 
 
+def resolve_y_steps(y_pixels, y_length_mm, y_step_um):
+    """Number of Y lines (>= 1) to generate the galvo waveform with.
+
+    ``GenGalvoWave`` / ``GenAODO`` build the waveform from ``YSteps``; a value
+    below 1 makes ``np.linspace(..., 0)`` empty, so the pre-wave
+    ``np.ones(50) * waveform[0]`` fails with ``IndexError: index 0 is out of
+    bounds for axis 0 with size 0`` -- which reaches the operator only as
+    "Stage/galvo command failed. This action was skipped.".
+
+    ``ui.Ypixels`` is normally kept in sync with ``ui.YLength`` by
+    ``mainWindow.Calculate_Galvo_settings``, but a config.ini written by an
+    earlier session may hold ``YLength=0`` / ``Ypixels=0`` (a Y FOV below the
+    2-decimals resolution of the old ``YLength`` spin box).  Prefer ``Ypixels``,
+    fall back to the count implied by ``YLength`` / ``YStepSize``, and raise a
+    named error when neither is usable instead of building an empty waveform.
+    """
+    steps = int(y_pixels)
+    if steps >= 1:
+        return steps
+
+    step_um = max(float(y_step_um), 1e-6)
+    steps = int(round(float(y_length_mm) * 1000.0 / step_um))
+    if steps < 1:
+        raise ValueError(
+            "Y scan geometry is empty: "
+            f"YLength={float(y_length_mm):.4f} mm, YStepSize={step_um:.4f} um. "
+            "Run the sample locator or set a Y FOV before scanning."
+        )
+    return steps
+
+
 def GenFastVolumeWave(StepSize = 1, YSteps = 100, MicroSteps = 10, BlineAVG = 1, MicroFlyBack = 20, obj = '5X', postclocks = 50, Galvo_bias = 0):
     """
     FastVolumeCscan galvo waveform.
