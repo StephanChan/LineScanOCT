@@ -31,7 +31,8 @@ from mosaic_scan_planner import (
     FOV_OVERLAP,
     plan_mosaic_scan,
 )
-from SampleLocator import open_usb_camera, orient_usb_frame_live
+from SampleLocator import close_usb_camera, open_usb_camera, orient_usb_frame_live
+from LedIndicators import acquisition_finished, acquisition_started
 from Display_rendering import (
     display_sample_overlay,
     mosaic_label_render_size,
@@ -52,6 +53,7 @@ from ScanSession import (
     save_session_data,
     save_usb_training_data,
 )
+from ScanModels import fov_location_records, sample_center_records
 from CoordinateCalibration import (
     fit_pixel_to_stage_affine,
     save_affine_to_config,
@@ -94,6 +96,13 @@ SAVE_SAMPLE_TIME_MODES = (
     AcqTypes.TIMED_PLATE_SCAN,
 )
 
+# Commands that only stream the USB camera and never touch the galvo / OCT
+# acquisition: the red acquisition LED must stay off for those, so they keep the
+# green idle LED on (see WeaverThread.set_acquisition_leds).
+CAMERA_ONLY_ACTIONS = (
+    AcqTypes.LOCATION_CAMERA_LIVE,
+)
+
 AUTO_BACKGROUND_PER_FOV_ENABLED = False
 SKIP_PLATE_PRESCAN_FULL_SAMPLE_SCAN = True
 # When a finite acquisition stops early (missed triggers / camera timeouts) the
@@ -123,7 +132,13 @@ class WeaverThread(QThread):
     def run(self):
         if getattr(self, "file_naming", None) is None:
             raise RuntimeError("WeaverThread.file_naming must be assigned before starting the thread.")
-        self.QueueOut()
+        try:
+            self.QueueOut()
+        finally:
+            # Whatever stopped the command loop (Stop button, EXIT_ACTION, or an
+            # error outside the per-command handler), the software is no longer
+            # acquiring: never leave the red acquisition LED on (LedIndicators.py).
+            self.set_acquisition_leds(None)
 
     def emit_status(self, message):
         if message is None:
@@ -139,6 +154,10 @@ class WeaverThread(QThread):
     def QueueOut(self):
         self.item = self.queue.get()
         while self.item.action != EXIT_ACTION:
+            # LED indicators: red while a command runs, green when the software is
+            # idle.  The command runs to completion below (including its
+            # processing barrier) before the LEDs go back to idle.
+            self.set_acquisition_leds(self.item.action)
             try:
                 if self.item.action in (
                     AcqTypes.CONTINUOUS_ALINE,
@@ -246,11 +265,27 @@ class WeaverThread(QThread):
             self.GPUQueue.put(GPUActionField(GPUActions.CLEAR))
             if self.ui_bridge is not None:
                 self.ui_bridge.acquisition_controls_locked.emit(False)
+            # Command finished (and its output settled): back to the idle state.
+            self.set_acquisition_leds(None)
             # wait for next command
             self.item = self.queue.get()
         # exit weaver thread
         self.emit_status(self.exit_message)
             
+    def set_acquisition_leds(self, action):
+        """Drive the acquisition (red) / idle (green) LEDs for a queued command.
+
+        ``action`` is the command about to run: every command is an acquisition
+        except the USB-only ``CAMERA_ONLY_ACTIONS``, and ``None`` (between two
+        commands) is the idle state -> red off, green on.  Failures are reported
+        by ``LedIndicators`` and never stop an acquisition.
+        """
+        acquiring = action is not None and action not in CAMERA_ONLY_ACTIONS
+        if acquiring:
+            acquisition_started()
+        else:
+            acquisition_finished()
+
     def drain_queue(self, queue, name, keep=None):
         """Remove queued items, optionally keeping items selected by keep(item)."""
         drained = 0
@@ -1678,6 +1713,15 @@ class WeaverThread(QThread):
             save_affine_to_config(matrix, config_path="config.ini")
         except Exception as error:
             print(f"Could not save calibration model to config.ini: {error}")
+        # Apply the fresh model to the running session: saving published it
+        # in-process (CoordinateCalibration.current_affine), and here the plan the
+        # current folder scans with is re-mapped onto the positions the operator
+        # just aligned, so no restart and no second locator run are needed.
+        applied = {}
+        try:
+            applied = self.apply_calibration_to_current_plan(calibration_points)
+        except Exception as error:
+            print(f"Could not apply the new calibration to the current plan: {error}")
         folder = os.path.join(ui.DIR.toPlainText(), "Mosaic")
         report_path = None
         try:
@@ -1691,8 +1735,96 @@ class WeaverThread(QThread):
         )
         if report_path:
             summary += f" Report: {report_path}"
+        if applied:
+            summary += (
+                f" Applied to the current session: {applied.get('count', 0)} "
+                "sample(s) re-mapped and saved (no restart needed)."
+            )
         print(summary)
         return summary
+
+    def apply_calibration_to_current_plan(self, calibration_points):
+        """Re-map the plan of the current folder onto a freshly fitted affine.
+
+        A coordinate calibration run records, for every sample, the stage position
+        the operator centred by hand.  Those positions are the truth the fitted
+        model approximates, so the plan of the running session is moved onto them
+        immediately instead of only correcting *future* locator runs:
+
+            ``FOVLocation.x/y += (actual - predicted)`` for that sample's FOVs
+            ``SampleCenter.x/y = actual``, ``z`` = the height the operator aligned
+
+        The GUI side is notified through ``ui_bridge.calibration_applied`` (see
+        ``OCT_MT._on_calibration_applied``), which rebuilds the USB region overlays
+        with the new model and persists the corrected plan (``scan_metadata.pkl``)
+        so a ``Go`` right after calibrating scans the corrected samples - without
+        a restart and without a second locator run.
+
+        Returns ``{"count": <re-mapped samples>, "corrected": [...]}``.
+        """
+        centers = {}
+        for center in getattr(self, "sample_centers", None) or []:
+            try:
+                centers[int(center.sample_id)] = center
+            except Exception:
+                continue
+        fovs_by_sample = {}
+        for location in getattr(self, "FOV_locations", None) or []:
+            try:
+                fovs_by_sample.setdefault(int(location.sample_id), []).append(location)
+            except Exception:
+                continue
+
+        corrected = []
+        for point in calibration_points or []:
+            try:
+                sample_id = int(point.get("sample_id", 0))
+            except Exception:
+                continue
+            actual_x = point.get("actual_x")
+            actual_y = point.get("actual_y")
+            predicted_x = point.get("predicted_x")
+            predicted_y = point.get("predicted_y")
+            if sample_id <= 0 or None in (actual_x, actual_y, predicted_x, predicted_y):
+                continue
+            dx = float(actual_x) - float(predicted_x)
+            dy = float(actual_y) - float(predicted_y)
+            actual_z = point.get("actual_z")
+
+            center = centers.get(sample_id)
+            if center is not None:
+                center.x = float(actual_x)
+                center.y = float(actual_y)
+                if actual_z is not None:
+                    center.z = float(actual_z)
+            for location in fovs_by_sample.get(sample_id, []):
+                location.x = float(location.x) + dx
+                location.y = float(location.y) + dy
+                if actual_z is not None:
+                    location.z = float(actual_z)
+            corrected.append(
+                {
+                    "sample_id": sample_id,
+                    "dx": dx,
+                    "dy": dy,
+                    "actual_x": float(actual_x),
+                    "actual_y": float(actual_y),
+                }
+            )
+
+        published = {
+            "count": len(corrected),
+            "corrected": corrected,
+            "fov_locations": fov_location_records(getattr(self, "FOV_locations", None) or []),
+            "sample_centers": sample_center_records(getattr(self, "sample_centers", None) or []),
+        }
+        bridge = getattr(self, "ui_bridge", None)
+        if bridge is not None and hasattr(bridge, "calibration_applied"):
+            try:
+                bridge.calibration_applied.emit(published)
+            except Exception as error:
+                print(f"Could not publish the applied calibration to the GUI: {error}")
+        return published
 
     def AdjustZstage(self, sample_id, start_from_current_z=False):
         ui = self.ui
@@ -2170,33 +2302,34 @@ class WeaverThread(QThread):
     def live(self):
         """Continuously captures and displays video until RunButton is unchecked."""
         cap = open_usb_camera(configure_exposure=True)
-    
-        while self.ui.RunButton.isChecked():
-            ret, frame = cap.read()
-            if not ret:
-                break
-    
-            frame = orient_usb_frame_live(frame)
-            
-            # 3. Convert BGR to RGB
-            rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h, w, ch = rgb_image.shape
-            bytes_per_line = ch * w
-            
-            # 4. Convert to QImage then QPixmap
-            qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
-            pixmap = QPixmap.fromImage(qt_image)
-    
-            # 5. Display on the XZplane label with the USB image's true aspect
-            # ratio preserved (letterboxed on the black background). Note: if this
-            # is a separate thread, UI updates should ideally use Signals, but for
-            # a simple script, this often works:
-            set_label_pixmap_fit(self.ui.XZplane, pixmap)
-    
-        # 6. Release resources when button is unchecked
-        
-        
-    
+
+        try:
+            while self.ui.RunButton.isChecked():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                frame = orient_usb_frame_live(frame)
+
+                # 3. Convert BGR to RGB
+                rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w, ch = rgb_image.shape
+                bytes_per_line = ch * w
+
+                # 4. Convert to QImage then QPixmap
+                qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                pixmap = QPixmap.fromImage(qt_image)
+
+                # 5. Display on the XZplane label with the USB image's true aspect
+                # ratio preserved (letterboxed on the black background). Note: if this
+                # is a separate thread, UI updates should ideally use Signals, but for
+                # a simple script, this often works:
+                set_label_pixmap_fit(self.ui.XZplane, pixmap)
+        finally:
+            # 6. Release the camera and switch the illumination LED off however the
+            # loop ended (Stop button, dropped frame, exception).
+            close_usb_camera(cap)
+
     def save_session_data(self, folder_path):
         def render_overlay(sample_id):
             self.display_sample_overlay(sample_id)

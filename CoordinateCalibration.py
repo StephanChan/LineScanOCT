@@ -9,6 +9,11 @@ OCT C-scan before pressing Stop. For every ROI we therefore know:
 
 A least-squares 3x3 affine transform is fitted from those correspondences and
 stored in config.ini so future locator sessions are automatically corrected.
+
+Saving a model also *publishes* it for the running software (``set_active_affine``
+/ ``current_affine``) and ``ThreadWeaver.calibrate_coordinates`` re-maps the plan
+of the current folder onto the positions the operator aligned, so a fresh
+calibration is applied in-session: no restart and no second locator run.
 """
 
 import json
@@ -28,6 +33,31 @@ CONFIG_KEYS = (
 )
 
 MIN_CALIBRATION_POINTS = 5
+
+# The affine the *running* software must use right now.  ``config.ini`` stays the
+# persistent model (every process reads it when it starts), but a model fitted by
+# a CoordinateCalibration run has to reach the current session immediately, so
+# ``save_affine_to_config`` publishes it here and every reader goes through
+# ``current_affine`` instead of keeping its own cached copy.  Without this the
+# operator had to restart the software before the new calibration was used.
+_ACTIVE_AFFINE = None
+
+
+def set_active_affine(matrix):
+    """Publish ``matrix`` as the calibration the running software uses now.
+
+    Called whenever a model is fitted / saved so the current session (locator
+    runs, USB region overlays, plan re-mapping) applies it right away instead of
+    waiting for a restart.  ``None`` clears the in-process copy.
+    """
+    global _ACTIVE_AFFINE
+    _ACTIVE_AFFINE = None if matrix is None else np.asarray(matrix, dtype=np.float64).copy()
+    return _ACTIVE_AFFINE
+
+
+def get_active_affine():
+    """Return the in-process calibration, or None when none was published yet."""
+    return None if _ACTIVE_AFFINE is None else _ACTIVE_AFFINE.copy()
 
 
 def fit_pixel_to_stage_affine(points):
@@ -119,6 +149,10 @@ def save_affine_to_config(matrix, config_path="config.ini"):
     settings.setValue("UsbCamToStageE", float(matrix[1, 1]))
     settings.setValue("UsbCamToStageF", float(matrix[1, 2]))
     settings.sync()
+    # Saving == applying: publish the model in-process too, so the current
+    # session (next locator run, USB overlays, plan re-mapping) uses it without a
+    # software restart.
+    set_active_affine(matrix)
 
 
 def load_affine_from_config(config_path="config.ini"):
@@ -143,6 +177,24 @@ def load_affine_from_config(config_path="config.ini"):
         ],
         dtype=np.float64,
     )
+
+
+def current_affine(config_path="config.ini"):
+    """Return the affine the running software must use, without a restart.
+
+    ``config.ini`` wins: it is the persistent model and is re-read on every call,
+    so a freshly fitted (and saved) model - or even a hand-edited file - is picked
+    up immediately.  The in-process copy published by :func:`set_active_affine`
+    is used as the fallback when the file holds no fitted model.  Every reader
+    (locator sessions, USB region overlays, the plan correction applied by
+    ``ThreadWeaver.calibrate_coordinates``) must go through this function so the
+    whole running session shares exactly one calibration.
+    """
+    matrix = load_affine_from_config(config_path)
+    if matrix is not None:
+        set_active_affine(matrix)
+        return matrix
+    return get_active_affine()
 
 
 def save_calibration_points_report(points, matrix, stats, folder_path):

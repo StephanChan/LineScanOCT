@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cellpose_organoid_segmentation.py — 3D organoid segmentation</title>
+<style>
+  :root { --bg:#ffffff; --fg:#1a202c; --muted:#5b6573; --accent:#0b5394;
+          --accent2:#c0392b; --code:#f1f5f9; --border:#d7dce3; --light:#f8fafc; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         line-height:1.55; color:var(--fg); margin:0; padding:0 28px 80px;
+         background:var(--bg); }
+  header { border-bottom:4px solid var(--accent); padding:28px 0 14px; }
+  header h1 { margin:0 0 6px; font-size:30px; }
+  header .sub { color:var(--muted); font-size:15px; }
+  nav { position:sticky; top:0; background:rgba(255,255,255,0.96);
+        border-bottom:1px solid var(--border); padding:10px 0; z-index:10; }
+  nav a { color:var(--accent); text-decoration:none; font-size:14px;
+          margin-right:16px; white-space:nowrap; }
+  nav a:hover { text-decoration:underline; }
+  h2 { color:var(--accent); border-bottom:2px solid var(--border);
+       padding-bottom:4px; margin-top:44px; font-size:23px; }
+  h3 { margin-top:26px; font-size:18px; }
+  p, li { font-size:15px; }
+  code, pre { font-family:Consolas,"SF Mono",Menlo,monospace; }
+  code { background:var(--code); border:1px solid var(--border);
+         border-radius:4px; padding:1px 5px; font-size:13.5px; }
+  pre { background:var(--code); border:1px solid var(--border); border-radius:6px;
+        padding:12px 14px; overflow-x:auto; font-size:13px; }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; }
+  th, td { border:1px solid var(--border); padding:7px 10px; text-align:left;
+           vertical-align:top; }
+  th { background:var(--light); }
+  tr:nth-child(even) td { background:var(--light); }
+  .warn { background:#fdf2f2; border-left:4px solid var(--accent2); padding:10px 14px;
+          border-radius:4px; margin:14px 0; }
+  .note { background:#f2f7fd; border-left:4px solid var(--accent); padding:10px 14px;
+          border-radius:4px; margin:14px 0; }
+  footer { margin-top:60px; color:var(--muted); font-size:13px;
+           border-top:1px solid var(--border); padding-top:14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>cellpose_organoid_segmentation.py — 3D organoid segmentation</h1>
+  <div class="sub">Segment organoids in an OCT volume or <strong>stitched mosaic</strong>
+  (<code>stitched-*.tif</code>, processed page-by-page when it is too large for
+  RAM) with Cellpose. Runs by pressing Run/F5 in Spyder - no command window
+  needed - and writes the labels back in the input orientation together with
+  per-organoid statistics and a QC figure.</div>
+</header>
+
+<nav>
+  <a href="#overview">Overview</a>
+  <a href="#install">Install</a>
+  <a href="#data">Data layout</a>
+  <a href="#run">Running in Spyder</a>
+  <a href="#modes">Modes</a>
+  <a href="#three-d">How 3D works</a>
+  <a href="#mosaics">Stitched mosaics</a>
+  <a href="#preproc">Preprocessing</a>
+  <a href="#options">Options</a>
+  <a href="#outputs">Outputs</a>
+  <a href="#tuning">Tuning recipe</a>
+  <a href="#notes">Notes &amp; caveats</a>
+</nav>
+
+<h2 id="overview">1&nbsp; Overview</h2>
+<p>The script is standalone (no Qt, no hardware imports) and runs from Spyder
+(first row / F5) or from the command line via
+<code>run_cellpose_organoid_segmentation.bat</code>. It is deliberately written
+in the same style as the other <code>data_processing</code> scripts:
+<code>DEFAULT_*</code> settings at the top, an <code>argparse</code> interface,
+<code>main()</code>, and <code>import tifffile as TIFF</code>.</p>
+
+<p>What happens for each input volume:</p>
+<ol>
+  <li>read the TIFF as <code>[Y, X, Z]</code> (one page per Y row),</li>
+  <li>optional Y/X crop and depth range (<code>crop</code>,
+      <code>depth_range</code>),</li>
+  <li>estimate the working set and decide <em>single pass vs Y strips</em> for
+      stitched mosaics,</li>
+  <li>OCT display compression (<code>20*log10</code> + dynamic-range clip) plus
+      a percentile stretch,</li>
+  <li>optional de-speckle smoothing and integer downsampling,</li>
+  <li>transpose to Cellpose's <code>[Z, Y, X]</code> layout and run Cellpose
+      (<code>3d</code> / <code>2d-stitch</code> / <code>projection</code>),</li>
+  <li>transpose the labels back to <code>[Y, X, Z]</code>, paste them into a
+      full-size label volume, filter small fragments, and write the mask TIFF,
+      statistics CSV, QC PNG and JSON summary.</li>
+</ol>
+<p>Sections 4-7 cover the Spyder workflow, the modes, how the 3D segmentation
+works, and how mosaics are processed. Sections 8-12 are reference.</p>
+
+<div class="note">
+<strong>Why a dedicated script instead of Cellpose's own CLI?</strong> Two OCT
+specifics. (a) The saved layout is <code>[Y, X, Z]</code>, one TIFF page per Y
+row - Cellpose 3D wants <code>[Z, Y, X]</code>, so an axis swap is mandatory in
+both directions. (b) Raw OCT amplitude spans several orders of magnitude
+(noise floor &asymp; 1e-5, tissue &asymp; 10-100, brightest surface voxel
+&asymp; 500 in the organoid tiles), so Cellpose's built-in 1-99 percentile
+normalisation alone is not enough; the dB compression below is what makes the
+organoid boundaries visible to the network.
+</div>
+
+<h2 id="install">2&nbsp; Install Cellpose</h2>
+<p>Cellpose is not part of the current environment
+(<code>C:\Users\shuaibin\.conda\envs\python311_env</code> has numpy 2.4.2,
+scipy 1.17.1, tifffile 2026.3.3, opencv 4.13.0, PyQt5 5.15.11 - but no torch).
+Pick one of these:</p>
+
+<h3>Option A (recommended): a dedicated environment</h3>
+<p>Keeps the acquisition environment that the OCT software runs in completely
+untouched (torch pins its own numpy/MKL builds).</p>
+<pre>conda create -n cellpose_env python=3.11 -y
+conda activate cellpose_env
+pip install "cellpose[gui]"</pre>
+<p>Then point <code>CONDA_ENV</code> in
+<code>run_cellpose_organoid_segmentation.bat</code> at
+<code>C:\Users\shuaibin\.conda\envs\cellpose_env</code>.</p>
+
+<h3>Option B: into the existing environment</h3>
+<pre>"C:\Users\shuaibin\.conda\envs\python311_env\python.exe" -m pip install "cellpose[gui]"</pre>
+<p>Install <code>cellpose[gui]</code> (or <code>cellpose</code> plus
+<code>torch</code> separately) in the <em>same</em> interpreter you use to run
+this script - the script imports Cellpose directly and tells you if it is
+missing.</p>
+
+<h3>Model weights: keep them outside the repository</h3>
+<p>Cellpose fetches its built-in models from <code>huggingface.co</code>, which
+<strong>times out from this machine</strong> (<code>WinError 10060</code>), and the
+files are far too large for git (the default <code>cpsam_v2</code> is 1.23 GB).
+They therefore live in <code>D:\LineScanOCT\cellpose_models</code> - outside both
+repositories (<code>D:\LineScanOCT</code> itself is not a repo), so a commit can
+never pick them up:</p>
+<pre>D:\LineScanOCT\cellpose_models\
+    cpsam_v2                1.23 GB   pretrained weights (default model)
+    download_cpsam_v2.ps1            resumable downloader (uses hf-mirror.com)
+    README.txt                       why it is here and how it is found</pre>
+<p>Fetch them once (the downloader resumes if it is interrupted):</p>
+<pre>powershell -NoProfile -ExecutionPolicy Bypass -File "D:\LineScanOCT\cellpose_models\download_cpsam_v2.ps1"</pre>
+<p>The script points Cellpose at that folder automatically
+(<code>DEFAULT_MODEL_DIR</code> &rarr; <code>CELLPOSE_LOCAL_MODELS_PATH</code>,
+which Cellpose reads at import and then never downloads from again), prints a
+<code>Weights: ...</code> line each run, and the .bat launcher exports the same
+variable. If a download failure ever happens anyway, the script explains it and
+offers the downloader command instead of showing a urllib traceback.</p>
+<p>Different cache location or a weight file elsewhere: set
+<code>CELLPOSE_LOCAL_MODELS_PATH</code> yourself (it is not overridden), or pass
+the file directly with <code>model=r"D:\somewhere\cpsam_v2"</code> /
+<code>--model "D:\somewhere\cpsam_v2"</code>. The other built-in models
+(<code>cpsam</code>, <code>cpdino</code>, <code>cpdino-vitb</code>) would each
+need their own one-time download into the same folder.</p>
+
+<h3>Which Cellpose version?</h3>
+<table>
+  <tr><th>Version</th><th>Model entry point</th><th>Notes</th></tr>
+  <tr><td>Cellpose 4.x (current, 4.2.1)</td>
+      <td><code>models.CellposeModel(gpu=True)</code> &rarr; Cellpose-SAM
+      (<code>cpsam_v2</code>)</td>
+      <td>Default in this script. <code>models.Cellpose</code> was
+      <strong>removed</strong> in v4 and channels are ignored (the model is
+      channel-order invariant and uses the first 3 channels). Zero-shot quality
+      is much better on unfamiliar contrast than the old model zoo, and
+      <code>diameter</code> is optional (ROIs 7.5-120 px, mean 30).</td></tr>
+  <tr><td>Cellpose 3.1.x</td>
+      <td><code>models.CellposeModel(gpu=True, model_type="cyto3")</code></td>
+      <td>Still supported by this script through a version check
+      (<code>model_type</code> instead of <code>pretrained_model</code>,
+      <code>channels=[0, 0]</code> added).</td></tr>
+</table>
+<p>The script detects the installed major version with
+<code>importlib.metadata</code> and adapts the call, so both work.</p>
+
+<div class="warn">
+<strong>Windows DLL conflict: <code>OSError: [WinError 127] ... torch\lib\shm.dll</code></strong>
+<p>If <code>import torch</code> fails like this, Cellpose and torch are installed
+correctly - Windows is loading the <em>wrong build</em> of a dependency. A
+pip-installed torch ships its own Intel OpenMP, MKL and CUDA DLLs in
+<code>site-packages\torch\lib</code>; a conda-forge environment ships
+<em>different</em> builds of the same file names in
+<code>&lt;env&gt;\Library\bin</code>:</p>
+<pre>&lt;env&gt;\site-packages\torch\lib\libiomp5md.dll    1.5 MB   (torch's own)
+&lt;env&gt;\Library\bin\libiomp5md.dll                0.2 MB   (conda-forge)
+&lt;env&gt;\Library\bin\mkl_rt.2.dll and friends</pre>
+<p>Windows resolves a dependency by file name and reuses whichever copy was
+loaded first, so if numpy/scipy/MKL load before torch - which is what happens
+under Spyder, where the console has usually imported them already - torch's DLLs
+bind to the conda-forge OpenMP build, which lacks symbols they need.
+<code>WinError 127</code> means "the specified procedure could not be found"; a
+missing file would be <code>WinError 126</code>.</p>
+<p>The script now fixes the order itself, before it imports numpy: it puts
+torch's own DLL directories (including <code>nvidia/*/bin|lib</code>) at the
+front of <code>PATH</code>, registers them with <code>os.add_dll_directory</code>,
+sets <code>KMP_DUPLICATE_LIB_OK</code>, and imports torch first. It reports what
+it did at the top of each run and in the summary JSON
+(<code>torch_dll_bootstrap</code>).</p>
+<p>If it still fails, in order:</p>
+<ol>
+  <li><strong>Do nothing.</strong> If torch cannot be imported in the process the
+      script is running in (typical for a Spyder kernel that has been alive for a
+      while - it cannot be repaired from the inside, because a loaded DLL can
+      never be unloaded), the script now <strong>re-runs the pipeline in a fresh
+      interpreter</strong>, streams that output into the console, and returns the
+      results as usual. You will see a banner with the child command line; no
+      restart is needed. Disable with
+      <code>DEFAULT_USE_SUBPROCESS_FALLBACK = False</code> or
+      <code>--no-subprocess-fallback</code>.</li>
+  <li><strong>Restart the Spyder kernel</strong> (Consoles &gt; Restart kernel)
+      if you prefer everything in one process. Then the bootstrap wins on the
+      first run - do not import numpy/matplotlib in that kernel beforehand.</li>
+  <li><strong>Use a dedicated environment</strong> so torch never sits next to a
+      conda-forge OpenMP/MKL build:
+      <pre>conda create -n cellpose_env python=3.11 -y
+conda activate cellpose_env
+pip install "cellpose[gui]"</pre>
+      then set <code>CONDA_ENV</code> in
+      <code>run_cellpose_organoid_segmentation.bat</code> (or the Spyder
+      interpreter) to <code>C:\Users\shuaibin\.conda\envs\cellpose_env</code>.
+      This is the reliable long-term fix and also protects the acquisition
+      environment from torch's pins.</li>
+  <li><strong>Inspect the order</strong> with <code>torch_dll_report()</code>
+      (prints every conflicting DLL name with its directory and size, in search
+      order) and <code>torch_dll_directories()</code> (the paths the bootstrap
+      chose). For a temporary escape hatch,
+      <code>DLL_BOOTSTRAP_ENABLED = False</code> disables the bootstrap
+      entirely.</li>
+</ol>
+<p>Related but distinct: <code>OMP: Error #15</code> ("libiomp5md.dll already
+initialised") is the duplicate-runtime abort - in this environment caused by
+torch's Intel OpenMP (<code>torch\lib\libiomp5md.dll</code>, 1.5 MB) meeting
+conda-forge's LLVM OpenMP (<code>llvm-openmp 22.1.0</code>: <code>Library\bin\
+libomp.dll</code> + a 0.15 MB <code>libiomp5md.dll</code> shim, plus
+<code>libgomp-1.dll</code> and <code>vcomp140.dll</code>). The
+<code>KMP_DUPLICATE_LIB_OK=TRUE</code> that the bootstrap sets suppresses it;
+the fresh-process path avoids it altogether. A CUDA build whose runtime is newer
+than the driver (560.76 = CUDA 12.6 here) can produce the same WinError 127 - in
+that case install a matching torch build or run with <code>--no-gpu</code>. A
+CPU-only wheel (<code>torch 2.14.0+cpu</code>) is reported once and Cellpose then
+runs on the CPU.</p>
+</div>
+
+<h2 id="data">3&nbsp; Data layout</h2>
+<ul>
+  <li>A volume is <code>[Y, X, Z]</code>: one TIFF page per Y row, page shape
+      <code>[X, Z]</code> (X camera lines by Z depths), float32 amplitude.</li>
+  <li>File names are <code>tile-{n}-Y{y}-X{x}-Z{z}.tif</code> (see
+      <code>FileNaming.py</code>); the stitched mosaic is
+      <code>stitched-Y{y}-X{x}-Z{z}.tif</code> and the dynamic/mean tiles are
+      <code>tile-{n}-{Mean|Dyn}-Y{y}-X{x}-Z{z}.tif</code>. Any of them work.</li>
+  <li>Example used for validation:
+      <code>E:\IOCTData\BJRcellcluster\0922\sampleID-1\Time-2\tile-1-Y575-X1016-Z76.tif</code>
+      &rarr; <code>[Y=575, X=1016, Z=76]</code>, 0.178 GB.</li>
+</ul>
+
+<div class="warn">
+<strong>Reading multi-page files.</strong> Some of these TIFFs are stored so
+that <code>tifffile</code> reports one <em>series per page</em> (575 pages /
+575 series on the tile above), and <code>tifffile.memmap</code> then returns
+only a single page. The script verifies that a memory map covers the whole file
+(<code>size == pages &times; page_shape</code>) and falls back to explicit page
+stacking when it does not, printing a note. If you write your own loader, do
+the same check - otherwise you silently analyse only the first Y row.
+</div>
+
+<h2 id="run">4&nbsp; Running in Spyder</h2>
+<p>The script is built for Spyder: <strong>no command window or shell is
+needed</strong>. Open <code>data_processing\cellpose_organoid_segmentation.py</code>
+in Spyder, press <strong>Run (F5)</strong>, and the <code>DEFAULT_*</code> block
+at the top of the file is used as-is. <code>USE_COMMAND_LINE_ARGS</code> is
+<code>False</code>, so any stray arguments (for example Spyder's
+<code>-f</code>) are ignored with a printed note instead of an argparse error.</p>
+
+<h3>Option A - edit the settings block and press F5</h3>
+<pre>DEFAULT_INPUT_PATH = (
+    r"E:\IOCTData\BJRcellcluster\0922\sampleID-1\Time-2\stitched-bgcorr-Y2272-X2515-Z76.tif"
+)
+DEFAULT_MODE = "3d"                # "3d" | "2d-stitch" | "projection"
+DEFAULT_DYNAMIC_RANGE_DB = 35.0    # OCT contrast - the parameter that matters most
+DEFAULT_SMOOTH_XY = 0.0            # try 1.0 to take the speckle edge off
+DEFAULT_TILE_Y = 0                 # 0 = let the script decide (auto Y strips)
+DEFAULT_DRY_RUN ...                # see below: add dry_run=True to segment_organoids()</pre>
+
+<h3>Option B - call it from the Spyder console (no editing, no restart)</h3>
+<p>Works because <code>%autoreload</code> reruns the file, but the simplest way is
+to run the file once and then use the console:</p>
+<pre>segment_organoids()                      # everything from the DEFAULT_* block
+
+segment_organoids(mode="projection", smooth_xy=1, depth_range=(5, 70))
+segment_organoids(tile_y=512, max_ram_gigabytes=16, output_dir=r"D:\cp_out")
+segment_organoids(input_path=r"E:\IOCTData\...\stitched-Y5436-X6096-Z66.tif",
+                  mode="3d", tile_y=256, depth_range=(5, 60), dry_run=True)
+segment_organoids(input_path=r"E:\IOCTData\BJRcellcluster", recursive=True,
+                  dry_run=True)      # scan sampleID-*/Time-* for stitched-*.tif</pre>
+<p>Every keyword is a setting from <code>default_settings()</code> (the
+<code>DEFAULT_*</code> names and the command-line options with dashes replaced by
+underscores). Unknown names raise a <code>TypeError</code> that lists the valid
+ones, so typos cannot silently change nothing. The return value is a list of
+<code>{"summary": ..., "records": ...}</code> per volume, which you can keep
+exploring in the console:</p>
+<pre>results = segment_organoids(dry_run=True)
+results[0]["summary"]["organoid_count"], results[0]["summary"]["processing"]
+import pandas as pd
+df = pd.DataFrame(results[0]["records"])     # per-organoid table, same as the CSV
+df.nlargest(10, "voxel_count")</pre>
+
+<h3>Option C - the command line (optional)</h3>
+<p>Only if you want it: <code>run_cellpose_organoid_segmentation.bat</code> adds
+the environment's <code>Library\bin</code> to <code>PATH</code> (needed for the
+numpy/tifffile/torch DLLs on Windows) and passes
+<code>--use-command-line-args</code>, which switches argument parsing on for that
+run:</p>
+<pre>data_processing\run_cellpose_organoid_segmentation.bat --dry-run
+data_processing\run_cellpose_organoid_segmentation.bat "...\stitched-Y5436-X6096-Z66.tif" --mode projection --depth-range 5 70</pre>
+<p>You can also set <code>USE_COMMAND_LINE_ARGS = True</code> in the file if you
+prefer arguments to win over the <code>DEFAULT_*</code> block.</p>
+
+<div class="note">
+<strong>Always start with <code>dry_run=True</code></strong> (Spyder) or
+<code>--dry-run</code> (shell). It exercises reading, cropping, compression,
+statistics, writing and the QC figure with a crude threshold instead of Cellpose,
+so you can confirm the axes, the depth window and the output orientation in
+seconds without a GPU or a Cellpose install. Add <code>crop=(y0, y1, x0, x1)</code>
+to keep the first real Cellpose call small.
+</div>
+
+<h2 id="modes">5&nbsp; Modes (<code>--mode</code>)</h2>
+<table>
+  <tr><th>Mode</th><th>Cellpose call</th><th>When to use</th></tr>
+  <tr><td><code>3d</code> (default)</td>
+      <td><code>do_3D=True, z_axis=0, anisotropy=z/xy</code></td>
+      <td>Full 3D segmentation: 2D flows are predicted on the XY, ZY and ZX
+      planes of the volume and merged, so partial organoids are still one
+      object. Needs <code>--xy-pixel-um</code>/<code>--z-step-um</code> to be
+      right, and needs enough Z extent and signal. Most memory/VRAM hungry.</td></tr>
+  <tr><td><code>2d-stitch</code></td>
+      <td><code>do_3D=False, stitch_threshold=0.5</code></td>
+      <td>Cellpose segments each Z plane and stitches the planes into 3D
+      labels by IoU. More forgiving when Z is coarse, noisy, or when only a few
+      planes contain the organoid. Often the most robust choice for
+      strongly anisotropic OCT data.</td></tr>
+  <tr><td><code>projection</code></td>
+      <td>2D on the en-face projection</td>
+      <td>Organoid counting and XY cross-section measurement. The mask output is
+      a 2D <code>[Y, X]</code> label image named
+      <code>cellpose_maskXY_*.tif</code>. Use <code>--depth-range</code> to
+      restrict the projection to the focal band, and
+      <code>--projection max|mean</code> to choose the projection.</td></tr>
+</table>
+<p>Because the en-face plane carries the highest resolution in a line-scan OCT
+volume, <code>projection</code> is the cheapest useful sanity check, and
+<code>2d-stitch</code> is usually the best compromise for true 3D labels.</p>
+
+<h2 id="three-d">6&nbsp; How the 3D segmentation actually works</h2>
+<p>Cellpose is a <em>2D</em> network, so "3D" mode is a way of making a volume
+out of 2D predictions. This is what happens to your mosaic, end to end.</p>
+
+<h3>6.1&nbsp; From the file to Cellpose's grid</h3>
+<ol>
+  <li><strong>Read</strong> - one TIFF page per Y row gives <code>[Y, X, Z]</code>.</li>
+  <li><strong>Compress</strong> - raw amplitude &rarr; dB, clip to
+      <code>--dynamic-range-db</code>, stretch to 0-1. Without this step the
+      surface reflection and the speckle dominate and the network sees noise.</li>
+  <li><strong>Transpose</strong> to <code>[Z, Y, X]</code> (Cellpose's 3D
+      layout) and optionally smooth and downsample.</li>
+  <li><strong>Anisotropy</strong> - Cellpose resamples Z so the volume becomes
+      isotropic, using <code>anisotropy = z_step / xy_step</code> (its own
+      convention is "2.0 if Z is sampled half as densely as X or Y"). On this
+      system 4.4 um / 0.833 um &asymp; 5.3, so Z is interpolated about 5x
+      finer before the network sees it, and the labels are mapped back to the
+      original grid afterwards.</li>
+</ol>
+
+<h3>6.2&nbsp; What the network predicts</h3>
+<p>For every 2D plane the network emits, per pixel, a <strong>horizontal flow</strong>,
+a <strong>vertical flow</strong> and a <strong>cell probability</strong> (the
+probability is passed through a sigmoid centered at zero, so it ranges roughly
+&minus;6&hellip;+6). Flows point "uphill" towards the centre of the object each
+pixel belongs to. Cellpose-SAM additionally runs the same network on all three
+orthogonal plane sets of the volume and adds the results:</p>
+<pre>run_3D:  YX planes  +  ZY planes  +  ZX planes  ->  (Z flow, Y flow, X flow, cellprob)</pre>
+<p>That is straight from cellpose's own <code>core.run_3D</code> ("running YX:
+76 planes of size (2272, 2515)" etc.), and it is why 3D mode costs roughly three
+times a 2D pass over the same voxels.</p>
+
+<h3>6.3&nbsp; From flows to organoid labels</h3>
+<p>Voxels whose cell probability exceeds <code>--cellprob-threshold</code> are
+then moved along the predicted flows for <code>--niter</code> iterations
+(default: scaled to the object size). Voxels that converge to the same point
+form one object and get one label - the objects are the <em>basins of
+attraction</em> of that flow field. Afterwards:</p>
+<ul>
+  <li><code>--flow-threshold</code> (0.4): the flow gradients of each candidate
+      object are recomputed and compared with the network's flows; objects whose
+      mean squared error is above the threshold are discarded as malformed.
+      Raise it if real organoids are missing, lower it if you get blobs of
+      nonsense shapes.</li>
+  <li><code>--min-size</code> (voxels): objects smaller than this are removed by
+      Cellpose itself. This is the main speckle filter in 3D.</li>
+  <li><code>--diameter</code>: Cellpose-SAM was trained on objects of 7.5-120 px
+      (mean 30) and is largely scale invariant; passing a larger diameter makes
+      the network downsample first, which is faster. 0 lets it decide.</li>
+</ul>
+
+<h3>6.4&nbsp; What comes back, and what this script adds</h3>
+<ol>
+  <li>Cellpose returns <code>masks</code> as <code>[Z, Y, X]</code> (plus flows
+      and, in Cellpose 4, a zero style vector).</li>
+  <li>The script transposes the labels back to <code>[Y, X, Z]</code>, pastes
+      them into a full-size label volume (so the mask always matches the input
+      TIFF, including any <code>--crop</code>/<code>--depth-range</code>), and
+      drops objects below <code>--min-volume-voxels</code>.</li>
+  <li>Every remaining object is measured: voxel count, physical volume, sphere-
+      equivalent diameter, centroid and bounding box, one CSV row each.</li>
+</ol>
+
+<div class="note">
+<strong>Why 2D+stitch exists</strong> (section 5): that mode skips the flow
+merging, segments each Z plane independently and then links planes whose masks
+overlap enough (<code>stitch_threshold</code>, IoU). It is more robust when Z is
+coarse or the volume is noisy, and it is a good cross-check on the 3D result.
+</div>
+
+<h2 id="mosaics">7&nbsp; Stitched mosaics</h2>
+<p>A stitched mosaic is just a much bigger <code>[Y, X, Z]</code> volume; the
+mosaics in <code>E:\IOCTData\BJRcellcluster</code> reach 1.7-20 GB:</p>
+<table>
+  <tr><th>Mosaic</th><th>Shape [Y, X, Z]</th><th>Voxels</th><th>One Cellpose
+  3D call</th><th>What the script does</th></tr>
+  <tr><td><code>stitched-bgcorr-Y2272-X2515-Z76.tif</code></td>
+      <td>2272, 2515, 76</td><td>434 M</td><td>&asymp;14 GB</td>
+      <td>single pass (fits the 24 GB budget)</td></tr>
+  <tr><td><code>stitched-Y5436-X6096-Z66.tif</code></td>
+      <td>5436, 6096, 66</td><td>2.2 G</td><td>&asymp;70 GB</td>
+      <td>auto 256-row Y strips (&asymp;1.7 GB each)</td></tr>
+  <tr><td><code>stitched-Y2820-X3048-Z587.tif</code></td>
+      <td>2820, 3048, 587</td><td>5.0 G</td><td>&asymp;160 GB</td>
+      <td>auto Y strips + <code>--depth-range</code>/<code>--downsample</code></td></tr>
+</table>
+<p>The default <code>DEFAULT_INPUT_PATH</code> is the organoid mosaic
+<code>stitched-bgcorr-Y2272-X2515-Z76.tif</code> and
+<code>DEFAULT_PATTERN</code> is <code>stitched-*.tif</code>, so a folder scan
+picks up stitched mosaics (use <code>--pattern "tile-*.tif"</code> for the
+per-tile volumes, and <code>--recursive</code> to walk
+<code>sampleID-*/Time-*</code>). Files written by this script
+(<code>cellpose_*</code>) are skipped by the scan, so the
+<code>segmentation_results</code> folders never come back as inputs.</p>
+
+<h3>7.1&nbsp; The memory decision</h3>
+<p>One Cellpose 3D call needs roughly <strong>32 bytes per voxel</strong> (the
+loaded strip, its compressed copy, the four flow/cellprob planes, Cellpose's mask
+and our label volume). The script estimates that for the selected crop/depth
+window and compares it with <code>--max-ram-gigabytes</code> (default 24 GB of
+your 32 GB):</p>
+<pre>Tiling : auto: whole volume needs ~13.9 GB > 8.0 GB, so 512-row Y strips (~3.1 GB each) are used</pre>
+<p>Set <code>--tile-y N</code> to force a strip height; projection mode needs no
+tiling at all.</p>
+
+<h3>7.2&nbsp; How strips avoid splitting organoids</h3>
+<ul>
+  <li><strong>Core</strong> - the <code>tile_y</code> rows a strip is responsible
+      for; <strong>read range</strong> - core plus <code>--tile-overlap-y</code>
+      rows on each side, so Cellpose still sees whole objects near a boundary.
+      Only those pages are read from the TIFF.</li>
+  <li><strong>Ownership by centroid</strong> - a strip writes only the objects
+      whose centroid Y lies in its own core. The neighbouring strip drops its
+      copy. Every organoid is therefore written exactly once and whole, with no
+      merge pass and no double counting.</li>
+  <li><strong>No clobbering</strong> - a strip only fills voxels that are still
+      background, so an object tail already claimed by a neighbour is untouched.</li>
+  <li><strong>Overlap must exceed the object size</strong> - an object longer
+      than <code>2 x tile_overlap_y</code> can still be split. The default is
+      64 rows and the script warns in the first strip if a measured object is
+      longer than that.</li>
+</ul>
+<p>The mask is written as a memory-mapped BigTIFF covering the full mosaic
+(<code>[Y, X, Z]</code>, uint16) and is then re-measured in Y chunks, so the CSV
+and the mask agree exactly even where a seam handed a few voxels to a
+neighbouring object.</p>
+<p>Every strip prints its own duration, split into reading + preprocessing,
+Cellpose and the label bookkeeping, together with the running mean and the
+estimated time left for the remaining strips; the JSON summary keeps them in
+<code>strip_seconds</code> and <code>strip_seconds_mean</code>.</p>
+
+<div class="warn">
+<strong>Strip-mode limits.</strong> <code>--save-seg-npy</code> is skipped (the
+mask is already a memory-mapped BigTIFF), and an organoid longer than the overlap
+in Y can appear as two objects. For counting a whole mosaic the fastest and
+safest option is often <code>--mode projection</code>: it projects the mosaic
+page-by-page into a single 2D en-face image (no seams, tens of MB of RAM) and
+segments that, using the raw-amplitude projection so the strips need no global
+normalisation.
+</div>
+
+<h2 id="preproc">8&nbsp; Preprocessing</h2>
+<h3>Intensity compression (<code>--compression</code>)</h3>
+<p>Default <code>db</code> maps amplitude <code>a</code> to
+<code>clip(20*log10(a) - max + R, 0, R)/R</code> with
+<code>R = --dynamic-range-db</code> (35 dB). In other words: the brightest voxel
+becomes 0 dB, everything more than 35 dB below it is clipped to black, and the
+result is stretched to 0-1. <code>--compression log</code> is a plain
+<code>log1p</code> variant, <code>none</code> keeps the linear values. A
+percentile stretch (<code>--percentile-low</code> 1,
+<code>--percentile-high</code> 99.9) is then applied in all cases.</p>
+<p>Tuning guide for <code>--dynamic-range-db</code>: larger (&rarr; 45-50 dB)
+keeps more of the dim organoid interior and tends to merge neighbouring
+organoids; smaller (&rarr; 25-30 dB) isolates only the bright organoid bodies.
+This single parameter usually changes the result more than any Cellpose
+threshold.</p>
+<h3>De-speckling (<code>--smooth-xy</code>, <code>--smooth-z</code>)</h3>
+<p>OCT speckle is multiplicative, high-frequency and coherent - exactly what
+Cellpose is not trained on. A Gaussian sigma of 0.5-1.5 px in XY (and
+optionally 0.5-1 px in Z, remembering that Z is ~5x coarser) removes most of it
+without blurring organoid boundaries away. Start with
+<code>--smooth-xy 1</code>.</p>
+
+<h3>GPU preprocessing (<code>--preprocess-device</code>)</h3>
+<p>Compression, percentile stretch, de-speckling and the projection are the
+CPU-bound half of a run: numpy/scipy touches every voxel, and once Cellpose
+itself runs on the GPU this is the only CPU work left (the GPU was measured at
+~5 % with ~2 CPU cores busy). <code>--preprocess-device auto</code> - the default
+- therefore runs the same four steps in torch on the GPU whenever torch sees a
+CUDA device; <code>cpu</code> always uses numpy/scipy (bit-for-bit the previous
+behaviour) and <code>gpu</code> asks for the GPU and prints the reason when it
+has to fall back (no CUDA device, a CPU-only torch build, or the Windows DLL
+conflict in a long-lived Spyder kernel, where <code>auto</code> silently stays on
+the CPU). Every run prints which one it used and the summary JSON records
+<code>preprocess_device</code> / <code>preprocess_device_reason</code>.</p>
+<p>The torch path is the same arithmetic, not an approximation: the Gaussian uses
+scipy's own kernel, radius and border mode, and the padding is
+<code>replicate</code> for scipy's <code>nearest</code>. On a real mosaic crop the
+two implementations agree to <code>1.3e-06</code> and give the same labels
+(verified with <code>--dry-run</code>: strip mode bit-identical in one pair of
+runs, 8 differing voxels of 11.7 M in the other; single-pass 8 of 11.7 M, both
+with the same object count). Only the percentile pair is estimated - from a
+uniform-stride subsample above 16 M voxels, because <code>torch.quantile</code>
+sorts - which shows up as <code>~3e-07</code> in the result. Use
+<code>--preprocess-device cpu</code> if you need the numpy numbers exactly.</p>
+<p>Measured on a 300 x 600 x 65 crop: 0.53 s (numpy) &rarr; 0.09 s (torch). The
+gap grows with the volume, because the CPU cost is proportional to the voxel
+count while the GPU cost is not. It does <em>not</em> remove the RAM peak of a 3D
+run: Cellpose's flow field, sparse dynamics and tile stitching stay on the CPU
+and still scale with <code>Z x Y x X</code> (that is what the MemoryError is
+about) - use <code>--depth-range</code>, <code>--tile-y</code> or
+<code>--downsample</code> for that. The Z upsample Cellpose performs for
+<code>anisotropy</code> is inside Cellpose (OpenCV, on the CPU) and is not ours
+to move.</p>
+<pre>Preproc: device=gpu (torch 2.14.0+cu126, NVIDIA GeForce RTX 3060), db 35 dB, smooth xy=1 z=0.5 px</pre>
+<p>Check the backend, and how exact it is, from the console - in a fresh process,
+since torch cannot be imported inside a Spyder kernel (there the report
+correctly says <code>cpu</code> and prints the DLL reason):</p>
+<pre>import cellpose_organoid_segmentation as cp
+cp.preprocess_device_report()</pre>
+
+<h2 id="options">9&nbsp; Options</h2>
+<table>
+  <tr><th>Option</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td><code>input_path</code></td><td><code>DEFAULT_INPUT_PATH</code></td>
+      <td>One volume TIFF, or a folder (scanned with <code>--pattern</code>,
+      processed in natural order).</td></tr>
+  <tr><td><code>--mode</code></td><td><code>3d</code></td>
+      <td><code>3d</code> | <code>2d-stitch</code> | <code>projection</code>.</td></tr>
+  <tr><td><code>--model</code></td><td><code>cpsam_v2</code></td>
+      <td>Cellpose 4: <code>cpsam_v2</code>, <code>cpsam</code>,
+      <code>cpdino</code>, <code>cpdino-vitb</code>. Cellpose 3:
+      <code>cyto3</code>, <code>nuclei</code>.</td></tr>
+  <tr><td><code>--no-gpu</code></td><td>off</td><td>Force CPU (slow, but works
+      anywhere).</td></tr>
+  <tr><td><code>--diameter</code></td><td>0</td>
+      <td>Expected organoid diameter in px; 0 lets Cellpose decide. Setting a
+      value larger than 30 makes Cellpose downsample first, which is both faster
+      and a way to match the model's training scale.</td></tr>
+  <tr><td><code>--min-size</code></td><td>5000</td>
+      <td>Cellpose minimum object size (voxels in 3D, px in 2D). Raise this to
+      suppress speckle blobs.</td></tr>
+  <tr><td><code>--flow-threshold</code></td><td>0.4</td>
+      <td>Raise to keep more (possibly worse shaped) objects; lower to reject
+      malformed ones.</td></tr>
+  <tr><td><code>--cellprob-threshold</code></td><td>0.5</td>
+      <td>Lower (e.g. -1) to accept dimmer organoids; raise to reject bright
+      speckle.</td></tr>
+  <tr><td><code>--niter</code></td><td>0 (auto)</td>
+      <td>Flow dynamics iterations; increase (e.g. 1000) for very large or
+      elongated objects that come out broken.</td></tr>
+  <tr><td><code>--batch-size</code></td><td>32</td>
+      <td>Tiles per forward pass; lower it if you hit CUDA out-of-memory, raise
+      it to keep the GPU busier.</td></tr>
+  <tr><td><code>--stitch-threshold</code></td><td>0.5</td>
+      <td>IoU used to link Z planes in <code>2d-stitch</code> mode. Lower merges
+      more aggressively across Z.</td></tr>
+  <tr><td><code>--projection</code></td><td><code>max</code></td>
+      <td><code>max</code> | <code>mean</code> en-face projection.</td></tr>
+  <tr><td><code>--compression</code>, <code>--dynamic-range-db</code></td>
+      <td><code>db</code>, 35</td><td>See section 6.</td></tr>
+  <tr><td><code>--percentile-low/high</code></td><td>1 / 99.9</td>
+      <td>Stretch applied after compression.</td></tr>
+  <tr><td><code>--smooth-xy</code>, <code>--smooth-z</code></td><td>1.0, 0.5</td>
+      <td>Gaussian de-speckle sigma in px (0 = off).</td></tr>
+  <tr><td><code>--downsample</code></td><td>2</td>
+      <td>Integer stride (<code>--downsample 2</code> = 8x fewer voxels) for very
+      large volumes; labels are upsampled back to full resolution by voxel
+      replication.</td></tr>
+  <tr><td><code>--preprocess-device</code></td><td><code>auto</code></td>
+      <td><code>auto</code> | <code>cpu</code> | <code>gpu</code> - where
+      compression, percentile stretch, de-speckling and the projection run.
+      <code>auto</code> uses torch/CUDA when a device is there; <code>cpu</code>
+      reproduces the numpy/scipy result exactly. See section 8.</td></tr>
+  <tr><td><code>--crop Y0 Y1 X0 X1</code></td><td>whole</td>
+      <td>Process a Y/X window only (mask is still written at full size, with
+      the labels in place).</td></tr>
+  <tr><td><code>--depth-range Z0 Z1</code></td><td>whole</td>
+      <td>Depth window, e.g. to skip the bright surface band and the noise
+      floor. Indices refer to the Z axis of the file layout.</td></tr>
+  <tr><td><code>--xy-pixel-um</code>, <code>--z-step-um</code></td>
+      <td>1.666, 4.4</td>
+      <td>Sampling used for sizes and for <code>anisotropy = z/xy</code>
+      (2.64 with the current default). <strong>Check this before trusting
+      volumes:</strong> 0.833 um is the 20X objective (9.0 um / 10.8) and
+      1.666 um the 10X one, and the value sets the anisotropy and hence every
+      3D shape and volume in the CSV. Set 0 to report pixel units.</td></tr>
+  <tr><td><code>--anisotropy</code></td><td>0 (auto)</td>
+      <td>Explicit override of the Cellpose anisotropy. Cellpose's convention:
+      "2.0 if Z is sampled half as densely as X or Y", i.e. z_step/xy_step. If
+      it stays unset (both pixel sizes 0) the script warns, because isotropic Z
+      is never true for OCT.</td></tr>
+  <tr><td><code>--min-volume-voxels</code></td><td>50000</td>
+      <td>Post-filter applied to the final labels (mask and CSV). Different from
+      <code>--min-size</code>, which is applied inside Cellpose.</td></tr>
+  <tr><td><code>--max-gigabytes</code></td><td>20.0</td>
+      <td>Refuse to read more than this at once; strips only read their own rows,
+      so this rarely binds.</td></tr>
+  <tr><td><code>--tile-y</code></td><td>256</td>
+      <td>Y strip height for a large mosaic. 0 lets the script compare the
+      estimated working set with <code>--max-ram-gigabytes</code> and use one
+      Cellpose call when it fits.</td></tr>
+  <tr><td><code>--tile-overlap-y</code></td><td>64</td>
+      <td>Context rows around each strip. Keep it at least as large as the
+      organoid diameter, otherwise an organoid lying across a strip boundary can
+      be split; the script warns if a measured object is longer than
+      <code>2 x tile_overlap_y</code>.</td></tr>
+  <tr><td><code>--max-ram-gigabytes</code></td><td>24.0</td>
+      <td>Working-set budget for one Cellpose call (~32 bytes per voxel); drives
+      the automatic tiling decision.</td></tr>
+  <tr><td><code>--recursive</code></td><td>False</td>
+      <td>Walk sub-folders when the input is a folder, e.g. to sweep
+      <code>sampleID-*/Time-*</code> for <code>stitched-*.tif</code>.</td></tr>
+  <tr><td><code>--show-figures</code></td><td>False</td>
+      <td>Also display the QC figure (Spyder Plots pane). The PNG is written
+      either way; this flag also stops the module forcing the Agg backend.</td></tr>
+  <tr><td><code>--update-qc</code></td><td>False</td>
+      <td>Skip segmentation entirely and only rebuild the QC figure(s) from the
+      mask, CSV and summary already written for the input volume(s). Seconds per
+      volume, needs no Cellpose/torch, and rewrites an old CSV with the shape
+      columns. Also available as <code>segment_organoids(update_qc=True)</code>
+      or <code>update_qc_figure(path)</code>.</td></tr>
+  <tr><td><code>--use-command-line-args</code></td><td>off</td>
+      <td>Ignore the <code>DEFAULT_*</code> block and parse these arguments. The
+      .bat launcher passes it; Spyder never needs it.</td></tr>
+  <tr><td><code>--save-seg-npy</code></td><td>off</td>
+      <td>Also write <code>*_seg.npy</code> so the Cellpose GUI can load the
+      result for hand correction.</td></tr>
+  <tr><td><code>--dry-run</code></td><td>off</td>
+      <td>Skip Cellpose; threshold stand-in (no GPU needed).</td></tr>
+  <tr><td><code>--output-dir</code></td><td>segmentation_results</td>
+      <td>Where to write the outputs. A <strong>relative</strong> name (the
+      default) is created <em>under each input file's own folder</em>, e.g.
+      <code>...\Time-2\segmentation_results\</code>, so a folder-wide run gives
+      every volume its own results folder; an <strong>absolute</strong> path is
+      used as-is; <code>""</code> writes next to the input file. The folder is
+      created when missing and reused when it already exists - the file names
+      come from the input stem, so a re-run overwrites that volume's earlier
+      outputs.</td></tr>
+</table>
+
+<h2 id="outputs">10&nbsp; Outputs</h2>
+<p>Written into <code>&lt;input folder&gt;/segmentation_results</code> by default
+(or into <code>--output-dir</code>), all named after the input stem, e.g. for
+<code>tile-1-Y575-X1016-Z76.tif</code>:</p>
+<table>
+  <tr><th>File</th><th>Content</th></tr>
+  <tr><td><code>cellpose_mask_tile-1-Y575-X1016-Z76.tif</code></td>
+      <td>uint16 label volume, <strong>same shape and orientation as the
+      input</strong> (<code>[Y, X, Z]</code>, one page per Y row), 0 = no
+      organoid. Loads as a mask on top of the input volume in ImageJ / the app.
+      For a mosaic processed in Y strips it is a memory-mapped BigTIFF of the
+      full volume. In <code>projection</code> mode the name is
+      <code>cellpose_maskXY_*.tif</code> and it is a 2D <code>[Y, X]</code>
+      label image.</td></tr>
+  <tr><td><code>cellpose_organoids_*.csv</code></td>
+      <td>One row per organoid:
+      <code>organoid_id, voxel_count, volume_um3, equivalent_diameter_um,
+      surface_area_um2, roundness, y/x/z_centroid_px, y/x/z_extent_px,
+      y0/y1/x0/x1/z0/z1_px</code>. In 2D mode <code>volume_um3</code> carries
+      the XY area in um&sup2; and the z, surface and roundness columns are
+      empty.</td></tr>
+  <tr><td><code>cellpose_qc_*.png</code></td>
+      <td>4-panel QC figure, all text at double size. Top row (pure image, no
+      ticks or axis labels): en-face projection and the same with label outlines,
+      with the object count in the panel title. Bottom row: the roundness
+      histogram (dashed line at 1.00 = sphere, median in the panel title) and
+      the equivalent-diameter histogram. There is no overall figure title - the
+      file name and the JSON summary carry the run's identity.</td></tr>
+  <tr><td><code>cellpose_summary_*.json</code></td>
+      <td>Every setting actually used (mode, model, anisotropy and its source,
+      pixel sizes, compression, thresholds, crop/depth window, downsample) plus
+      <code>processing</code> (<code>single-pass</code>, <code>y-strips</code> or
+      <code>streamed-projection</code>), the strip count and estimated strip
+      working set, the object count, dropped objects and runtime - the
+      reproducibility record.</td></tr>
+  <tr><td><code>cellpose_seg_*.npy</code></td>
+      <td>Only with <code>--save-seg-npy</code>: a Cellpose-GUI-format file
+      (<code>masks/outlines/flows/styles</code>) for hand correction.</td></tr>
+</table>
+
+<h3>Roundness (sphericity)</h3>
+<p>Every 3D object also gets <code>surface_area_um2</code> and
+<code>roundness</code>, and the third QC panel is a roundness histogram. The
+area is the sum of the object's exposed voxel faces weighted by their real size
+(a Z-normal face is an X-Y plane = <code>xy_um&sup2;</code>, the others
+<code>xy_um * z_um</code>), so anisotropic sampling is handled. Roundness is
+<strong>Wadell sphericity</strong>, <code>pi^(1/3) * (6V)^(2/3) / A</code>, with
+<code>A</code> divided by 1.5 first: counting voxel faces overestimates a smooth
+surface by exactly that factor (the mean of |nx|+|ny|+|nz| over a surface, i.e.
+the staircase area), so after the correction a digitised sphere reads 1.00.
+Measured calibration on synthetic shapes:</p>
+<table>
+  <tr><th>Shape</th><th>roundness</th></tr>
+  <tr><td>sphere</td><td>1.00 (1.002 isotropic, 0.995 on the 1.666 x 4.4 um grid)</td></tr>
+  <tr><td>ellipsoid 2:1:1</td><td>0.95</td></tr>
+  <tr><td>rod 6:1:1</td><td>0.83</td></tr>
+  <tr><td>two touching lobes</td><td>0.81</td></tr>
+  <tr><td>cube</td><td>1.21 - flat-faced objects overshoot, the correction
+      assumes a smooth surface</td></tr>
+</table>
+<p>Caveats: <code>--downsample</code> makes the mask blocky and lowers roundness
+by a few percent, so use <code>--downsample 1</code> when shape is the point; Z
+is coarse (4.4 um per plane), so objects only a few planes thick are dominated by
+discretisation and are best compared with objects of similar thickness; roundness
+is a ratio, so the objective / <code>--xy-pixel-um</code> question moves
+<code>surface_area_um2</code> much more than it moves roundness; with both pixel
+sizes 0 the two columns fall back to voxel counts and face counts;
+<code>--min-volume-voxels</code> is applied first, so the histogram only covers
+objects that survived it. In strip mode the columns are measured on the written
+mask in Y chunks, so they match the mask exactly.</p>
+
+<h2 id="tuning">11&nbsp; Tuning recipe</h2>
+<ol>
+  <li><strong>Orientation first.</strong> In Spyder run
+      <code>segment_organoids(dry_run=True, depth_range=(z0, z1))</code> and open
+      the QC PNG. The en-face panel must look like an XY organoid image (round
+      blobs), not like a B-scan; the mask must sit exactly on the bright tissue.
+      Only then continue.</li>
+  <li><strong>Depth window.</strong> Pick <code>depth_range</code> from the B-scan
+      / X-Z view of the stack in your viewer so the surface reflection and the
+      noise floor are excluded.</li>
+  <li><strong>Contrast.</strong> Try <code>mode="projection"</code> with
+      <code>smooth_xy=1</code> and scan <code>dynamic_range_db</code> over roughly
+      25 / 35 / 45; keep what makes the organoid bodies cleanest. Because the
+      projection is a single 2D image this is also the fastest way to iterate.</li>
+  <li><strong>A first real 3D run on a crop.</strong>
+      <code>segment_organoids(crop=(0, 512, 0, 1016), depth_range=(5, 70),
+      diameter=60)</code> to see real organoid labels in about a minute, with
+      <code>tile_y=0</code> so there are no strips yet.</li>
+  <li><strong>Then the whole mosaic.</strong> Drop <code>crop</code> and let the
+      tiling decide itself; if it picks strips, watch the printed per-strip
+      "kept N object(s)" lines and the overlap warning. Use
+      <code>mode="2d-stitch"</code> when the 3D result fragments.</li>
+  <li><strong>Counts.</strong> If organoids are missed lower
+      <code>cellprob_threshold</code> to about -1; if speckle blobs pass, raise
+      <code>min_size</code>, <code>min_volume_voxels</code> and
+      <code>cellprob_threshold</code>.</li>
+  <li><strong>Correct by hand if needed.</strong> Add
+      <code>save_seg_npy=True</code> (single-pass volumes only), load the
+      <code>*_seg.npy</code> in the GUI (<code>python -m cellpose</code>), fix
+      the ROIs, and export.</li>
+</ol>
+
+<h2 id="notes">12&nbsp; Notes &amp; caveats</h2>
+<ul>
+  <li><strong>Cellpose models are trained on cells, not organoids.</strong>
+      Cellpose-SAM zero-shot generalises well, but for a quantitative study
+      fine-tune on a few hand-labelled volumes
+      (<code>cellpose[gui]</code> training, then
+      <code>--model &lt;path or name&gt;</code>).</li>
+  <li><strong>Anisotropy.</strong> Z is much coarser than XY on this system
+      (4.4 um vs 1.666 um at 10X, or 0.833 um at 20X, i.e. 2.6x-5x).
+      <code>--mode 3d</code> up-samples Z internally to
+      make the volume isotropic, which multiplies memory and time by that same
+      factor; if that is too expensive, use <code>--mode 2d-stitch</code> or a
+      smaller <code>--crop</code>/<code>--depth-range</code>.</li>
+  <li><strong>Memory is handled for you.</strong> The script estimates one
+      Cellpose pass at ~32 bytes/voxel and either runs the whole volume or
+      switches to Y strips automatically; the strip mask is a memory-mapped
+      BigTIFF, so a 2 or 5 GB mosaic never has to fit in RAM. Set
+      <code>--max-ram-gigabytes</code> to the real headroom you have (the default
+      24 GB assumes most of your 32 GB is free, so lower it if the OCT app or
+      Spyder is busy).</li>
+  <li><strong>Strips need a large enough overlap.</strong> An organoid longer
+      than <code>2 x tile_overlap_y</code> in Y can be split into two labels near
+      a strip boundary; the script warns when it sees one. Raise
+      <code>tile_overlap_y</code> to at least the organoid diameter, and
+      <code>tile_y</code> to 512-1024 so the extra context does not dominate the
+      runtime. For pure counting, <code>--mode projection</code> avoids the
+      question entirely.</li>
+  <li><strong>Cellpose's sparse-invariant warning is silenced.</strong> Cellpose
+      builds a <code>torch.sparse_coo_tensor</code> for its 3D neighbour graph
+      and torch warns once per process that the sparse invariant checks are
+      "implicitly disabled". The script calls
+      <code>torch.sparse.check_sparse_tensor_invariants.disable()</code> right
+      after the model is loaded, which states that explicitly - the fix the
+      warning itself asks for. Behaviour is unchanged: the checks were already
+      off, and enabling them would only add overhead and risk hard failures on a
+      large mosaic.</li>
+  <li><strong>Cellpose errors are not covered by the dry run.</strong>
+      <code>dry_run=True</code> tests the plumbing; the first real run is what
+      exercises the model. Start it on a <code>crop</code> of the mosaic to see
+      the real quality in a minute, then scale up.</li>
+  <li><strong>Spyder vs shell.</strong> <code>USE_COMMAND_LINE_ARGS = False</code>
+      keeps Spyder happy (stray arguments are ignored with a note). If you ever
+      want arguments to be authoritative, set it to <code>True</code> or pass
+      <code>--use-command-line-args</code> (which the .bat launcher does).</li>
+  <li><strong>Outputs live in their own folder.</strong> Everything goes into
+      <code>&lt;input folder&gt;/segmentation_results/</code> (a relative
+      <code>--output-dir</code> is created under the input's folder; pass an
+      absolute one or <code>""</code> to change that). The folder is reused if it
+      already exists and the file names come from the input stem, so re-running a
+      volume replaces its mask, CSV, QC PNG and summary in place. In strip mode
+      the mask BigTIFF is deleted and rewritten, so close it in any viewer first.
+      Folder scans skip <code>cellpose_*</code> files, so the results folder is
+      never picked up as input (even with <code>--recursive</code>).</li>
+  <li><strong>Validate the labels.</strong> Always inspect the QC PNG and the
+      largest-object X-Z section before trusting the counts, especially when
+      touching <code>--dynamic-range-db</code>.</li>
+</ul>
+
+<footer>
+  Script: <code>data_processing/cellpose_organoid_segmentation.py</code> &middot;
+  launcher: <code>data_processing/run_cellpose_organoid_segmentation.bat</code>.
+  <br>Each run writes a <code>*_summary_*.json</code> next to the mask, recording
+  the settings that produced it (mode, model, anisotropy, pixel sizes,
+  compression, thresholds, crop/depth window, strip height), so results stay
+  traceable when settings are tuned.
+</footer>
+
+</body>
+</html>

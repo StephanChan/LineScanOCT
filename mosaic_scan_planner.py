@@ -9,7 +9,7 @@ from ScanModels import FOVLocation
 
 # Raised from 0.01 to 0.05 so adjacent tiles share a usable overlap strip
 # (radiometric harmonization / seam metrics need more than ~1% of the FOV).
-FOV_OVERLAP = 0.10
+FOV_OVERLAP = 0.03
 # Y FOV upper limit taken from the objective HardwareSpecs
 # (``ObjectiveSpec.max_y_fov_mm``, 0.5 mm for every objective).  The live USB
 # locator path passes that value in explicitly (``OCT_MT.py``); this module

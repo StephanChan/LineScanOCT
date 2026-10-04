@@ -80,6 +80,18 @@ AODO_DEFAULT_FRAME_RATE = 400
 AODO_AO_VOLTAGE_MIN = -10.0
 AODO_AO_VOLTAGE_MAX = 10.0
 
+# LED status indicators, driven as ART-DAQ digital outputs on port 1 of the device
+# named by ``AODOboard`` in config.ini (see LedIndicators.py, which appends these
+# suffixes to the device name, e.g. "Galvo/port1/line0"):
+#   port1/line0 - illumination LED, high while the USB camera is in use
+#   port1/line1 - acquisition LED (red), high while an acquisition is running
+#   port1/line2 - idle LED (green), high while no acquisition is running
+LED_ILLUMINATION_LINE = "port1/line0"
+LED_ACQUISITION_LINE = "port1/line1"
+LED_IDLE_LINE = "port1/line2"
+LED_DEVICE_CONFIG_KEY = "AODOboard"
+LED_DEVICE_DEFAULT = "Galvo"
+
 DEFAULT_AXIAL_PIXEL_SIZE_UM = 4.4
 
 PHOTONFOCUS_STATIC_NORMALIZATION_MEAN = 2048.0

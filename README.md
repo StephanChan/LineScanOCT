@@ -149,6 +149,12 @@ This replaced the earlier split between mode strings and action strings.
     - mosaic correction overlay rendering
     - AODO waveform preview rendering
 
+- `ImageViewer.py` / `Rulers.py`
+  - the shared pan/zoom image widget that every OCT display panel is built from
+    (`XZplane`, `XZplaneDyn`, `XZplaneInt`, `XYplaneDyn`, `XYplaneInt`):
+    wheel zoom, middle-drag pan, double-click reset
+  - viewport-locked um/mm axis rulers along the image edges (`Rulers.py`)
+
 - `FileNaming.py`
   - file naming and save-folder layout
   - centralizes:
@@ -205,13 +211,43 @@ These are now strict dataclasses. Dict-style compatibility was removed.
     - stage-axis specs
     - laser specs
     - AODO trigger constants
+    - LED indicator DO terminals (`LED_ILLUMINATION_LINE` / `LED_ACQUISITION_LINE` /
+      `LED_IDLE_LINE`, `LED_DEVICE_CONFIG_KEY`)
     - OCT processing defaults now shared by GPU / GUI setup
+
+- `LedIndicators.py`
+  - ART-DAQ digital outputs on **port 1** driving the status / illumination LEDs
+    (device = `AODOboard` from config.ini, normally `Galvo`)
+  - `port1/line0` illumination LED: high while the USB camera is in use — switched
+    by `SampleLocator.open_usb_camera` (before the sensor streams) and
+    `SampleLocator.close_usb_camera` (live view, sample locator, coordinate
+    calibration all go through those two)
+  - `port1/line1` acquisition (red) LED: high while a `ThreadWeaver` command runs
+  - `port1/line2` idle (green) LED: high while the software is not acquiring
+  - `WeaverThread.set_acquisition_leds` switches the pair per queued command
+    (`LocationCameraLive` is USB-only, so it keeps the green LED)
+  - each line is held by one long-lived task so its level survives between writes;
+    every write is best-effort (missing SDK / device / line warns once and never
+    stops a scan), and `all_off()` darkens everything on software exit
+  - `artdaq_led_test.py` cycles the three lines standalone for wiring checks
 
 - `Generaic_functions.py`
   - legacy shared numerical / plotting helpers used across the project
 
 - `CalibInterpolationDispersion.py`
   - calibration support for interpolation / dispersion data used by GPU processing
+
+- `CoordinateCalibration.py`
+  - USB-camera pixel ↔ stage XY affine calibration, fitted from the samples the
+    operator re-centres under live C-scan (`fit_pixel_to_stage_affine`)
+  - `save_affine_to_config` persists the model to `config.ini` **and** publishes it
+    to the running software (`set_active_affine`), which every reader goes through
+    via `current_affine` — a fresh calibration is therefore used without a restart
+  - `ThreadWeaver.calibrate_coordinates` then re-maps the plan of the current
+    folder onto the aligned positions (`apply_calibration_to_current_plan`) and
+    `OCT_MT._on_calibration_applied` rebuilds the USB overlays + rewrites
+    `scan_metadata.pkl`, so the next `Go` scans the corrected samples with no
+    restart and no second locator run
 
 ## Acquisition Modes
 
@@ -477,6 +513,7 @@ Current design rules:
 
 - keep queue action names in `ActionTypes.py`
 - keep hardware and processing constants in `HardwareSpecs.py`
+- keep LED indicator DO control in `LedIndicators.py`
 - keep rendering-only code in `Display_rendering.py`
 - keep session persistence in `ScanSession.py`
 - keep offline dynamic processing in `DynamicPostprocessing.py`

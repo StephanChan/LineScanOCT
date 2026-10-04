@@ -40,6 +40,7 @@ from ActionTypes import AcqTypes, DnSActions, GPUActions, WeaverActions
 from FileNaming import FileNaming
 from Generaic_functions import LOG
 from ScanSession import load_session_data, populate_sample_selector, save_session_data
+from ScanModels import load_fov_locations, load_sample_centers
 import time
 from SampleLocator import (
     MosaicUSBSampleScanner,
@@ -49,6 +50,7 @@ from SampleLocator import (
     default_usb_mosaic_calibration,
 )
 from usb_training_dataset import export_sample_locator_dataset
+from LedIndicators import acquisition_finished, all_off, set_led_device
 from Display_rendering import (
     render_aodo_waveform_ready,
     render_aline_ready,
@@ -238,6 +240,10 @@ class UiBridge(QObject):
     cscan_ready = pyqtSignal(object)   # dict payload
     mosaic_ready = pyqtSignal(object)  # dict payload
     aodo_waveform_ready = pyqtSignal(object)  # dict payload
+    # Published by ThreadWeaver.calibrate_coordinates once a freshly fitted
+    # affine has been saved + applied to the in-memory plan, so the GUI can
+    # re-map its own plan / USB overlays without a software restart.
+    calibration_applied = pyqtSignal(object)  # dict payload
 
 
 # Main GUI object with thread wiring and queue orchestration.
@@ -351,6 +357,7 @@ class GUI(MainWindow):
         self._ui_bridge.cscan_ready.connect(self._on_cscan_ready)
         self._ui_bridge.mosaic_ready.connect(self._on_mosaic_ready)
         self._ui_bridge.aodo_waveform_ready.connect(self._on_aodo_waveform_ready)
+        self._ui_bridge.calibration_applied.connect(self._on_calibration_applied)
         self._on_slice_n_changed(self.ui.SliceN.value())
         self._last_display_payloads = {
             "aline": None,
@@ -368,6 +375,12 @@ class GUI(MainWindow):
         # Simple FPS limiter for rendering-heavy slots
         self._render_fps_limit = 30.0
         self._last_render_t = {"aline": 0.0, "bline": 0.0, "cscan": 0.0, "mosaic": 0.0}
+
+        # LED indicators (illumination / acquisition / idle): adopt the DAQ device
+        # named in the GUI and show the idle state (green LED on, red LED off).
+        # See LedIndicators.py; WeaverThread switches them per command.
+        set_led_device(self.ui.AODOboard.toPlainText())
+        acquisition_finished()
 
     def Init_allThreads(self):
         self.Weaver_thread = WeaverThread_2(self.ui, self.log)
@@ -1053,18 +1066,108 @@ class GUI(MainWindow):
         self.ui.statusbar.showMessage(message)
         return True
 
+    def _on_calibration_applied(self, payload: dict):
+        """Adopt a freshly fitted affine in the running session (no restart).
+
+        ``ThreadWeaver.calibrate_coordinates`` publishes the corrected plan here
+        once the coordinate calibration finished.  The affine itself is already
+        the active model (``CoordinateCalibration.current_affine``), so this
+        handler only re-maps the session plan onto the positions the operator
+        actually aligned, rebuilds the USB region overlays against the new model
+        and persists both, so the very next ``Go`` / PlateScan scans the
+        corrected samples - without a restart and without a second locator run.
+        """
+        if not payload:
+            return
+        try:
+            fov_locations = load_fov_locations(payload.get("fov_locations") or [])
+            sample_centers = load_sample_centers(payload.get("sample_centers") or [])
+        except Exception as error:
+            print(f"Could not adopt the calibrated plan: {error}")
+            return
+        if fov_locations:
+            self.FOV_locations = fov_locations
+        if sample_centers:
+            self.sample_centers = sorted(
+                sample_centers,
+                key=lambda center: int(center.sample_id),
+            )
+        self._apply_plan_scan_geometry(self.FOV_locations)
+
+        # Rebuild the region overlays with the new model: the FOV boxes they draw
+        # are placed by inverting the calibration, so they must not keep the old
+        # matrix from the locator session.
+        tile_records = list(getattr(self, "_usb_locator_tile_records", []) or [])
+        roi_records = list(getattr(self, "_usb_locator_roi_records", []) or [])
+        if tile_records and roi_records:
+            try:
+                self.overlay_images = self.build_usb_region_overlay_sources(
+                    tile_records, roi_records, self._current_usb_calibration()
+                )
+            except Exception as error:
+                print(f"Could not rebuild the USB region overlays: {error}")
+
+        # Keep the Weaver thread on the same plan (Go -> PlatePreScan / WellScan
+        # use the in-memory copies; PlateScan / TimedPlateScan reload the file).
+        weaver = getattr(self, "Weaver_thread", None)
+        if weaver is not None:
+            weaver.FOV_locations = self.FOV_locations
+            weaver.sample_centers = self.sample_centers
+            weaver.overlay_images = self.overlay_images
+
+        populate_sample_selector(self.ui, self.sample_centers)
+        # MosaicLabel still shows what the *old* model drew during the alignment
+        # loop; redraw the first sample so the corrected FOV boxes are visible
+        # immediately (running on the GUI thread, widgets must not be touched by
+        # the weaver here).
+        if self.FOV_locations and self.overlay_images and self.sample_centers:
+            try:
+                weaver.display_sample_overlay(int(self.sample_centers[0].sample_id))
+            except Exception as error:
+                print(f"Could not redraw the corrected sample overlay: {error}")
+        try:
+            save_session_data(
+                self._mosaic_folder(),
+                self.FOV_locations,
+                self.sample_centers,
+                self.overlay_images,
+                raw_img=None,
+                pixel_polygons=getattr(self, "pixel_polygons", None),
+            )
+        except Exception as error:
+            print(f"Could not persist the calibrated sample plan: {error}")
+
+        corrected = payload.get("corrected") or []
+        deltas = ", ".join(
+            f"#{int(item['sample_id'])} dx={float(item['dx']):+.4f}/dy={float(item['dy']):+.4f}"
+            for item in corrected
+            if isinstance(item, dict)
+        )
+        message = (
+            "Coordinate calibration applied to the running session: "
+            f"{len(corrected)} sample(s) re-mapped onto the aligned positions"
+            + (f" ({deltas})" if deltas else "")
+            + ". The plan and scan_metadata.pkl are updated; no restart needed."
+        )
+        print(message)
+        self.ui.statusbar.showMessage(message)
+
     def _current_usb_calibration(self):
         """Return the USB camera -> stage calibration for the next locator run.
 
-        Uses the last fitted model stored in config.ini (see CoordinateCalibration
-        save/load). There is no hard-coded fallback matrix any more; when config.ini
-        has no fitted model the calibration matrix stays None so callers fail with a
-        clear 'requires affine calibration' message instead of using stale numbers.
+        The model is read through ``CoordinateCalibration.current_affine``, which
+        returns the model just fitted by a CoordinateCalibration run (published
+        in-process by ``save_affine_to_config``) or, when none was published yet,
+        the last model persisted in config.ini.  A restart is therefore never
+        required for a fresh calibration to take effect, and there is no
+        hard-coded fallback matrix any more: when no fitted model exists the
+        calibration matrix stays None so callers fail with a clear 'requires
+        affine calibration' message instead of using stale numbers.
         """
         calibration = default_usb_mosaic_calibration()
         try:
-            from CoordinateCalibration import load_affine_from_config
-            matrix = load_affine_from_config("config.ini")
+            from CoordinateCalibration import current_affine
+            matrix = current_affine("config.ini")
             if matrix is not None:
                 calibration["camera_to_stage_affine"] = matrix
         except Exception as error:
@@ -1161,6 +1264,11 @@ class GUI(MainWindow):
         all_roi_records = list(getattr(self.scanner, "final_tile_roi_records", []))
 
         self.save_usb_locator_run_records(all_tile_records, all_roi_records)
+        # Keep the raw locator records: a coordinate calibration run re-maps the
+        # plan and rebuilds these overlays with the freshly fitted affine (see
+        # _on_calibration_applied) without asking the operator to draw again.
+        self._usb_locator_tile_records = list(all_tile_records)
+        self._usb_locator_roi_records = list(all_roi_records)
 
         if len(all_sample_centers) == 0:
             message = (
@@ -1568,6 +1676,8 @@ class GUI(MainWindow):
             self.ui.statusbar.showMessage(message)
             event.ignore()
             return
+        # Software is going away and will no longer watch the hardware: dark LEDs.
+        all_off()
         event.accept()
 
                 

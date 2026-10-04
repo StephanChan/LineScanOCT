@@ -16,12 +16,13 @@ from mosaic_scan_planner import (
     plan_mosaic_scan,
 )
 from ScanModels import FOVLocation, SampleCenter
+from LedIndicators import illumination_off, illumination_on
 
 USB_CAMERA_INDEX = 0
 USB_FRAME_WIDTH = 3840
 USB_FRAME_HEIGHT = 2160
 USB_AUTO_EXPOSURE = 0.25
-USB_EXPOSURE = -5.0
+USB_EXPOSURE = -2.0
 SAMPLE_STAGE_COLUMN_Y_TOLERANCE_MM = 10.0
 
 
@@ -141,13 +142,34 @@ def orient_usb_frame_live(frame):
     return orient_usb_frame(frame)
 
 def open_usb_camera(configure_exposure=False):
-    cap = cv2.VideoCapture(USB_CAMERA_INDEX, cv2.CAP_MSMF)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, USB_FRAME_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, USB_FRAME_HEIGHT)
-    if configure_exposure:
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, USB_AUTO_EXPOSURE)
-        cap.set(cv2.CAP_PROP_EXPOSURE, USB_EXPOSURE)
+    # Illuminate the sample before the sensor starts streaming: the LED is
+    # switched back off by close_usb_camera() when the camera is done
+    # (see LedIndicators.py).
+    illumination_on()
+    try:
+        cap = cv2.VideoCapture(USB_CAMERA_INDEX, cv2.CAP_MSMF)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, USB_FRAME_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, USB_FRAME_HEIGHT)
+        if configure_exposure:
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, USB_AUTO_EXPOSURE)
+            cap.set(cv2.CAP_PROP_EXPOSURE, USB_EXPOSURE)
+    except Exception:
+        # Opening the camera failed, so nothing will release it: drop the light.
+        illumination_off()
+        raise
     return cap
+
+def close_usb_camera(cap):
+    """Release a USB camera handle and switch the illumination LED off.
+
+    Every camera user (live view, sample locator, coordinate calibration) must
+    go through this so the illumination LED cannot be left on.
+    """
+    try:
+        if cap is not None:
+            cap.release()
+    finally:
+        illumination_off()
 
 def capture_usb_frame(configure_exposure=False):
     cap = open_usb_camera(configure_exposure=configure_exposure)
@@ -159,7 +181,7 @@ def capture_usb_frame(configure_exposure=False):
             return None
         return orient_usb_frame(frame)
     finally:
-        cap.release()
+        close_usb_camera(cap)
 
 
 USB_CAPTURE_AVERAGE_FRAMES = 5
@@ -192,7 +214,7 @@ def capture_usb_frame_averaged(n_frames=USB_CAPTURE_AVERAGE_FRAMES, configure_ex
         average = np.mean(stack, axis=0)
         return np.clip(np.rint(average), 0, 255).astype(np.uint8)
     finally:
-        cap.release()
+        close_usb_camera(cap)
 
 def blank_usb_frame():
     return orient_usb_frame(np.full((USB_FRAME_HEIGHT, USB_FRAME_WIDTH, 3), 40, dtype=np.uint8))
