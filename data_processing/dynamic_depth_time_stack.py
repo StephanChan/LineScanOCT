@@ -77,17 +77,9 @@ import tifffile as TIFF
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-# --- MP4 frame rate (playback speed of the movie) --------------------------
-MOVIE_FPS = 10.0             # frames per second written into the MP4/AVI, e.g. 10
-                             # (= 10 fps playback: the 108 time points of the Dyn
-                             # run play in ~10.8 s).  The frames are streamed in
-                             # the real acquisition order, so this is the only
-                             # timing knob of the movie (see WRITE_MOVIE below).
+
 
 ROOT_DIR = r"E:\IOCTData\Tcell093026\96wellplate\dynamic\1FOV"   # ONE acquisition root
-RECURSIVE = False            # True: also search for sampleID-* below ROOT_DIR
-SAMPLE_IDS = None            # None = every sampleID-*; e.g. [1, 3]
-
 CHANNEL = "Dyn"              # Dyn / Mean / DynH / DynS / DynV
 DEPTH_PIXEL = 2              # depth row to keep (0-based, on the original Z axis)
 DEPTH_RANGE = None           # e.g. (2, 4) -> mean of depth rows 2..3 instead
@@ -95,13 +87,22 @@ DEPTH_RANGE = None           # e.g. (2, 4) -> mean of depth rows 2..3 instead
 DOWNSAMPLE_X = 1             # 2 = 2x fewer columns
 DOWNSAMPLE_Y = 1             # 2 = 2x fewer rows
 DOWNSAMPLE_Z = 1             # depth rows averaged around DEPTH_PIXEL
-DOWNSAMPLE_MODE = "mean"     # "mean" (block average) or "sample" (decimate)
 
+
+#############################################################################################
+DOWNSAMPLE_MODE = "mean"     # "mean" (block average) or "sample" (decimate)
+# --- MP4 frame rate (playback speed of the movie) --------------------------
+MOVIE_FPS = 10.0             # frames per second written into the MP4/AVI, e.g. 10
+                             # (= 10 fps playback: the 108 time points of the Dyn
+                             # run play in ~10.8 s).  The frames are streamed in
+                             # the real acquisition order, so this is the only
+                             # timing knob of the movie (see WRITE_MOVIE below).
 TIME_START = None            # None = from the first Time-*; e.g. 5 = start at Time-5
 TIME_STOP = None             # None = through the last Time-* (inclusive)
 TIME_STRIDE = 1              # e.g. 2 = every second time point
-
-OUTPUT_DTYPE = "float32"     # "float32" / "float16" / "same" (as the source)
+RECURSIVE = False            # True: also search for sampleID-* below ROOT_DIR
+SAMPLE_IDS = None            # None = every sampleID-*; e.g. [1, 3]
+OUTPUT_DTYPE = "float16"     # "float32" / "float16" / "same" (as the source)
 OUTPUT_NAME = None           # None -> <CHANNEL>TimeStack-Z..-Yd..-Xd..-Zd..-Y..-X..-T...tif
 OVERWRITE = True             # False: keep an existing stack
 WRITE_ROOT_REPORT = True     # write <CHANNEL>TimeStack-report.json into ROOT_DIR
