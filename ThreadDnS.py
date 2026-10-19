@@ -26,6 +26,7 @@ from ActionTypes import AcqTypes, DnSActions, EXIT_ACTION
 from HardwareSpecs import TIFF_APPEND_WRITES_DEFAULT
 from DataShape import data_shape
 from mosaic_geometry import blend_paste, build_layout, new_weight_map, pixel_size_mm, ui_steps_um
+from mosaic_correction import combine_amplitude_phase, split_amplitude_phase
 import shading_correction
 
 ALINE_MODES = (
@@ -1233,11 +1234,26 @@ class DnSThread(QThread):
         With no field active (the reference sample) the data is returned untouched.
         The whole frame stack of a line is corrected in one vectorised step; the
         field rows are cached per line (:meth:`_shading_line_cache_entry`).
+
+        Real (plain or interleaved amplitude+phase) and complex64 data are all
+        accepted: the flat/dark field is real, so only the amplitude is corrected
+        and any phase is carried through untouched.
         """
         field = self.shading_field
         if field is None or not isinstance(data, np.ndarray) or not np.size(data):
             return data
         if index is None and data.ndim == 3:
+            if data.dtype.kind == "c":
+                # In-memory AMP+PHASE data arrives here as a complex64 volume (depth
+                # Z, *not* the interleaved 2Z layout that split_amplitude_phase
+                # handles).  Correct the amplitude and multiply the original phase
+                # back, mirroring the per-line complex branch below; casting the
+                # complex volume to float32 would silently discard the imaginary part.
+                amplitude = np.abs(data)
+                unit_phase = np.divide(data, amplitude, out=np.zeros_like(data),
+                                       where=amplitude > 1e-12)
+                corrected = field.apply_structure_volume(amplitude)
+                return (corrected * unit_phase).astype(np.complex64, copy=False)
             amplitude, phase = split_amplitude_phase(data, z_logical)
             corrected = field.apply_structure_volume(np.asarray(amplitude, np.float32))
             return combine_amplitude_phase(corrected, phase) if phase is not None else corrected

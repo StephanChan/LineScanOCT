@@ -32,7 +32,7 @@ from mosaic_scan_planner import (
     plan_mosaic_scan,
 )
 from SampleLocator import close_usb_camera, open_usb_camera, orient_usb_frame_live
-from LedIndicators import acquisition_finished, acquisition_started
+from LedIndicators import set_acquisition_state
 from Display_rendering import (
     display_sample_overlay,
     mosaic_label_render_size,
@@ -97,8 +97,8 @@ SAVE_SAMPLE_TIME_MODES = (
 )
 
 # Commands that only stream the USB camera and never touch the galvo / OCT
-# acquisition: the red acquisition LED must stay off for those, so they keep the
-# green idle LED on (see WeaverThread.set_acquisition_leds).
+# acquisition: the warning LED must stay off for those (they only switch the
+# illumination LEDs, see WeaverThread.set_acquisition_leds).
 CAMERA_ONLY_ACTIONS = (
     AcqTypes.LOCATION_CAMERA_LIVE,
 )
@@ -111,6 +111,13 @@ SKIP_PLATE_PRESCAN_FULL_SAMPLE_SCAN = True
 # zeros instead of "minus background" streaks. Only applies when a background is
 # loaded (background subtraction enabled); otherwise the rows stay zero.
 FILL_MISSING_BLINES_WITH_BACKGROUND = True
+
+# Home the X/Y stages (mechanical origin) before every time point of a
+# TimedPlateScan, so a long multi-time-point run does not accumulate stage drift
+# or lost steps and shift the saved FOV coordinates. Z is deliberately left out:
+# Z homing is unreliable on this hardware (see OCT_MT.ALL_HOME_AXES).
+HOME_BEFORE_TIMED_PLATE_SCAN = True
+HOME_BEFORE_SCAN_AXES = ("X", "Y")
 
 # Route PlateScan / WellScan / TimedPlateScan FOV acquisitions through the
 # FastVolumeCscan path (micro-sweep pattern) ONLY when the acquisition is dynamic
@@ -273,18 +280,15 @@ class WeaverThread(QThread):
         self.emit_status(self.exit_message)
             
     def set_acquisition_leds(self, action):
-        """Drive the acquisition (red) / idle (green) LEDs for a queued command.
+        """Drive the warning LED for a queued command (see LedIndicators.py).
 
         ``action`` is the command about to run: every command is an acquisition
         except the USB-only ``CAMERA_ONLY_ACTIONS``, and ``None`` (between two
-        commands) is the idle state -> red off, green on.  Failures are reported
-        by ``LedIndicators`` and never stop an acquisition.
+        commands) is the idle state -> warning LED off.  Failures are reported by
+        ``LedIndicators`` and never stop an acquisition.
         """
         acquiring = action is not None and action not in CAMERA_ONLY_ACTIONS
-        if acquiring:
-            acquisition_started()
-        else:
-            acquisition_finished()
+        set_acquisition_state(acquiring)
 
     def drain_queue(self, queue, name, keep=None):
         """Remove queued items, optionally keeping items selected by keep(item)."""
@@ -1468,6 +1472,33 @@ class WeaverThread(QThread):
                 message = "Plate scan stopped by user."
         return(message)   
 
+    def home_stages_before_scan(self, axes=None):
+        """Home the given stage axes to their mechanical origin before a scan.
+
+        Each axis is queued through the same ``XHome`` / ``YHome`` AODO actions
+        the per-axis Home buttons use, then waited for, so speed, timeout and the
+        X/Y position read-outs behave exactly like pressing Home per axis.  Z is
+        left out by default because Z homing is unreliable on this hardware (see
+        ``OCT_MT.ALL_HOME_AXES``).
+        """
+        axes = axes if axes is not None else HOME_BEFORE_SCAN_AXES
+        for axis in axes:
+            an_action = AODOActionField(f"{axis}Home")
+            self.AODOQueue.put(an_action)
+            try:
+                self.StagebackQueue.get(timeout=300.0)
+            except Empty:
+                message = (
+                    f"Stage {axis} home timeout before scan; "
+                    "assuming motion completed and continuing."
+                )
+                print(message)
+                self.emit_status(message)
+            else:
+                message = f"Stage {axis} homed before scan."
+                print(message)
+                self.emit_status(message)
+
     def TimedPlateScan(self, acq_mode, context):
         interval_hours = float(self.ui.Timer.value())
         interval_hours = max(0.0, interval_hours)
@@ -1484,6 +1515,8 @@ class WeaverThread(QThread):
 
         final_message = "Timed plate scan stopped by user."
         while self.ui.RunButton.isChecked() and current_slice <= total_slices:
+            if HOME_BEFORE_TIMED_PLATE_SCAN:
+                self.home_stages_before_scan()
             session_start = time.time()
             if interval_seconds > 0:
                 self._timed_plate_deadline = session_start + interval_seconds

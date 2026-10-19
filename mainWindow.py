@@ -243,7 +243,8 @@ class MainWindow(QMainWindow):
                     print(ii, ' setting missing, using default...')
         # Non-widget, run level setting: the live flat/dark shading correction of
         # mosaic/plate runs (see shading_correction).  On unless config.ini says
-        # otherwise; toggled at runtime through OCT_MT.set_shading_correction().
+        # otherwise; toggled at runtime through OCT_MT.set_shading_correction() or the
+        # ShadingCorrectionCheckBox of the GUI, whose state this value drives below.
         try:
             value = settings.value("ShadingCorrection")
         except Exception:
@@ -251,6 +252,7 @@ class MainWindow(QMainWindow):
         if value is None or str(value) == "":
             value = True
         self.ui.shading_correction = str(value).lower() in ("1", "true", "yes", "on")
+        self.sync_shading_correction_checkbox()
 
         # The Y FOV geometry inherited from config.ini has to be usable before the
         # first galvo waveform is generated, otherwise the whole run aborts (see
@@ -407,6 +409,36 @@ class MainWindow(QMainWindow):
             bool(getattr(self.ui, "shading_correction",
                          shading_correction.SHADING_CORRECTION_ENABLED_DEFAULT)),
         )
+
+    def shading_correction_switch(self):
+        """The GUI switch (``ShadingCorrectionCheckBox``) of the shading correction.
+
+        The widget is optional (``GUI.ui`` may be older than the switch, and the run
+        level setting can be toggled programmatically), so every user of it goes
+        through :meth:`sync_shading_correction_checkbox`.
+        """
+        return getattr(self.ui, "ShadingCorrectionCheckBox", None)
+
+    def sync_shading_correction_checkbox(self, enabled=None):
+        """Show ``enabled`` on the GUI switch of the shading correction.
+
+        ``enabled`` defaults to ``self.ui.shading_correction``, the run level value read
+        by ``DnSThread.shading_enabled()`` / ``WeaverThread``.  Signals are blocked: the
+        checkbox only mirrors the setting here, the ``toggled`` handler
+        (``OCT_MT.GUI._on_shading_correction_toggled``) is what writes it.
+        """
+        checkbox = self.shading_correction_switch()
+        if checkbox is None:
+            return
+        if enabled is None:
+            enabled = getattr(self.ui, "shading_correction",
+                              shading_correction.SHADING_CORRECTION_ENABLED_DEFAULT)
+        enabled = bool(enabled)
+        if checkbox.isChecked() == enabled:
+            return
+        checkbox.blockSignals(True)
+        checkbox.setChecked(enabled)
+        checkbox.blockSignals(False)
 
     def connectActions(self):
         self.ui.Objective.currentTextChanged.connect(self.Calculate_CameraWidth_settings)

@@ -4,8 +4,6 @@ Created on Mon Dec 11 19:41:46 2023
 
 @author: admin
 """
-# DO configure: port0 line 0 for X stage, port0 line 1 for Y stage, port 0 line 2 for Z stage, port 0 line 3 for Digitizer enable
-
 # Generating Galvo X direction waveforms based on step size, Xsteps, Aline averages and objective
 # StepSize in unit of um
 # bias in unit of mm
@@ -268,7 +266,7 @@ def GenAODO(mode='ContinuousBline',obj = '5X',postclocks = 50, YStepSize = 1, YS
     # postclocks: #Aline triggers for Galvo fly-back
 
     # DO clock is synchronuous with Galvo waveform
-    # DO configure: port0 line 0
+    # DO terminal: the line picked as SyncDO in the GUI (ThreadAODO_art.py)
     if mode in ['ContinuousAline', 'FiniteAline', 'ContinuousBline', 'FiniteBline']:
 
         AOwaveform = np.ones(BVG*2) * Galvo_bias

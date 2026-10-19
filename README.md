@@ -211,25 +211,29 @@ These are now strict dataclasses. Dict-style compatibility was removed.
     - stage-axis specs
     - laser specs
     - AODO trigger constants
-    - LED indicator DO terminals (`LED_ILLUMINATION_LINE` / `LED_ACQUISITION_LINE` /
-      `LED_IDLE_LINE`, `LED_DEVICE_CONFIG_KEY`)
+    - LED indicator DO terminals (`LED_ILLUMINATION_LINES` / `LED_WARNING_LINE`,
+      `LED_DEVICE_CONFIG_KEY`)
     - OCT processing defaults now shared by GPU / GUI setup
 
 - `LedIndicators.py`
-  - ART-DAQ digital outputs on **port 1** driving the status / illumination LEDs
+  - ART-DAQ digital outputs on **port 0** driving the illumination / warning LEDs
     (device = `AODOboard` from config.ini, normally `Galvo`)
-  - `port1/line0` illumination LED: high while the USB camera is in use — switched
+  - `port0/line2` + `port0/line3` illumination LEDs (one lamp per line, always
+    switched together): high while the USB camera is in use — switched
     by `SampleLocator.open_usb_camera` (before the sensor streams) and
     `SampleLocator.close_usb_camera` (live view, sample locator, coordinate
     calibration all go through those two)
-  - `port1/line1` acquisition (red) LED: high while a `ThreadWeaver` command runs
-  - `port1/line2` idle (green) LED: high while the software is not acquiring
-  - `WeaverThread.set_acquisition_leds` switches the pair per queued command
-    (`LocationCameraLive` is USB-only, so it keeps the green LED)
+  - `port0/line7` warning LED: high while a `ThreadWeaver` command runs
+  - `WeaverThread.set_acquisition_leds` switches it per queued command
+    (`LocationCameraLive` is USB-only, so it stays dark)
+  - the LED lines deliberately avoid `port0/line0` (camera trigger / `SyncDO`) and
+    `port0/line1` (servo output). An LED line held open by its own task coexists
+    with the hardware-timed acquisition DOtask on the same port: see the on/off
+    probe `_tmp_port0_probe_cells.py`
   - each line is held by one long-lived task so its level survives between writes;
     every write is best-effort (missing SDK / device / line warns once and never
     stops a scan), and `all_off()` darkens everything on software exit
-  - `artdaq_led_test.py` cycles the three lines standalone for wiring checks
+  - `artdaq_led_test.py` cycles the two lamps standalone for wiring checks
 
 - `Generaic_functions.py`
   - legacy shared numerical / plotting helpers used across the project

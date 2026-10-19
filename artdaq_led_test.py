@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Standalone LED indicator wiring test (ART-DAQ digital outputs on port 1).
+"""Standalone LED indicator wiring test (ART-DAQ digital outputs on port 0).
 
-Cycles the three LED outputs the software drives, so the wiring can be checked
-without starting the GUI:
+Cycles the LED outputs the software drives, so the wiring can be checked without
+starting the GUI:
 
-    port1/line0  illumination LED   high while the USB camera is in use
-    port1/line1  acquisition LED    red: an acquisition is running
-    port1/line2  idle LED           green: no acquisition is running
+    port0/line2 + port0/line3  illumination LEDs   high while the USB camera is in use
+    port0/line7                warning LED         high while an acquisition runs
 
 The DAQ device is the ``AODOboard`` value of config.ini (normally ``Galvo``).
 Run from the project root, e.g.
@@ -16,17 +15,18 @@ Run from the project root, e.g.
 
 import time
 
-from HardwareSpecs import LED_ACQUISITION_LINE, LED_IDLE_LINE, LED_ILLUMINATION_LINE
+from HardwareSpecs import LED_ILLUMINATION_LINES, LED_WARNING_LINE
 from LedIndicators import (
-    acquisition_finished,
-    acquisition_started,
     all_off,
     illumination_off,
     illumination_on,
     led_device_name,
+    set_acquisition_state,
 )
 
 HOLD_SECONDS = 1.0
+
+ILLUMINATION_LABEL = " + ".join(LED_ILLUMINATION_LINES)
 
 
 def step(line_name, description, led_call):
@@ -39,11 +39,11 @@ def step(line_name, description, led_call):
 
 
 def main():
-    print(f"LED indicator test on ART-DAQ device '{led_device_name()}' (port 1)")
-    step(LED_ILLUMINATION_LINE, "high (illumination before the camera opens)", illumination_on)
-    step(LED_ILLUMINATION_LINE, "low  (camera done)", illumination_off)
-    step(LED_ACQUISITION_LINE, "high + idle low (acquisition running)", acquisition_started)
-    step(LED_IDLE_LINE, "high + acquisition low (idle)", acquisition_finished)
+    print(f"LED indicator test on ART-DAQ device '{led_device_name()}' (port 0)")
+    step(ILLUMINATION_LABEL, "high (illumination before the camera opens)", illumination_on)
+    step(ILLUMINATION_LABEL, "low  (camera done)", illumination_off)
+    step(LED_WARNING_LINE, "high (acquisition running)", lambda: set_acquisition_state(True))
+    step(LED_WARNING_LINE, "low  (no acquisition)", lambda: set_acquisition_state(False))
     all_off()
     print("All LED lines low. Test finished.")
 

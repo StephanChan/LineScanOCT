@@ -80,15 +80,22 @@ AODO_DEFAULT_FRAME_RATE = 400
 AODO_AO_VOLTAGE_MIN = -10.0
 AODO_AO_VOLTAGE_MAX = 10.0
 
-# LED status indicators, driven as ART-DAQ digital outputs on port 1 of the device
+# LED status indicators, driven as ART-DAQ digital outputs on port 0 of the device
 # named by ``AODOboard`` in config.ini (see LedIndicators.py, which appends these
-# suffixes to the device name, e.g. "Galvo/port1/line0"):
-#   port1/line0 - illumination LED, high while the USB camera is in use
-#   port1/line1 - acquisition LED (red), high while an acquisition is running
-#   port1/line2 - idle LED (green), high while no acquisition is running
-LED_ILLUMINATION_LINE = "port1/line0"
-LED_ACQUISITION_LINE = "port1/line1"
-LED_IDLE_LINE = "port1/line2"
+# suffixes to the device name, e.g. "Galvo/port0/line2"):
+#   port0/line2 + port0/line3 - illumination LEDs (one line per lamp), high while
+#                               the USB camera is in use
+#   port0/line7 - warning LED, high while an acquisition command is running
+#
+# Every line is held by one long-lived per-line task (LedIndicators._task_for) and
+# port0/line0 is the camera trigger (``SyncDO`` in the GUI).  An on/off probe on this
+# board ("_tmp_port0_probe_cells.py") showed that such a per-line task coexists with
+# the hardware-timed acquisition DOtask on port0/line0 and that its waveform does not
+# disturb the other lines, so the LEDs may share the port with the acquisition.
+# Keep the LED lines clear of that trigger: never select port0/line2 or port0/line3
+# as the synchronized DO terminal (the GUI only offers port0/line0:2).
+LED_ILLUMINATION_LINES = ("port0/line2", "port0/line3")
+LED_WARNING_LINE = "port0/line7"
 LED_DEVICE_CONFIG_KEY = "AODOboard"
 LED_DEVICE_DEFAULT = "Galvo"
 

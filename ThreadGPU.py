@@ -81,10 +81,18 @@ DYNAMIC_MAGNIFICATION = 1
 # Set True to remove the strongest shared temporal/spatial modes before dynamic
 # frequency analysis. This is applied after per-pixel temporal mean subtraction,
 # so it removes coherent fluctuations rather than the static mean image.
-DYNAMIC_SVD_FILTER_ENABLED = False
+# It suppresses common-mode motion (laser power drift, scanning/vibration pickup)
+# so that local tissue activity stands out. Applied to both amplitude dynamic
+# mode and AMP+PHASE complex dynamic mode.
+DYNAMIC_SVD_FILTER_ENABLED = True
 
 # Number of dominant SVD modes to remove when DYNAMIC_SVD_FILTER_ENABLED is True.
-DYNAMIC_SVD_REMOVE_COMPONENTS = 5
+# The available frame count is BlineAVG minus DISCARD_INITIAL_FRAMES_PER_Y, so the
+# usable maximum is (frames - 1). Values that are too large for the current frame
+# count are clamped automatically (with a one-time warning) and never abort the
+# acquisition. 1-3 is a practical range; removing more modes also removes more of
+# the genuine in-plane synchronous activity (and lowers the dynamic std/V image).
+DYNAMIC_SVD_REMOVE_COMPONENTS = 2
 
 # HSV frequency-dynamic rendering. H encodes mean temporal frequency, S encodes
 # spectral bandwidth, and V encodes dynamic standard deviation.
@@ -1356,18 +1364,51 @@ class GPUThread(QThread):
             d=1.0 / float(frame_rate_hz),
         ).astype(np.float32)
 
+    def resolve_dynamic_svd_components(self, frames, label="dynamic"):
+        """Number of dominant SVD modes to remove for the current frame count.
+
+        ``frames`` is the number of repeated B-lines per Y (BlineAVG minus the
+        discarded initial frames), so it changes with the acquisition settings and
+        can be very small (2-3 frames). The configured count is therefore clamped
+        to ``1 .. frames - 1`` and a one-time warning is printed instead of aborting
+        the live acquisition. Returns 0 when no filtering is possible.
+        """
+        requested = int(self.dynamic_svd_remove_components)
+        if requested <= 0:
+            self.warn_dynamic_svd_once(
+                f"Dynamic SVD ({label}) is enabled but DYNAMIC_SVD_REMOVE_COMPONENTS <= 0; "
+                "SVD filtering is skipped."
+            )
+            return 0
+        if frames < 2:
+            self.warn_dynamic_svd_once(
+                f"Dynamic SVD ({label}) needs at least 2 frames per Y but got {frames}; "
+                "SVD filtering is skipped. Increase BlineAVG."
+            )
+            return 0
+        clamped = min(requested, frames - 1)
+        if clamped != requested:
+            self.warn_dynamic_svd_once(
+                f"Dynamic SVD ({label}): DYNAMIC_SVD_REMOVE_COMPONENTS={requested} is too "
+                f"large for {frames} frames per Y (BlineAVG - {DISCARD_INITIAL_FRAMES_PER_Y}); "
+                f"clamped to {clamped}. Increase BlineAVG or lower DYNAMIC_SVD_REMOVE_COMPONENTS."
+            )
+        return clamped
+
+    def warn_dynamic_svd_once(self, message):
+        if getattr(self, "_dynamic_svd_warning_printed", False):
+            return
+        self._dynamic_svd_warning_printed = True
+        print(message)
+
     def apply_dynamic_svd_filter_cpu(self, centered_cpu):
         if not self.dynamic_svd_filter_enabled:
             return centered_cpu
 
         frames = int(centered_cpu.shape[0])
-        remove_components = int(self.dynamic_svd_remove_components)
+        remove_components = self.resolve_dynamic_svd_components(frames, label="cpu")
         if remove_components <= 0:
-            raise RuntimeError("Dynamic SVD filtering is enabled but DYNAMIC_SVD_REMOVE_COMPONENTS <= 0.")
-        if remove_components >= frames:
-            raise RuntimeError(
-                f"Dynamic SVD remove components ({remove_components}) must be smaller than frame count ({frames})."
-            )
+            return centered_cpu
 
         original_shape = centered_cpu.shape
         matrix_cpu = centered_cpu.reshape(frames, -1)
@@ -2188,13 +2229,9 @@ class GPUThread(QThread):
             timing = {}
 
         frames = int(centered_gpu.shape[0])
-        remove_components = int(self.dynamic_svd_remove_components)
+        remove_components = self.resolve_dynamic_svd_components(frames, label=label)
         if remove_components <= 0:
-            raise RuntimeError("Dynamic SVD filtering is enabled but DYNAMIC_SVD_REMOVE_COMPONENTS <= 0.")
-        if remove_components >= frames:
-            raise RuntimeError(
-                f"Dynamic SVD remove components ({remove_components}) must be smaller than frame count ({frames})."
-            )
+            return centered_gpu
 
         step_start = self.gpu_timing_start()
         original_shape = centered_gpu.shape

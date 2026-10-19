@@ -50,7 +50,7 @@ from SampleLocator import (
     default_usb_mosaic_calibration,
 )
 from usb_training_dataset import export_sample_locator_dataset
-from LedIndicators import acquisition_finished, all_off, set_led_device
+from LedIndicators import all_off, set_led_device, warning_off
 from Display_rendering import (
     render_aodo_waveform_ready,
     render_aline_ready,
@@ -71,6 +71,14 @@ CONTINUOUS_ACQ_MODES = (
 )
 
 SAMPLE_LOCATOR_Z_MM = 1.0
+
+# Axes visited by the "全部归零" button (AllHomeButton in the 电动滑台 panel), in
+# the order they are homed.  Z is deliberately left out: Z homing is unreliable on
+# this hardware (see ThreadAODO_art.rehome_stages_after_reset) and the per-axis
+# ZHome button is disabled in GUI.ui for the same reason.  Add "Z" here only if a
+# real Z home is wanted, otherwise soft-zero Z separately via
+# ZeroZForSampleLocator().
+ALL_HOME_AXES = ("X", "Y")
 
 # Axial (depth) pixel size in micrometres, used for the XZ-plane display aspect
 # ratio (µm per depth pixel).
@@ -335,6 +343,7 @@ class GUI(MainWindow):
         self.ui.YAccelerate.valueChanged.connect(self.SetYAcc)
         self.ui.ZAccelerate.valueChanged.connect(self.SetZAcc)
         
+        self.ui.AllHomeButton.clicked.connect(self.AllHome)
         self.ui.InitStageButton.clicked.connect(self.InitStages)
         self.ui.StageUninit.clicked.connect(self.Uninit)
         # self.ui.SliceDir.clicked.connect(self.SliceDirection)
@@ -376,11 +385,14 @@ class GUI(MainWindow):
         self._render_fps_limit = 30.0
         self._last_render_t = {"aline": 0.0, "bline": 0.0, "cscan": 0.0, "mosaic": 0.0}
 
-        # LED indicators (illumination / acquisition / idle): adopt the DAQ device
-        # named in the GUI and show the idle state (green LED on, red LED off).
-        # See LedIndicators.py; WeaverThread switches them per command.
+        # LED indicators (illumination / warning): adopt the DAQ device named in the
+        # GUI and start from the idle state (warning LED off).
+        # See LedIndicators.py; WeaverThread switches the warning LED per command.
         set_led_device(self.ui.AODOboard.toPlainText())
-        acquisition_finished()
+        warning_off()
+
+        # Run level shading correction switch (GUI.ui ShadingCorrectionCheckBox).
+        self._init_shading_correction_switch()
 
     def Init_allThreads(self):
         self.Weaver_thread = WeaverThread_2(self.ui, self.log)
@@ -549,16 +561,46 @@ class GUI(MainWindow):
                 editor.setEnabled(prior_states.get(editor, True))
 
     # ------------------------------------------------------------------ shading
+    def _init_shading_correction_switch(self):
+        """Hook the GUI switch to the run level shading correction setting.
+
+        ``ShadingCorrectionCheckBox`` (GUI.ui) shows and edits
+        ``self.ui.shading_correction``, the value read by
+        ``DnSThread.shading_enabled()`` and ``WeaverThread.shading_correction_enabled()``.
+        Its state comes from config.ini through ``MainWindow.LoadSettings`` and is written
+        back by ``SaveSettings``, so the click only has to be forwarded here.
+        """
+        checkbox = self.shading_correction_switch()
+        if checkbox is None:
+            print("Shading correction: no ShadingCorrectionCheckBox in GUI.ui; "
+                  "switch it with set_shading_correction().")
+            return
+        checkbox.toggled.connect(self._on_shading_correction_toggled)
+
+    def _on_shading_correction_toggled(self, checked):
+        """The GUI switch: shading correction on/off for the tiles acquired next.
+
+        Nothing is re-corrected: DnSThread reads the switch through
+        ``shading_enabled()`` when a tile starts, so volumes already written stay as
+        they are and a scan in flight keeps the state it started with.
+        """
+        self.set_shading_correction(checked)
+
     def set_shading_correction(self, enabled=True):
         """Turn the live flat/dark shading correction on/off for the next run.
 
         The switch is run level (config.ini ``ShadingCorrection``): it is read when a
         mosaic/plate scan starts.  Tiles already written are never re-corrected.
+        ``ShadingCorrectionCheckBox`` (GUI.ui) is the user facing control of the same
+        setting, so the checkbox and ``self.ui.shading_correction`` are kept in sync.
         """
-        self.ui.shading_correction = bool(enabled)
+        enabled = bool(enabled)
+        self.ui.shading_correction = enabled
+        self.sync_shading_correction_checkbox(enabled)
         message = "阴影校正: {0}".format("已开启" if enabled else "已关闭")
+        # LOG() tees stdout into log_files/log_<stamp>.txt, so this print is what records
+        # the change in the run log (there is no LOG.append()).
         print(message)
-        self.log.append(message)
         return self.ui.shading_correction
 
     def shading_correction_status(self):
@@ -1474,7 +1516,24 @@ class GUI(MainWindow):
         an_action = AODOActionField('ZHome')
         AODOQueue.put(an_action)
         self._wait_stageback("Z home")
-        
+
+    def AllHome(self):
+        """「全部归零」按钮：依次把 ALL_HOME_AXES 里的轴回机械原点。
+
+        Each axis is queued (and waited for) through the same AODO actions the
+        per-axis Home buttons use, so speed, timeout and the X/Y position
+        read-outs behave exactly as when pressing Home per axis.
+        """
+        for axis in ALL_HOME_AXES:
+            getattr(self, axis + "Home")()
+        message = (
+            "All-zero home complete: "
+            + "/".join(ALL_HOME_AXES)
+            + " homed to origin (Z untouched)."
+        )
+        print(message)
+        self.ui.statusbar.showMessage(message)
+
     def SetXSpeed(self):
         an_action = AODOActionField('XSpeed')
         AODOQueue.put(an_action)

@@ -1,24 +1,31 @@
 # -*- coding: utf-8 -*-
-"""LED status / illumination indicators on ART-DAQ digital outputs (port 1).
+"""LED status / illumination indicators on ART-DAQ digital outputs (port 0).
 
-Three LEDs are driven from port 1 of the ART-DAQ device the GUI names
-(``AODOboard`` in config.ini, normally ``Galvo``).  The terminals themselves are
-defined centrally in ``HardwareSpecs.py``:
+Two LEDs are driven on port 0 of the ART-DAQ device the GUI names (``AODOboard``
+in config.ini, normally ``Galvo``).  The terminals themselves are defined centrally
+in ``HardwareSpecs.py``:
 
-``port1/line0``
-    Illumination LED - high while the USB camera is in use (live view, sample
-    locator, coordinate calibration).  Switched on by
-    ``SampleLocator.open_usb_camera`` *before* the sensor starts streaming and
-    switched off by ``SampleLocator.close_usb_camera`` when the camera is done.
-``port1/line1``
-    Acquisition LED (red) - high while an acquisition command is running.
-``port1/line2``
-    Idle LED (green) - high while no acquisition is running.
+``port0/line2`` + ``port0/line3``
+    Illumination LEDs (one line per lamp, always switched together) - high while
+    the USB camera is in use (live view, sample locator, coordinate calibration).
+    Switched on by ``SampleLocator.open_usb_camera`` *before* the sensor starts
+    streaming and switched off by ``SampleLocator.close_usb_camera`` when the
+    camera is done.
+``port0/line7``
+    Warning LED - high while an acquisition command is running.
 
-The acquisition / idle pair is switched by ``ThreadWeaver.WeaverThread`` around
-every queued command (``WeaverThread.set_acquisition_leds``), so the red LED is
-on for exactly as long as the software is acquiring - the USB-only live view is
-the one command that keeps the green LED on.
+The warning LED is switched by ``ThreadWeaver.WeaverThread`` around every queued
+command (``WeaverThread.set_acquisition_leds`` -> ``set_acquisition_state``), so it
+is lit for exactly as long as the software is acquiring - the USB-only live view
+(``CAMERA_ONLY_ACTIONS``) never lights it.
+
+Port 0 also carries the acquisition outputs, so the LED lines deliberately avoid
+them: ``port0/line0`` is the camera trigger (``SyncDO`` in the GUI) and
+``port0/line1`` is the servo output (``ThreadAODO_art.SERVO_DEVICE_LINE``).  An
+on/off probe on this board (``_tmp_port0_probe_cells.py``) showed that a LED task
+which stays open while the hardware-timed acquisition DOtask and its waveform run
+on port0/line0 does not conflict with it and is not disturbed by the waveform -
+that is why the indicators may share the port with the acquisition.
 
 Every write is best-effort.  Without the ART-DAQ SDK, without the configured
 device, or if a line is unavailable, a warning is printed once and the run
@@ -34,11 +41,10 @@ import sys
 import threading
 
 from HardwareSpecs import (
-    LED_ACQUISITION_LINE,
     LED_DEVICE_CONFIG_KEY,
     LED_DEVICE_DEFAULT,
-    LED_IDLE_LINE,
-    LED_ILLUMINATION_LINE,
+    LED_ILLUMINATION_LINES,
+    LED_WARNING_LINE,
 )
 
 CONFIG_PATH = "config.ini"
@@ -82,6 +88,9 @@ _warned = set()
 # serialises the task table (set_led_device / set_led / all_off)
 _lock = threading.RLock()
 
+# every line an indicator drives: device changes and all_off() walk this list
+_LED_LINES = tuple(LED_ILLUMINATION_LINES) + (LED_WARNING_LINE,)
+
 
 def led_device_name():
     """Device identifier the LED terminals are built from.
@@ -119,7 +128,7 @@ def set_led_device(name):
             except Exception:
                 pass
         _tasks.clear()
-        for line_name in (LED_ILLUMINATION_LINE, LED_ACQUISITION_LINE, LED_IDLE_LINE):
+        for line_name in _LED_LINES:
             _failed_lines.discard(line_name)
         LED_DEVICE_NAME = name
     return LED_DEVICE_NAME
@@ -180,38 +189,45 @@ def _warn_once(message):
     print(message)
 
 
+def _set_lines(line_names, state):
+    """Drive a group of lines that always switch together.
+
+    Every line is written (no short circuit), so one unavailable lamp can never
+    hide a failure of the other; the result reports whether all were driven.
+    """
+    results = [set_led(line_name, state) for line_name in line_names]
+    return all(results)
+
+
 def illumination_on():
     """Sample illumination on (USB camera about to stream)."""
-    return set_led(LED_ILLUMINATION_LINE, True)
+    return _set_lines(LED_ILLUMINATION_LINES, True)
 
 
 def illumination_off():
     """Sample illumination off (USB camera done)."""
-    return set_led(LED_ILLUMINATION_LINE, False)
+    return _set_lines(LED_ILLUMINATION_LINES, False)
+
+
+def warning_on():
+    """Warning LED on: an acquisition command is running."""
+    return set_led(LED_WARNING_LINE, True)
+
+
+def warning_off():
+    """Warning LED off: no acquisition is running."""
+    return set_led(LED_WARNING_LINE, False)
 
 
 def set_acquisition_state(acquiring):
-    """Red acquisition LED = ``acquiring``, green idle LED = not ``acquiring``."""
-    active = bool(acquiring)
-    acquisition_ok = set_led(LED_ACQUISITION_LINE, active)
-    idle_ok = set_led(LED_IDLE_LINE, not active)
-    return acquisition_ok and idle_ok
-
-
-def acquisition_started():
-    """Acquisition underway: red LED on, green idle LED off."""
-    return set_acquisition_state(True)
-
-
-def acquisition_finished():
-    """No acquisition: red LED off, green idle LED on."""
-    return set_acquisition_state(False)
+    """Warning LED = ``acquiring`` (one lamp, there is no idle twin any more)."""
+    return warning_on() if bool(acquiring) else warning_off()
 
 
 def all_off():
     """Switch every LED off and release the DO tasks (software exit)."""
     with _lock:
-        for line_name in (LED_ILLUMINATION_LINE, LED_ACQUISITION_LINE, LED_IDLE_LINE):
+        for line_name in _LED_LINES:
             if LED_CONTROL_ENABLED and ni is not None and line_name not in _failed_lines:
                 try:
                     _task_for(line_name).write(False, auto_start=True)

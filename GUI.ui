@@ -1025,6 +1025,16 @@
                </item>
               </widget>
              </item>
+             <item row="6" column="0" colspan="3">
+              <widget class="QCheckBox" name="ShadingCorrectionCheckBox">
+               <property name="checked">
+                <bool>true</bool>
+               </property>
+               <property name="text">
+                <string>阴影校正(平场/暗场)</string>
+               </property>
+              </widget>
+             </item>
             </layout>
            </widget>
           </item>
@@ -1060,6 +1070,25 @@
               </property>
               <property name="text">
                <string>电机下电</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="AllHomeButton">
+              <property name="minimumSize">
+               <size>
+                <width>0</width>
+                <height>50</height>
+               </size>
+              </property>
+              <property name="maximumSize">
+               <size>
+                <width>300</width>
+                <height>16777215</height>
+               </size>
+              </property>
+              <property name="text">
+               <string>全部归零</string>
               </property>
              </widget>
             </item>
@@ -3498,11 +3527,6 @@
                <item>
                 <property name="text">
                  <string>port0/line1</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>port0/line2</string>
                 </property>
                </item>
               </widget>
